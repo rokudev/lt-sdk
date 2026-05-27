@@ -1,0 +1,8 @@
+/*!
+@defgroup ltsystem LT System
+@{
+
+@brief LT System libraries provide basic services.
+
+@}
+*/

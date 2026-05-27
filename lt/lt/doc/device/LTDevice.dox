@@ -1,0 +1,8 @@
+/*!
+@defgroup ltdevice LT Devices
+@{
+
+@brief LT Devices provide programmatic access to hardware devices.
+
+@}
+*/

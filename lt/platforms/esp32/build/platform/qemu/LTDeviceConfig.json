@@ -1,0 +1,28 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+{
+  "config":{
+       "net":{ "transport":[ { "lib": "LTDriverNetTransportLwipEthOpenCores" } ] },
+    "device":[
+        { "lib": "LTDeviceConfig"                                                                                                            },
+        { "lib": "LTDeviceCrypto",        "driver": [ {   "lib": "Esp32DriverCrypto"                                                     } ] },
+        { "lib": "LTDeviceFlash",         "driver": [ {   "lib": "Esp32DriverFlash"                                                      } ] },
+        { "lib": "LTDeviceWatchdog",
+          "uts": "pass", /* this variable "uts" is short for "unit test string" and is present for UnitTestLTDeviceConfig */
+          "uti": 42,     /* this variable "uti" is short for "unit test integer" and is present for UnitTestLTDeviceConfig */
+                                          "driver": [ {   "lib": "Esp32DriverWatchdog",
+                                                          "stu": "ssap", /* this variable "stu" is present for UnitTestLTDeviceConfig */
+                                                          "itu": 24      /* this variable "itu" is present for UnitTestLTDeviceConfig */ } ] },
+
+        { "lib": "LTDeviceIdentity",      "identity": { "manufacturer":"Roku, Inc.", "model":"None", "type":"None" },
+                                          "driver":[ {    "lib": "Esp32DriverIdentity"                                                   } ] },
+
+        { "lib": "LTThirdPartyLWIP"                                                                                                          }
+      ]
+  }
+}

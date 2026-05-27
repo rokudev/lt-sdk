@@ -1,0 +1,72 @@
+#!/bin/sh -e
+################################################################################
+# genstats-stackusage: script invoked by LT Master Makefile on each LTLibrary
+#                      obj sub-tree (passed into this script as $1) that
+#                      aggregates all of the .su file data found therein,
+#                      invokes stackusage-beautifysort on that aggregated data,
+#                      and writes the resulting output to the file passed into
+#                      into this script as $2, which will be overwritten.
+#
+# Copyright 2020-2026, Roku, Inc.  All rights reserved.
+################################################################################
+#
+#        usage:  genstats-stackusage <lt-lib-obj-dir> <output-file>
+#
+# dependencies:  genstats-stackusage requires the following programs to be present
+#                on build and developer machines:
+#                  .  /bin/sh (linked to either /bin/bash or /bin/dash)
+#                  .  awk (not yet)
+#                  .  basename
+#                  .  cat
+#                  .  dirname
+#                  .  find
+#                  .  realpath
+#
+
+# 1. calculate files the script will operate on
+if [ "" = "$LT_BUILD_DIR_SCRIPTS" ]; then
+    LT_STACKUSAGE_BEAUTIFYSORT=`realpath "$0"`
+    LT_STACKUSAGE_BEAUTIFYSORT="`dirname "$LT_STACKUSAGE_BEAUTIFYSORT"`"/stackusage-beautifysort
+else
+    LT_STACKUSAGE_BEAUTIFYSORT="$LT_BUILD_DIR_SCRIPTS"/stats/stackusage-beautifysort
+fi
+if [ "" = "$1" ]; then
+    LT_OBJ_DIR=.
+else
+    LT_OBJ_DIR="$1"
+fi
+
+LT_OBJ_DIR=`realpath "$LT_OBJ_DIR"`
+LT_LIBRARY_NAME=`basename "$LT_OBJ_DIR"`
+LT_STATS_STACKUSAGE_INTERMEDIATE_FILE="$LT_OBJ_DIR"/"$LT_LIBRARY_NAME".stackusage.intermediate.txt
+if [ "" = "$2" ]; then
+    LT_STATS_STACKUSAGE_OUTPUT_FILE=./"$LT_LIBRARY_NAME".stackusage.txt
+else
+    LT_STATS_STACKUSAGE_OUTPUT_FILE="$2"
+fi
+LT_STATS_STACKUSAGE_OUTPUT_FILE=`realpath "$LT_STATS_STACKUSAGE_OUTPUT_FILE" 2>/dev/null || echo "$LT_STATS_STACKUSAGE_OUTPUT_FILE"`
+
+#echo -n "           LT_STACKUSAGE_BEAUTIFYSORT = " && echo $LT_STACKUSAGE_BEAUTIFYSORT
+#echo -n "                           LT_OBJ_DIR = " && echo $LT_OBJ_DIR
+#echo -n "                      LT_LIBRARY_NAME = " && echo $LT_LIBRARY_NAME
+#echo -n "LT_STATS_STACKUSAGE_INTERMEDIATE_FILE = " && echo $LT_STATS_STACKUSAGE_INTERMEDIATE_FILE
+#echo -n "      LT_STATS_STACKUSAGE_OUTPUT_FILE = " && echo $LT_STATS_STACKUSAGE_OUTPUT_FILE
+
+# Step 2 - aggregate library stack usage data and run stacksort over the aggregated data
+find "$LT_OBJ_DIR" -name "*.su" -exec cat {} \+ | "$LT_STACKUSAGE_BEAUTIFYSORT" > "$LT_STATS_STACKUSAGE_INTERMEDIATE_FILE"
+
+# Step 3 - calculate MIN/MAX/MEAN/MEDIAN/MODE/STANDARD DEVIATION for whole data set
+# LT_STATS_LINE_FULL=`lt-calc-stats "$LT_LIBRARY_NAME"`
+
+# Step 4 - calculate MIN/MAX/MEAN/MEDIAN/MODE/STANDARD DEVIATION for top 10
+# LT_STATS_LINE_TOP_TEN=`head -n 10 "$LT_LIBRARY_NAME" | lt-calc-stats`
+
+# Step 5 - output results
+echo    ""                                               > "$LT_STATS_STACKUSAGE_OUTPUT_FILE"
+echo    "_________________________"                     >> "$LT_STATS_STACKUSAGE_OUTPUT_FILE"
+echo    "_______________________ \\\\"                  >> "$LT_STATS_STACKUSAGE_OUTPUT_FILE"
+echo -n "LTLIBRARY STACK-TISTICS ----> LTLibrary: "     >> "$LT_STATS_STACKUSAGE_OUTPUT_FILE"
+echo    "$LT_LIBRARY_NAME { $LT_RELEASE_IDENTIFIER }"   >> "$LT_STATS_STACKUSAGE_OUTPUT_FILE"
+echo    "________________________//"                    >> "$LT_STATS_STACKUSAGE_OUTPUT_FILE"
+echo    ""                                              >> "$LT_STATS_STACKUSAGE_OUTPUT_FILE"
+cat     "$LT_STATS_STACKUSAGE_INTERMEDIATE_FILE"        >> "$LT_STATS_STACKUSAGE_OUTPUT_FILE"

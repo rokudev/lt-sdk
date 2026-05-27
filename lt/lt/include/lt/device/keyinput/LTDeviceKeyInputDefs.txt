@@ -1,0 +1,170 @@
+/*******************************************************************************
+ * <lt/device/keyinput/LTDeviceKeyInputDefs.txt>
+ *
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2019-2021, Roku, Inc.  All rights reserved.
+ *******************************************************************************
+ * Names and enumeration values for LT virtual key values
+ * Columns: key name, enumeration value
+ *
+ * Actual enumeration value is generated in LTDeviceKeyInputDefs.
+ *
+ * This list must remain sorted by value.
+ */
+
+LTKEYDEF(Digit0,                    0x0000)
+LTKEYDEF(Digit1,                    0x0001)
+LTKEYDEF(Digit2,                    0x0002)
+LTKEYDEF(Digit3,                    0x0003)
+LTKEYDEF(Digit4,                    0x0004)
+LTKEYDEF(Digit5,                    0x0005)
+LTKEYDEF(Digit6,                    0x0006)
+LTKEYDEF(Digit7,                    0x0007)
+LTKEYDEF(Digit8,                    0x0008)
+LTKEYDEF(Digit9,                    0x0009)
+
+LTKEYDEF(Enter,                     0x0010)
+LTKEYDEF(OK,                        0x0011)
+LTKEYDEF(Select,                    0x0012)
+LTKEYDEF(Home,                      0x0013)
+LTKEYDEF(Back,                      0x0014)
+LTKEYDEF(Menu,                      0x0015)
+LTKEYDEF(Info,                      0x0016)
+LTKEYDEF(Exit,                      0x0017)
+LTKEYDEF(Join,                      0x0018)
+LTKEYDEF(Pairing,                   0x0019)
+LTKEYDEF(Guide,                     0x001A)
+LTKEYDEF(Dot,                       0x001B)
+
+LTKEYDEF(North,                     0x0020)
+LTKEYDEF(South,                     0x0021)
+LTKEYDEF(West,                      0x0022)
+LTKEYDEF(East,                      0x0023)
+LTKEYDEF(Northwest,                 0x0024)
+LTKEYDEF(Northeast,                 0x0025)
+LTKEYDEF(Southwest,                 0x0026)
+LTKEYDEF(Southeast,                 0x0027)
+LTKEYDEF(Up,                        0x0028)
+LTKEYDEF(Down,                      0x0029)
+LTKEYDEF(Left,                      0x002A)
+LTKEYDEF(Right,                     0x002B)
+
+LTKEYDEF(Fastforward,               0x0030)
+LTKEYDEF(Rewind,                    0x0031)
+LTKEYDEF(Play,                      0x0032)
+LTKEYDEF(Pause,                     0x0033)
+LTKEYDEF(Playpause,                 0x0034)
+LTKEYDEF(Stop,                      0x0035)
+LTKEYDEF(Replay,                    0x0036)
+LTKEYDEF(Forward,                   0x0037)
+LTKEYDEF(Reverse,                   0x0038)
+LTKEYDEF(Eject,                     0x0039)
+
+LTKEYDEF(Next,                      0x0040)
+LTKEYDEF(Previous,                  0x0041)
+
+LTKEYDEF(ZoomIn,                    0x0050)
+LTKEYDEF(ZoomOut,                   0x0051)
+LTKEYDEF(Rotate,                    0x0052)
+
+LTKEYDEF(Power,                     0x0060)
+LTKEYDEF(IdleHeartbeat,             0x0061)
+LTKEYDEF(PowerOn,                   0x0062)
+LTKEYDEF(PowerOff,                  0x0063)
+
+LTKEYDEF(User1,                     0x0070)
+LTKEYDEF(User2,                     0x0071)
+LTKEYDEF(User3,                     0x0072)
+LTKEYDEF(User4,                     0x0073)
+LTKEYDEF(User5,                     0x0074)
+LTKEYDEF(User6,                     0x0075)
+LTKEYDEF(User7,                     0x0076)
+LTKEYDEF(User8,                     0x0077)
+LTKEYDEF(User9,                     0x0078)
+LTKEYDEF(User10,                    0x0079)
+LTKEYDEF(UserRpt1,                  0x007A)
+LTKEYDEF(UserRpt2,                  0x007B)
+LTKEYDEF(UserRpt3,                  0x007C)
+LTKEYDEF(UserRpt4,                  0x007D)
+LTKEYDEF(UserRpt5,                  0x007E)
+LTKEYDEF(UserRpt6,                  0x007F)
+LTKEYDEF(UserRpt7,                  0x0080)
+LTKEYDEF(UserRpt8,                  0x0081)
+LTKEYDEF(UserRpt9,                  0x0082)
+LTKEYDEF(UserRpt10,                 0x0083)
+
+LTKEYDEF(Search,                    0x0090)
+LTKEYDEF(Add,                       0x0091)
+LTKEYDEF(Shuffle,                   0x0092)
+LTKEYDEF(Repeat,                    0x0093)
+
+LTKEYDEF(VolumeUp,                  0x00A0)
+LTKEYDEF(VolumeDown,                0x00A1)
+LTKEYDEF(Volume50,                  0x00A2)
+LTKEYDEF(VolumeMute,                0x00A3)
+LTKEYDEF(Brightness,                0x00A4)
+
+LTKEYDEF(RotaryClockwise,           0x00B0)
+LTKEYDEF(RotaryCounterclockwise,    0x00B1)
+LTKEYDEF(RotarySwitch,              0x00B2)
+
+LTKEYDEF(Preset1,                   0x00C0)
+LTKEYDEF(Preset2,                   0x00C1)
+LTKEYDEF(Preset3,                   0x00C2)
+LTKEYDEF(Preset4,                   0x00C3)
+LTKEYDEF(Preset5,                   0x00C4)
+LTKEYDEF(Preset6,                   0x00C5)
+LTKEYDEF(Preset7,                   0x00C6)
+LTKEYDEF(Preset8,                   0x00C7)
+LTKEYDEF(Preset9,                   0x00C8)
+LTKEYDEF(Preset10,                  0x00C9)
+
+LTKEYDEF(Snooze,                    0x00D0)
+LTKEYDEF(Source,                    0x00D1)
+LTKEYDEF(ScanUp,                    0x00D2)
+LTKEYDEF(ScanDown,                  0x00D3)
+LTKEYDEF(ChannelUp,                 0x00D4)
+LTKEYDEF(ChannelDown,               0x00D5)
+LTKEYDEF(Group,                     0x00D6)
+LTKEYDEF(Alarm,                     0x00D7)
+LTKEYDEF(Playlists,                 0x00D8)
+LTKEYDEF(Browse,                    0x00D9)
+
+LTKEYDEF(BrowseArtists,             0x00E0)
+LTKEYDEF(BrowseAlbums,              0x00E1)
+LTKEYDEF(BrowseSongs,               0x00E2)
+LTKEYDEF(BrowseGenres,              0x00E3)
+LTKEYDEF(BrowseComposers,           0x00E4)
+
+LTKEYDEF(PartnerA,                  0x00F0)
+LTKEYDEF(PartnerB,                  0x00F1)
+LTKEYDEF(PartnerC,                  0x00F2)
+LTKEYDEF(PartnerD,                  0x00F3)
+LTKEYDEF(PartnerE,                  0x00F4)
+LTKEYDEF(PartnerF,                  0x00F5)
+LTKEYDEF(PartnerG,                  0x00F6)
+LTKEYDEF(PartnerH,                  0x00F7)
+LTKEYDEF(PartnerI,                  0x00F8)
+LTKEYDEF(PartnerJ,                  0x00F9)
+
+LTKEYDEF(A,                         0x0100)
+LTKEYDEF(B,                         0x0101)
+LTKEYDEF(Red,                       0x0102)
+LTKEYDEF(Blue,                      0x0103)
+LTKEYDEF(Green,                     0x0104)
+LTKEYDEF(Yellow,                    0x0105)
+LTKEYDEF(Purple,                    0x0106)
+LTKEYDEF(LiveTV,                    0x0107)
+
+LTKEYDEF(Unknown,                   0xFFFF)
+
+/*******************************************************************************
+ *  LOG
+ *******************************************************************************
+ *  24-Jan-20   constantine created
+ *  14-Sep-21   constantine Convert KeyInput to redux LT C interface
+ */

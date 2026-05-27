@@ -1,0 +1,50 @@
+#!/bin/sh -e
+################################################################################
+# stackusage-beautifysort:
+#   indirectly invoked by LT Master makefile via script genstats-stackusage for
+#   sorting contents of .su files in descending stack byte usage order and to
+#   beautify the resulting output.
+#
+#
+# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+# If a copy of the MPL was not distributed with this file, you can obtain one at
+# https://mozilla.org/MPL/2.0/.
+#
+# Copyright 2020, Roku, Inc.  All rights reserved.
+################################################################################
+#
+#        usage:  stackusage-beautifysort < inputfile.su > outputfile
+#           or:  shell_command | stackusage-beautifysort | another_shell_command
+#           or:  stackusage-beautifysort --help
+#
+# dependencies:  stackusage-beautifysort requires the following programs to be
+#                present on developer and build machines:
+#
+#                  .  /bin/sh (linked to either /bin/bash or /bin/dash)
+#                  .  cut
+#                  .  paste
+#                  .  numfmt
+#                  .  sed
+#
+if [ "" != "$1" ]; then
+    echo "Usage: stackusage-beautifysort < inputfile.su > outputfile"               && \
+    echo "   or: shell_command | stackusage-beautifysort | another_shell_command"   && \
+    echo                                                                            && \
+    echo " stackusage-beautifysort reads lines of [ gcc -fstack-usage ] .su file"   && \
+    echo " format data from standard input, sorts them into largest->smallest"      && \
+    echo " stack byte usage order, reformats them for readability, and writes the"  && \
+    echo " result to standard output."
+    exit 1
+fi
+
+sed "h;s/^//;p;x" \
+| paste - -                                                     \
+| cut -f2,3,4                                                   \
+| numfmt --field 1 --padding=4                                  \
+| sed -e "s/:/(/1"                                              \
+      -e "s/:.*:/) --->/1"                                      \
+      -e "s/$/()/g"                                             \
+      -e "s/ static / bytes static  -------  /1"                \
+      -e "s/ dynamic / bytes dynamic -------  /1"               \
+      -e "s/ dynamic,bounded / bytes dynamic_bounded  /1"       \
+| sort -b -g -r

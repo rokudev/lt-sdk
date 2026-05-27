@@ -1,0 +1,16 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+{
+  "config":{
+       "net":{ "transport":[ ] },
+    "device":[     { "lib": "LTDeviceConfig" },
+                   { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32DriverFlash" } ] },
+                   { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32DriverWatchdog" } ] }
+             ]
+           }
+}

@@ -1,0 +1,105 @@
+#!/bin/sh -e
+################################################################################
+# genstats-summarize-codesize: script invoked by LT Master Makefile for
+#                              stats-summmarize target.  The current build's
+#                              stats/ directory is passed into this script as $1
+#                              and this script aggregates section data across the
+#                              *.codesize.txt files therein and writes the
+#                              following two output files into the same
+#                              stats/ directory:
+#                                ltlibrary-codesize-summary.txt
+#                                ltlibrary-codesize-summary.csv
+#
+# Copyright 2021-2026, Roku, Inc.  All rights reserved.
+################################################################################
+#
+#        usage:  genstats-summarize-codesize <lt-lib-stats-dir>
+#
+# dependencies:  genstats-codesize-summarize requires the following programs to
+#                be present on build and developer machines:
+#                  .  /bin/sh (linked to either /bin/bash or /bin/dash)
+#                  .  realpath
+#                  .  cut
+#                  .  paste
+#                  .  tr
+#                  .  bc
+#                  .  grep
+#                  .  sort
+#                  .  printf
+#
+
+# find the stats directory, read the libs and set the output file names
+if [ "" = "$1" ]; then
+    LT_STATS_DIR=.
+else
+    LT_STATS_DIR="$1"
+fi
+LT_STATS_DIR=`realpath "$LT_STATS_DIR"`
+
+if [ "" = "$LT_BUILD_VERSION" ]; then
+    LT_RELEASE_IDENTIFIER=`dirname "$LT_STATS_DIR"`
+else
+    LT_RELEASE_IDENTIFIER=$LT_BUILD_VERSION
+fi
+LT_STATS_OUTPUT_FILE="$LT_STATS_DIR"/LTLIBRARY-CODESIZE-SUMMARY.txt
+LT_STATS_OUTPUT_FILE_CSV="$LT_STATS_DIR"/LTLIBRARY-CODESIZE-SUMMARY.csv
+LT_STATS_OUTPUT_FILE=`realpath "$LT_STATS_OUTPUT_FILE" 2>/dev/null || echo "$LT_STATS_OUTPUT_FILE"`
+LT_STATS_OUTPUT_FILE_CSV=`realpath "$LT_STATS_OUTPUT_FILE_CSV" 2>/dev/null || echo "$LT_STATS_OUTPUT_FILE_CSV"`
+LT_STATS_LIBS=`cd "$LT_STATS_DIR" && ls -1 *.codesize.txt | cut -f1 -d'.' | grep "^LT" | sort && ls -1 *.codesize.txt | cut -f1 -d'.' | grep -v "^LT" | sort`
+
+#echo -n "              LT_STATS_DIR = " && echo $LT_STATS_DIR
+#echo -n "      LT_STATS_OUTPUT_FILE = " && echo $LT_STATS_OUTPUT_FILE
+#echo -n "  LT_STATS_OUTPUT_FILE_CSV = " && echo $LT_STATS_OUTPUT_FILE_CSV
+#echo -n "             LT_STATS_LIBS = " && echo $LT_STATS_LIBS
+
+# echo out the preamble
+echo "LTLIBRARY CODESIZE SUMMARY: $LT_RELEASE_IDENTIFIER" > "$LT_STATS_OUTPUT_FILE"
+printf "%-36s  %9s %9s %9s %9s %19s %9s\n"   "_______" "___" "____" "______" "____" "__________" "_____" >> "$LT_STATS_OUTPUT_FILE"
+printf "%-36s  %9s %9s %9s %9s %19s %9s\n\n" "Library" "bss" "data" "rodata" "text" "STATIC RAM" "FLASH" >> "$LT_STATS_OUTPUT_FILE"
+echo "LTLIBRARY CODESIZE SUMMARY: $LT_RELEASE_IDENTIFIER" > "$LT_STATS_OUTPUT_FILE_CSV"
+echo "Library,bss,data,rodata,text,,STATIC RAM,FLASH"    >> "$LT_STATS_OUTPUT_FILE_CSV"
+echo ",,,,,,,,"                                          >> "$LT_STATS_OUTPUT_FILE_CSV"
+
+# the work
+do_section() {
+    section=$1
+    file=$2.codesize.txt
+    bytes=`grep -F "$section" "$LT_STATS_DIR"/"$file" | cut -f2 -d':' | tr -s " " | cut -f2 -d' ' | paste -sd+ - | bc`
+    if [ "$bytes" = "" ]; then
+      echo "0"
+    else
+      echo "$bytes"
+    fi
+}
+
+total_bss=0
+total_data=0
+total_rodata=0
+total_text=0
+total_staticram=0
+total_flash=0
+
+for lib in $LT_STATS_LIBS; do
+  bss=`do_section .bss $lib`
+  data=`do_section .data $lib`
+  rodata=`do_section .rodata $lib`
+  text=`do_section .text $lib`
+  staticram=`echo "$bss+$data" | bc`
+  flash=`echo "$data+$rodata+$text" | bc`
+  subtotal=`echo "$staticram+$flash" | bc`
+  if [ "$subtotal" != "0" ]; then
+    printf "%-36s. %9s %9s %9s %9s %19s %9s\n" $lib $bss $data $rodata $text $staticram $flash >> "$LT_STATS_OUTPUT_FILE"
+    echo "$lib,$bss,$data,$rodata,$text,,$staticram,$flash" >> "$LT_STATS_OUTPUT_FILE_CSV"
+    total_bss=`echo "$total_bss+$bss" | bc`
+    total_data=`echo "$total_data+$data" | bc`
+    total_rodata=`echo "$total_rodata+$rodata" | bc`
+    total_text=`echo "$total_text+$text" | bc`
+    total_staticram=`echo "$total_staticram+$staticram" | bc`
+    total_flash=`echo "$total_flash+$flash" | bc`
+  fi
+done
+
+echo "" >> "$LT_STATS_OUTPUT_FILE"
+printf "%-36s. %9s %9s %9s %9s %19s %9s\n" "TOTAL" $total_bss $total_data $total_rodata $total_text $total_staticram $total_flash >> "$LT_STATS_OUTPUT_FILE"
+echo ",,,,,,,," >> "$LT_STATS_OUTPUT_FILE_CSV"
+echo "TOTAL,$total_bss,$total_data,$total_rodata,$total_text,,$total_staticram,$total_flash" >> "$LT_STATS_OUTPUT_FILE_CSV"

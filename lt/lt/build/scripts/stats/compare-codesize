@@ -1,0 +1,231 @@
+#!/bin/sh
+################################################################################
+# compare-codesize: Compare two LTLIBRARY-CODESIZE-SUMMARY.csv files and
+#                   report per-library size deltas.
+#
+# Usage: compare-codesize <baseline.csv> <current.csv> [markdown-output-file]
+#
+# Reads two CSV files produced by genstats-summarize-codesize.
+# Outputs a formatted comparison table to stdout.
+# If a third argument is provided, writes a markdown-formatted table there.
+#
+# CSV format (produced by genstats-summarize-codesize):
+#   Line 1: "LTLIBRARY CODESIZE SUMMARY: <identifier>"
+#   Line 2: "Library,bss,data,rodata,text,,STATIC RAM,FLASH"
+#   Line 3: ",,,,,,,,"  (blank separator)
+#   Data:   "<LibName>,<bss>,<data>,<rodata>,<text>,,<staticram>,<flash>"
+#   ...
+#   Blank:  ",,,,,,,,"  (blank separator)
+#   Total:  "TOTAL,<bss>,<data>,<rodata>,<text>,,<staticram>,<flash>"
+#
+# Copyright 2026, Roku, Inc.  All rights reserved.
+################################################################################
+
+set -e
+
+if [ $# -lt 2 ]; then
+    echo "Usage: compare-codesize <baseline.csv> <current.csv> [markdown-output-file]" >&2
+    exit 1
+fi
+
+BASELINE_CSV="$1"
+CURRENT_CSV="$2"
+MARKDOWN_OUTPUT="${3:-}"
+
+if [ ! -f "$BASELINE_CSV" ]; then
+    echo "Error: Baseline CSV not found: $BASELINE_CSV" >&2
+    exit 1
+fi
+
+if [ ! -f "$CURRENT_CSV" ]; then
+    echo "Error: Current CSV not found: $CURRENT_CSV" >&2
+    exit 1
+fi
+
+# Parse a CSV file into "LibName bss data rodata text staticram flash" lines.
+# Skips header (lines 1-3), blank separator lines, and extracts data rows.
+parse_csv() {
+    csvfile="$1"
+    # Skip first 3 lines (title, header, blank separator).
+    # Then filter out blank separator lines (library field is empty) and emit data.
+    tail -n +4 "$csvfile" | while IFS=',' read -r lib bss data rodata text _empty staticram flash; do
+        # Skip blank separator lines (library field is empty)
+        if [ -z "$lib" ]; then
+            continue
+        fi
+        echo "$lib $bss $data $rodata $text $staticram $flash"
+    done
+}
+
+# Build associative data from baseline CSV (stored in temp file as "key value" pairs)
+BASELINE_TMPDIR=$(mktemp -d)
+CURRENT_TMPDIR=$(mktemp -d)
+trap 'rm -rf "$BASELINE_TMPDIR" "$CURRENT_TMPDIR"' EXIT
+
+parse_csv "$BASELINE_CSV" > "$BASELINE_TMPDIR/data.txt"
+parse_csv "$CURRENT_CSV" > "$CURRENT_TMPDIR/data.txt"
+
+# Collect all unique library names (preserving order: current first, then baseline-only)
+ALL_LIBS_FILE=$(mktemp)
+trap 'rm -rf "$BASELINE_TMPDIR" "$CURRENT_TMPDIR" "$ALL_LIBS_FILE"' EXIT
+{
+    awk '{print $1}' "$CURRENT_TMPDIR/data.txt"
+    awk '{print $1}' "$BASELINE_TMPDIR/data.txt"
+} | awk '!seen[$0]++' > "$ALL_LIBS_FILE"
+
+# Format a delta value: returns "+N" or "-N" or "+0"
+fmt_delta() {
+    val=$1
+    if [ "$val" -gt 0 ] 2>/dev/null; then
+        echo "+${val}"
+    elif [ "$val" -lt 0 ] 2>/dev/null; then
+        echo "${val}"
+    else
+        echo "+0"
+    fi
+}
+
+# Print header
+echo ""
+echo "============================== FIRMWARE SIZE COMPARISON =============================="
+echo ""
+printf "%-28s %10s %10s %10s %10s %10s %10s\n" "" "bss" "data" "rodata" "text" "SRAM" "FLASH"
+printf "%-28s %10s %10s %10s %10s %10s %10s\n" "Library" "(delta)" "(delta)" "(delta)" "(delta)" "(delta)" "(delta)"
+echo "--------------------------------------------------------------------------------------"
+
+# Start markdown output if requested
+if [ -n "$MARKDOWN_OUTPUT" ]; then
+    {
+        echo "| Library | bss | data | rodata | text | STATIC RAM | FLASH |"
+        echo "|---------|-----|------|--------|------|------------|-------|"
+    } > "$MARKDOWN_OUTPUT"
+fi
+
+has_changes=0
+removed_count=0
+total_libs=0
+
+while IFS= read -r lib; do
+    total_libs=$((total_libs + 1))
+    # Look up baseline values
+    b_line=$(awk -v lib="$lib" '$1 == lib' "$BASELINE_TMPDIR/data.txt")
+    c_line=$(awk -v lib="$lib" '$1 == lib' "$CURRENT_TMPDIR/data.txt")
+
+    if [ -z "$b_line" ]; then
+        # Library is new (not in baseline)
+        c_bss=$(echo "$c_line" | awk '{print $2}')
+        c_data=$(echo "$c_line" | awk '{print $3}')
+        c_rodata=$(echo "$c_line" | awk '{print $4}')
+        c_text=$(echo "$c_line" | awk '{print $5}')
+        c_sram=$(echo "$c_line" | awk '{print $6}')
+        c_flash=$(echo "$c_line" | awk '{print $7}')
+        printf "%-28s %10s %10s %10s %10s %10s %10s  [NEW]\n" \
+            "$lib" "$c_bss (+$c_bss)" "$c_data (+$c_data)" "$c_rodata (+$c_rodata)" \
+            "$c_text (+$c_text)" "$c_sram (+$c_sram)" "$c_flash (+$c_flash)"
+        if [ -n "$MARKDOWN_OUTPUT" ]; then
+            echo "| **${lib}** (NEW) | ${c_bss} (+${c_bss}) | ${c_data} (+${c_data}) | ${c_rodata} (+${c_rodata}) | ${c_text} (+${c_text}) | ${c_sram} (+${c_sram}) | ${c_flash} (+${c_flash}) |" >> "$MARKDOWN_OUTPUT"
+        fi
+        has_changes=1
+        continue
+    fi
+
+    if [ -z "$c_line" ]; then
+        # Library was removed
+        b_bss=$(echo "$b_line" | awk '{print $2}')
+        b_data=$(echo "$b_line" | awk '{print $3}')
+        b_rodata=$(echo "$b_line" | awk '{print $4}')
+        b_text=$(echo "$b_line" | awk '{print $5}')
+        b_sram=$(echo "$b_line" | awk '{print $6}')
+        b_flash=$(echo "$b_line" | awk '{print $7}')
+        printf "%-28s %10s %10s %10s %10s %10s %10s  [REMOVED]\n" \
+            "$lib" "0 (-$b_bss)" "0 (-$b_data)" "0 (-$b_rodata)" \
+            "0 (-$b_text)" "0 (-$b_sram)" "0 (-$b_flash)"
+        if [ -n "$MARKDOWN_OUTPUT" ]; then
+            echo "| **${lib}** (REMOVED) | 0 (-${b_bss}) | 0 (-${b_data}) | 0 (-${b_rodata}) | 0 (-${b_text}) | 0 (-${b_sram}) | 0 (-${b_flash}) |" >> "$MARKDOWN_OUTPUT"
+        fi
+        has_changes=1
+        removed_count=$((removed_count + 1))
+        continue
+    fi
+
+    # Both exist — compute deltas
+    b_bss=$(echo "$b_line" | awk '{print $2}')
+    b_data=$(echo "$b_line" | awk '{print $3}')
+    b_rodata=$(echo "$b_line" | awk '{print $4}')
+    b_text=$(echo "$b_line" | awk '{print $5}')
+    b_sram=$(echo "$b_line" | awk '{print $6}')
+    b_flash=$(echo "$b_line" | awk '{print $7}')
+
+    c_bss=$(echo "$c_line" | awk '{print $2}')
+    c_data=$(echo "$c_line" | awk '{print $3}')
+    c_rodata=$(echo "$c_line" | awk '{print $4}')
+    c_text=$(echo "$c_line" | awk '{print $5}')
+    c_sram=$(echo "$c_line" | awk '{print $6}')
+    c_flash=$(echo "$c_line" | awk '{print $7}')
+
+    d_bss=$((c_bss - b_bss))
+    d_data=$((c_data - b_data))
+    d_rodata=$((c_rodata - b_rodata))
+    d_text=$((c_text - b_text))
+    d_sram=$((c_sram - b_sram))
+    d_flash=$((c_flash - b_flash))
+
+    # Only print libraries with changes (or TOTAL)
+    if [ "$d_bss" -ne 0 ] || [ "$d_data" -ne 0 ] || [ "$d_rodata" -ne 0 ] || \
+       [ "$d_text" -ne 0 ] || [ "$d_sram" -ne 0 ] || [ "$d_flash" -ne 0 ] || [ "$lib" = "TOTAL" ]; then
+        fd_bss=$(fmt_delta $d_bss)
+        fd_data=$(fmt_delta $d_data)
+        fd_rodata=$(fmt_delta $d_rodata)
+        fd_text=$(fmt_delta $d_text)
+        fd_sram=$(fmt_delta $d_sram)
+        fd_flash=$(fmt_delta $d_flash)
+
+        if [ "$lib" = "TOTAL" ]; then
+            echo "--------------------------------------------------------------------------------------"
+        fi
+
+        printf "%-28s %10s %10s %10s %10s %10s %10s\n" \
+            "$lib" "$c_bss ($fd_bss)" "$c_data ($fd_data)" "$c_rodata ($fd_rodata)" \
+            "$c_text ($fd_text)" "$c_sram ($fd_sram)" "$c_flash ($fd_flash)"
+
+        if [ -n "$MARKDOWN_OUTPUT" ]; then
+            if [ "$lib" = "TOTAL" ]; then
+                echo "| **TOTAL** | **${c_bss}** (${fd_bss}) | **${c_data}** (${fd_data}) | **${c_rodata}** (${fd_rodata}) | **${c_text}** (${fd_text}) | **${c_sram}** (${fd_sram}) | **${c_flash}** (${fd_flash}) |" >> "$MARKDOWN_OUTPUT"
+            else
+                echo "| ${lib} | ${c_bss} (${fd_bss}) | ${c_data} (${fd_data}) | ${c_rodata} (${fd_rodata}) | ${c_text} (${fd_text}) | ${c_sram} (${fd_sram}) | ${c_flash} (${fd_flash}) |" >> "$MARKDOWN_OUTPUT"
+            fi
+        fi
+
+        if [ "$lib" != "TOTAL" ]; then
+            has_changes=1
+        fi
+    fi
+done < "$ALL_LIBS_FILE"
+
+echo ""
+
+if [ "$has_changes" -eq 0 ]; then
+    echo "No size changes detected."
+    if [ -n "$MARKDOWN_OUTPUT" ]; then
+        echo "" >> "$MARKDOWN_OUTPUT"
+        echo "_No size changes detected._" >> "$MARKDOWN_OUTPUT"
+    fi
+fi
+
+# Detect LTO scenario: if >50% of baseline libraries appear REMOVED, the per-library
+# comparison is unreliable because LTO merges translation units into anonymous ltrans
+# objects that the per-library stats tooling cannot attribute.  Warn accordingly.
+if [ "$total_libs" -gt 0 ] && [ "$removed_count" -gt 0 ]; then
+    removed_pct=$((removed_count * 100 / total_libs))
+    if [ "$removed_pct" -ge 50 ]; then
+        LTO_WARNING="⚠️ **Per-library comparison is unreliable.** ${removed_count}/${total_libs} libraries appear REMOVED. This typically indicates LTO (Link-Time Optimization) is enabled: GCC merges all translation units into anonymous ltrans objects at link time, so the per-library codesize stats (generated from pre-link .o files) no longer reflect the actual firmware content. **Use the firmware image size and ELF section totals above for accurate comparison.**"
+        echo ""
+        echo "WARNING: $LTO_WARNING"
+        if [ -n "$MARKDOWN_OUTPUT" ]; then
+            echo "" >> "$MARKDOWN_OUTPUT"
+            echo "$LTO_WARNING" >> "$MARKDOWN_OUTPUT"
+        fi
+    fi
+fi
+
+exit 0

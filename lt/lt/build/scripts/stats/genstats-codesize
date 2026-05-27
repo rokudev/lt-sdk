@@ -1,0 +1,68 @@
+#!/bin/sh -e
+################################################################################
+# genstats-codesize: script invoked by LT Master Makefile on each LTLibrary
+#                      obj sub-tree (passed into this script as $1) that
+#                      aggregates a list of all .o files found therein and
+#                      invokes codesize-symbolize, passing it the list,
+#                      and writing resulting output to the file passed into
+#                      into this script as $2, which will be overwritten.
+#
+# Copyright 2020-2026, Roku, Inc.  All rights reserved.
+################################################################################
+#
+#        usage:  genstats-codesize <lt-lib-obj-dir> <output-file>
+#
+# dependencies:  genstats-codesize requires the following programs to be present
+#                on build and developer machines:
+#                  .  /bin/sh (linked to either /bin/bash or /bin/dash)
+#                  .  basename
+#                  .  dirname
+#                  .  find
+#                  .  realpath
+#                  .  sort
+#
+
+# 1. calculate files the script will operate on
+if [ "" = "$LT_BUILD_DIR_SCRIPTS" ]; then
+    LT_CODESIZE_SYMBOLIZE=`realpath "$0"`
+    LT_CODESIZE_SYMBOLIZE="`dirname "$LT_CODESIZE_SYMBOLIZE"`"/codesize-symbolize
+else
+    LT_CODESIZE_SYMBOLIZE="$LT_BUILD_DIR_SCRIPTS"/stats/codesize-symbolize
+fi
+if [ "" = "$1" ]; then
+    LT_OBJ_DIR=.
+else
+    LT_OBJ_DIR="$1"
+fi
+
+LT_OBJ_DIR=`realpath "$LT_OBJ_DIR"`
+LT_LIBRARY_NAME=`basename "$LT_OBJ_DIR"`
+LT_STATS_CODESIZE_INTERMEDIATE_FILE="$LT_OBJ_DIR"/"$LT_LIBRARY_NAME".codesize.intermediate.txt
+if [ "" = "$2" ]; then
+    LT_STATS_CODESIZE_OUTPUT_FILE=./"$LT_LIBRARY_NAME".codesize.txt
+else
+    LT_STATS_CODESIZE_OUTPUT_FILE="$2"
+fi
+LT_STATS_CODESIZE_OUTPUT_FILE=`realpath "$LT_STATS_CODESIZE_OUTPUT_FILE" 2>/dev/null || echo "$LT_STATS_CODESIZE_OUTPUT_FILE"`
+
+#echo -n "              LT_CODESIZE_SYMBOLIZE = " && echo $LT_CODESIZE_SYMBOLIZE
+#echo -n "                         LT_OBJ_DIR = " && echo $LT_OBJ_DIR
+#echo -n "                    LT_LIBRARY_NAME = " && echo $LT_LIBRARY_NAME
+#echo -n "LT_STATS_CODESIZE_INTERMEDIATE_FILE = " && echo $LT_STATS_CODESIZE_INTERMEDIATE_FILE
+#echo -n "      LT_STATS_CODESIZE_OUTPUT_FILE = " && echo $LT_STATS_CODESIZE_OUTPUT_FILE
+
+# Step 2 - aggregate list of .o files and run symbolize, passing it the list over the aggregated data
+LT_STATS_CODESIZE_OBJ_FILES=`find "$LT_OBJ_DIR" -name "*.o" | grep -v /prebuilt-libobj/ | sort`
+
+# Step 3 - run symbolize with the aggregate list
+"$LT_CODESIZE_SYMBOLIZE" $LT_STATS_CODESIZE_OBJ_FILES  > "$LT_STATS_CODESIZE_INTERMEDIATE_FILE"
+
+# Step 4 - output results
+echo    ""                                               > "$LT_STATS_CODESIZE_OUTPUT_FILE"
+echo    "_____________________________"                 >> "$LT_STATS_CODESIZE_OUTPUT_FILE"
+echo    "___________________________ \\\\"              >> "$LT_STATS_CODESIZE_OUTPUT_FILE"
+echo -n "LTLIBRARY CODESIZE-STISTICS ----> LTLibrary: " >> "$LT_STATS_CODESIZE_OUTPUT_FILE"
+echo    "$LT_LIBRARY_NAME { $LT_RELEASE_IDENTIFIER }"   >> "$LT_STATS_CODESIZE_OUTPUT_FILE"
+echo    "____________________________//"                >> "$LT_STATS_CODESIZE_OUTPUT_FILE"
+echo    ""                                              >> "$LT_STATS_CODESIZE_OUTPUT_FILE"
+cat     "$LT_STATS_CODESIZE_INTERMEDIATE_FILE"          >> "$LT_STATS_CODESIZE_OUTPUT_FILE"

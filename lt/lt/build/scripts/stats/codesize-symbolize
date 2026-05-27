@@ -1,0 +1,77 @@
+#!/bin/sh -e
+################################################################################
+# codesize-symbolize:
+#   indirectly invoked by LT Master makefile via script genstats-codesize for
+#   examining, summing and reporting symbol sizes.
+#
+#
+# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+# If a copy of the MPL was not distributed with this file, you can obtain one at
+# https://mozilla.org/MPL/2.0/.
+#
+# Copyright 2020, Roku, Inc.  All rights reserved.
+################################################################################
+#
+#        usage:  codesize-symbolize <list_of_dot_o_files>
+#
+# dependencies:  codesize-symbolize requires the following programs to be
+#                present on developer and build machines:
+#
+#                  .  /bin/sh (linked to either /bin/bash or /bin/dash)
+#                  .  awk
+#                  .  cut
+#                  .  grep
+#                  .  sed
+#                  .  size
+#                  .  tr
+#
+SIZE_EXE="$LT_SIZE"
+if [ "$SIZE_EXE" = "" ]; then
+    SIZE_EXE=size
+fi
+
+print_header() {
+    printf " _____________\n"
+    printf "/%s\n" "$1"
+}
+
+print_columns() {
+    printf "%14s %6s  %s\n" "$1" "$2" "$3"
+}
+
+print_header  "SYMBOL TOTALS: bytes /file (all symbols)"
+print_columns "" "_____" "____"
+print_columns "" "bytes" "file"
+
+TOTAL_SIZE="0"
+for FILE in "$@"
+do
+  TSIZE=`$SIZE_EXE -t "$FILE"`
+  TSIZE=`echo "$TSIZE" | grep "(TOTALS)" | tr -d " " | tr -s "\t" " " | cut -f4 -d ' '`
+  TOTAL_SIZE=$((TOTAL_SIZE + TSIZE))
+  print_columns "" "$TSIZE" "$FILE"
+done
+echo
+print_columns "TOTAL" "$TOTAL_SIZE" ""
+echo "\_____________"
+
+for FILE in "$@"
+do
+  TSIZE=`$SIZE_EXE -t "$FILE"`
+  TSIZE=`echo "$TSIZE" | grep "(TOTALS)" | tr -d " " | tr -s "\t" " " | cut -f4 -d ' '`
+  echo " _____________"
+  echo "/SYMBOL DETAIL: $FILE ($TSIZE bytes)"
+  echo "" | awk '{printf "%14s %6s  %s\n", "_______", "_____", "______"}'
+  echo "" | awk '{printf "%14s %6s  %s\n", "section", "bytes", "symbol"}'
+  $SIZE_EXE -A "$FILE" | tr -s " " | cut -f1,2 -d ' ' | grep -e "\.text\." -e "\.data\." -e "\.sdata\." -e "\.rodata\." -e "\.rodata " -e "\.bss\." -e "\.sbss\." | sed "s/^\.rodata /\.rodata.COLLATED /" | sed "s/^\.text\.startup\./\.text_startup: /" | sed "s/^\.text\./\.text: /" | sed "s/^\.text_startup: /\.text\.startup: /" | sed "s/^\.data\./\.data: /" | sed "s/^\.sdata\./\.data: /" | sed "s/^\.rodata\./\.rodata: /" | sed "s/^\.bss\./\.bss: /" | sed "s/^\.sbss\./\.bss: /" | sed "s/\.str1.4/ \.str1.4/" | sed "s/_GLOBAL__sub_I_/global-constructor near /" | c++filt | sed "s/ \.str1.4/\.str1.4/" | sort | awk '{printf "%14s %6s  %s", $1, $NF,$2; for(i=3;i<NF;i++) printf FS$i; print NL }'
+  echo "$TSIZE" | awk '{printf "%14s %6s  bytes\n", "TOTAL SIZE:", $1}'
+  echo "\_____________"
+done
+echo " _____________"
+echo "/WORK COMPLETE, CAPTAIN"
+echo "$TOTAL_SIZE" | awk '{printf "%14s %6s total bytes in:\n", "", $1}'
+for FILE in "$@"
+do
+  echo $FILE | awk '{printf "%14s %6s  %s\n", "", "", $1}'
+done
+echo "_______________________"

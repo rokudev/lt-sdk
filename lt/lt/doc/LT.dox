@@ -1,0 +1,149 @@
+/*!
+<pre style="margin-top: -0.75em; line-height: 1.2em; letter-spacing: -.025em; font-family: monospace; font-size: 1.4em; font-weight: 600">
+
+&nbsp;      ____          __
+&nbsp;     / __ \ ____   / /__ __  __   __ _______
+&nbsp;    / /_/ // __ \ / //_// / / /  / //__  __/
+&nbsp;   / _, _// /_/ // ,<  / /_/ /  / /_  / /
+&nbsp;  /_/ |_| \\____//_/|_\\ \\__,_/  /____//_/
+</pre>
+<div style="margin-left: 21.225em; font-style: italic; margin-top: -1.3em; margin-bottom: 0.25em; font-size: 1em">
+Operating System
+</div>
+
+<div style="margin-left: 1.75em; font-size: 1.1em; margin-bottom: 2em">
+Copyright 2021, Roku, Inc.  All Rights Reserved.
+</div>
+
+@mainpage           Roku %LT Operating System API Reference
+
+@section intro Introduction
+
+<p>Roku %LT is a new operating system for tiny embedded devices.</p>
+<p style="bottom-margin: 0em">Roku %LT supports:</p>
+<ol style="margin-top: -1.1em">
+<li>a minimum processor configuration of 100Mhz</li>
+<li>a minimum RAM configuration of 64KiB (65,536 bytes)</li>
+<li>hosting on top of full-featured devices and operating systems, for example
+Roku OS devices, Windows and iOS, and game consoles.</li>
+</ol>
+
+<p>The %LT Operating System is grouped into <b>%LT Libraries</b>.<br>
+This is API reference documentation for the libraries that
+comprise the <b>Standard %LT Operating System Distribution.</b></p>
+
+@section ltlibraries Standard LT Operating System Distribution
+
+<table>
+ <tr style="text-align:left">
+   <th colspan=3 style="background-color: #662D91">Core</th>
+ </tr>
+ <tr style="text-align:left">
+   <th style="width: 15%">Library</th>
+   <th style="width: 35%">Include</th>
+   <th style="width: 50%">Description</th>
+ </tr>
+ <tr>
+   <td>LT_stdlib</td>
+   <td><code>\#include <lt/core/LT_stdlib.h></code></td>
+   <td>Description Needed</td>
+ </tr>
+<tr>
+   <td>LTArray</td>
+   <td><code>\#include <lt/core/LTArray.h></code></td>
+   <td>Description Needed</td>
+ </tr>
+<tr>
+   <td>LTAsyncAPI</td>
+   <td><code>\#include <lt/core/LTAsyncAPI.h></code></td>
+   <td>Description Needed</td>
+ </tr>
+</table>
+
+@section overview Overview
+
+<b>%LT Libraries</b><br>
+All software that runs on %LT, whether OS components or product specific
+software, is packaged and delivered in <i>%LT Libraries</i> which are dynamically
+loadable libraries which each export 1 and only 1 <i>library root interface</i> which is a
+C++ pure virtual class that acts as a factory for other objects exported from
+the library.
+
+The foundational library of the %LT Operating system is the %LTCore library which
+is used to %Open() additional libraries.  The handle to the %LTCore library is
+always available with a call to the static function @c LT_GetCore().
+
+<b>Self Containment and Platform Independence</b><br>
+%LT as an operating system is _self-contained_.  This means that it does not
+have any external dependencies outside of itself.
+<br>
+<br>
+The purpose of self-containment is to:
+<ul style="margin-top: -1em">
+    <li>enable %LT to be fully <b>platform-independent</b>, meaning it may be brought up on
+         other systems with a straight recompile, using <b>zero</b> conditional compilation \#ifdefs.</li>
+    <li> enable %LT to be deterministically <b>maximally compatible</b> with severely
+         constrained secure IoT environments
+         such as the Microsoft IoT Azure Sphere Operating System/Kernel where only proprietary
+         Azure Sphere APIs are accessible.</li></ul>
+
+The property of self-containment is enacted via adherence to these constraints:
+<ul style="margin-top: -1em">
+<li>%LT Library public API files may only \#include:<ol>
+    <li>other header files that are part of its own Library Public API</li>
+    <li>public API header files from any other %LT library</li></ol></li>
+<li>%LT Library implementation files may only \#include:<ol>
+    <li>header files internal to its own implementation</li>
+    <li>header files of its own public API</li>
+    <li>public API header files from any other %LT library</li></ol></li></ul>
+
+Any library that follows these rules is, by %LT's definition, _platform independent_ and
+will operate deterministically on all platforms with a simple recompile.
+
+As a concrete and somewhat non-obvious example of self-containment, %LT Libraries <b>may not \#include standard library header files</b> such as <stdio.h> nor operating system header files such as <sys/socket.h>.  %LTCore abstracts common stdio functions and the %LTNetwork library provides access to sockets.
+
+<b>Device Drivers and Third Party Libraries</b>
+
+<ul style="margin-top: -1em">
+    <li>Driver libraries, by necessity, must access platform specfic functionality.
+        While their interfaces are platform independent and must remain so, their implementations
+        are permitted to \#include device specific functionality, but only by necessity
+        as required.</li>
+    <li>Third-party library use is strongly discouraged. Any incorporation of a third-party
+        library must be pre-approved by the %LT Architecture Committee.  %Third-party libraries
+        are incorporated as platform independent %LT libraries (like Device libraries) that thunk
+        into platform dependent third party %LT Driver libraries.  It is these %LT Driver Libraries
+        that access the third party library api directly.  In this manner dependency creep is
+        isolated when incorporating third-party libraries.  Roku strives to eschew third party
+        library support in %LT in favor of clean room implementations.
+    <li>The %LTCore library, which abstracts the OS kernel, has multiple implementations which,
+        by design, \#include platform specific functionality; in effect, %LTCore exists to enable
+        self-containment.</li>>
+    <li><b>No implementation of <i>any</i> %LT library</b> shall \#include any header file
+        that is not part of the collection of public %LT Library API header files, expect for
+        LTDriver libraries.</li>
+</ul>
+
+
+@section starting Getting Started
+
+<ul><li>class LT illustrates how to obtain the %LTCore library interface.</li>
+<li>class LTCore is the library root interface of the %LTCore library and is the starting point for
+creating operating system objects.</li></ul>
+
+
+@class LT LT.h <lt/LT.h>
+@brief interface for initialization and termination of the %LT Operating System, and for access to the LTCore library
+
+<a href="#themeat"><b>Skip the description</b></a>
+
+The %LT Operating System is started with a call to LT::Run() which is typically only called once in a device that runs a real-time operating system.  %Run() initializes the LTCore library and makes %LT::GetCore() available globally.
+
+LT::Terminate() may be called to terminate the LT Operating System session.  The session is terminated by sending a terminate message to all running threads and waiting until all threads have terminated..  This is typically never performed when running on a device with a real-time operating system as they are typically designed to never exit.
+
+LT::GetCore() can be called from any library to return a pointer
+to the LTCore instance, allowing access to LTCore services.
+
+@see LTCore
+
+*/

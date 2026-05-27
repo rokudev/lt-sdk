@@ -1,0 +1,57 @@
+#!/bin/sh -e
+################################################################################
+# genstats-summarize-stackusage: script invoked by LT Master Makefile for
+#                                stats-summmarize target.  The current build's
+#                                stats/ directory is passed into this script as $1
+#                                and this script aggregates section data across the
+#                                *.stackusage.txt files therein and writes the
+#                                following two output files into the same
+#                                stats/ directory:
+#                                  ltlibrary-stackusage-summary.txt
+#                                  ltlibrary-stackusage-summary.csv
+#
+# Copyright 2021-2026, Roku, Inc.  All rights reserved.
+################################################################################
+#
+#        usage:  genstats-summarize-stackusage <lt-lib-stats-dir>
+#
+# dependencies:  genstats-codesize-summarize requires the following programs to
+#                be present on build and developer machines:
+#                  .  /bin/sh (linked to either /bin/bash or /bin/dash)
+#                  .  realpath
+#                  .  cut
+#                  .  paste
+#                  .  tr
+#                  .  bc
+#                  .  grep
+#                  .  sort
+#                  .  printf
+#
+
+# find the stats directory, read the libs and set the output file names
+if [ "" = "$1" ]; then
+    LT_STATS_DIR=.
+else
+    LT_STATS_DIR="$1"
+fi
+LT_STATS_DIR=`realpath "$LT_STATS_DIR"`
+
+if [ "" = "$LT_BUILD_VERSION" ]; then
+    LT_RELEASE_IDENTIFIER=`dirname "$LT_STATS_DIR"`
+else
+    LT_RELEASE_IDENTIFIER=$LT_BUILD_VERSION
+fi
+LT_STATS_OUTPUT_FILE="$LT_STATS_DIR"/LTLIBRARY-STACKUSAGE-SUMMARY.txt
+LT_STATS_OUTPUT_FILE_CSV="$LT_STATS_DIR"/LTLIBRARY-STACKUSAGE-SUMMARY.csv
+LT_STATS_OUTPUT_FILE=`realpath "$LT_STATS_OUTPUT_FILE" 2>/dev/null || echo "$LT_STATS_OUTPUT_FILE"`
+LT_STATS_OUTPUT_FILE_CSV=`realpath "$LT_STATS_OUTPUT_FILE_CSV" 2>/dev/null || echo "$LT_STATS_OUTPUT_FILE_CSV"`
+
+#echo -n "              LT_STATS_DIR = " && echo $LT_STATS_DIR
+#echo -n "      LT_STATS_OUTPUT_FILE = " && echo $LT_STATS_OUTPUT_FILE
+#echo -n "  LT_STATS_OUTPUT_FILE_CSV = " && echo $LT_STATS_OUTPUT_FILE_CSV
+#echo -n "             LT_STATS_LIBS = " && echo $LT_STATS_LIBS
+
+# echo out the preamble
+echo "LTLIBRARY STACKUSAGE SUMMARY: $LT_RELEASE_IDENTIFIER" > "$LT_STATS_OUTPUT_FILE"
+echo "" >> "$LT_STATS_OUTPUT_FILE"
+cat "$LT_STATS_DIR"/*.stackusage.txt | sed -e 's/^[ \t]*//' | grep -Ev "____|LTLIBRARY|^[[:space:]]*$" | sort -gr >> "$LT_STATS_OUTPUT_FILE"

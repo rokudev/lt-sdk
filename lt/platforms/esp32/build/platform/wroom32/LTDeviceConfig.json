@@ -1,0 +1,43 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+{
+ "config":{
+        "net":{ "transport": [ { "lib": "LTDriverNetTransportLwipWiFi" } ] },
+     "device":[
+                { "lib": "LTDeviceConfig"                                                                                                            },
+                { "lib": "LTDeviceBle",           "driver": [ {   "lib": "CommonDriverBleNimble"                                                     } ] },
+                { "lib": "LTDeviceBleController", "driver": [ {   "lib": "Esp32DriverBleController"                                              } ] },
+                { "lib": "LTDeviceCrypto",        "driver": [ {   "lib": "Esp32DriverCrypto"                                                     } ] },
+                { "lib": "LTDeviceFlash",         "driver": [ {   "lib": "Esp32DriverFlash"                                                      } ] },
+                { "lib": "LTDeviceLED",           "driver": [ {   "lib": "Esp32DriverLED",
+                                                                "units": [ { "name":"status",     "pin":"led", "active":"low" } ]                } ] },
+                { "lib": "LTDevicePins",          "driver": [ {   "lib": "Esp32DriverPins",
+                                                                "units": [ { "name":"led",       "gpio":19 },
+                                                                           { "name":"relay",     "gpio":16 },
+                                                                           { "name":"button",    "gpio":15 } ]                                   } ] },
+                { "lib": "LTDeviceOta",           "driver": [ {   "lib": "LTDriverPingPongOta"                                                   } ] },
+                { "lib": "LTDevicePushButton",    "driver": [ {   "lib": "Esp32DriverPushButton",
+                                                                "units": [ { "name":"sidebutton", "pin":"button", "active":"low", "pull":"none" } ] } ] },
+
+                { "lib": "LTDeviceWatchdog",
+                  "uts": "pass", /* this variable "uts" is short for "unit test string" and is present for UnitTestLTDeviceConfig */
+                  "uti": 42,     /* this variable "uti" is short for "unit test integer" and is present for UnitTestLTDeviceConfig */
+                                                  "driver": [ {   "lib": "Esp32DriverWatchdog",
+                                                                  "stu": "ssap", /* this variable "stu" is present for UnitTestLTDeviceConfig */
+                                                                  "itu": 24      /* this variable "itu" is present for UnitTestLTDeviceConfig */ } ] },
+
+                { "lib": "LTDeviceWiFi",          "driver": [ {   "lib": "Esp32DriverWiFi"                                                       } ] },
+                { "lib": "LTDeviceIdentity",      "identity": { "manufacturer":"Roku, Inc.", "model":"None", "type":"None" },
+                                                  "driver": [ {   "lib": "Esp32DriverIdentity",
+                                                               "ltatDigest": "\b742cc9a07a2770943e9acc3f601a2839b661eba809acfd7f286b492b264aebd3"  } ] },
+
+                { "lib": "LTThirdPartyLWIP"                                                                                                          },
+                { "lib": "Esp32_LTOSAdapter"                                                                                                         }
+              ]
+          }
+}

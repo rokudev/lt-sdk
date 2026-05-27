@@ -1,0 +1,71 @@
+################################################################################
+# lt/tools/common - The LTBuildTool common build system
+#
+#
+# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+# If a copy of the MPL was not distributed with this file, you can obtain one at
+# https://mozilla.org/MPL/2.0/.
+#
+# Copyright 2023, Roku, Inc.  All rights reserved.
+################################################################################
+#
+# DESCRIPTION
+#    The LT Master Make system builds a few host program build tools that it
+#    uses for various purposes in the build, most notably for firmware image
+#    preparation and manipulation.  
+#
+#    To create a new build tool that is automatically incorporated into the
+#    LT master makefile build process, just make a subdirectory under
+#    ~/git/lt/tools with the name of your tool and inside that
+#    subdir make a build/ subdir and place a file called LTBuildTool.mk
+#    inside.  This will make the master makefile notice your tool
+#    and automatically build it by invoking your LTBuildTool.mk makefile.
+#
+#    Your LTBuildTool.mk file can do anything as long as it deposits the
+#    resulting tool program with the same name as the subdir of the tool
+#    into the $(LT_TARGET_DIR_BUILDTOOLS)/bin directory.
+#
+#    All of the standard LT master makefile variables are available to
+#    your LTBuldTool.mk makefile.
+#
+#    The LTBuildTool.mk build system also supports invocation standalone
+#    from the LT master makefile which may aid in development and testing
+#    of your LTBuildTool.mk file.  In the case of standalone invocation
+#    only LT_TARGET_ROOT must be defined in your environment; the rest
+#    of the required variables, normally provisioned by the LT Master
+#    Makefile are automatically derived.
+#
+#    Example tool: creating the arbolator tool
+#    arbolator source dir:  ~/git/lt/tools/arbolator
+#    arbolator makefile:    ~/git/lt/tools/arbolator/build/LTBuildTool.mk
+#
+#    arbolator makefile contents:
+#    ____________________________________
+#
+#      include ../../common/build/LTBuildTool-Preamble.mk
+#         LT_TOOL_SOURCE_SUBDIRS := source
+#         LT_TOOL_SOURCE_FILES   := source/Arbolate.c
+#         LT_TOOL_SOURCE_FILES   += source/JsonTree.c
+#      include ../../common/build/LTBuildTool-Postamble.mk
+#    ____________________________________
+# 
+#
+#    How to build the arbolator with the master makefile:
+#      Nothing to do, completely automatic.
+#
+#    How to build the arbolator without the master makefile:
+#      % cd ~/git/lt/tools/arbolator/build
+#      % LT_TARGET_ROOT=/tmp/test make -f LTBuildTool.mk
+#         or
+#      % LT_TARGET_ROOT=/tmp/test make -C ~/git/lt/tools/arbolator/build -f LTBuildTool.mk
+#   _______________________________
+#
+#    Note: The LTBuildTool-Preamble.mk makefiles defines many useful variables to aid you in
+#          the construction of your makefile.  It only defines variables and does not create
+#          any makefile targets so it is always completely safe to include in your
+#          LTBuildTool.mk, even if your program's build process is not simple like the arbolator's.
+#
+#          The LTBuildTool-Postamble.mk file defines makefile targets to automatically build
+#          the tool when included into the LTBuildTool.mk file.
+#
+################################################################################

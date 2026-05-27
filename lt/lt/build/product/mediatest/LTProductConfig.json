@@ -1,0 +1,39 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+{"config":{"product":{
+                      "genesis":{ "lib": "LTSystemShell"},
+                        "build":{"libs":["LTMediaMotionDetection",
+                                         "LTNetCore",
+                                         "LTNetEcho",
+                                         "LTNetMonitor",
+                                         "LTNetTls",
+                                         "LTNetDtls",
+                                         "LTNetIperf3",
+                                         "LTNetSpeed",
+                                         "LTNetX509",
+                                         "LTShellNet",
+                                         "LTShellTimeZone",
+                                         "LTShellWiFi",
+                                         "LTSoftwareCrypto",
+                                         "LTSystemCrashdump",
+                                         "LTSystemCrypto",
+                                         "LTSystemFS",
+                                         "LTSystemLogger",
+                                         "LTSystemSettings",
+                                         "LTSystemShell",
+                                         "LTSystemTimeZone",
+                                         "LTUtilityBuffer",
+                                         "LTUtilityByteOps",
+                                         "LTUtilityJsonParser",
+                                         "LTUtilityIPAddress",
+                                         "LTUtilityMacAddress",
+                                         "LTUtilityTokenizer",
+                                         "LTUtilityMessagePack",
+                                         "LTMediaMP4",
+                                         "ExampleMediaMP4"
+]         }          }          }       }

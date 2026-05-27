@@ -1,0 +1,26 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+{"config":{"device":[       {"lib":"LTDeviceConfig"},
+                            {"lib":"LTDeviceBle"},
+                            {"lib":"LTDeviceControllerBle"},
+                            {"lib":"LTDeviceCrypto",    "driver":[{"lib":"LinuxDriverCrypto"}]},
+                            {"lib":"LTDeviceFlash",     "driver":[{"lib":"LinuxDriverFlash"}]},
+                            {"lib":"LTDeviceI2C"},
+                            {"lib":"LTDeviceLED"},
+                            {"lib":"LTDeviceMedia"},
+                            {"lib":"LTDevicePins"},
+                            {"lib":"LTDevicePIR"},
+                            {"lib":"LTDevicePotentiometer"},
+                            {"lib":"LTDevicePushButton","driver":[{"lib":"MockLinuxDriverPushButton"}]},
+                            {"lib":"LTDeviceRotaryEncoder"},
+                            {"lib":"LTDeviceSlider"},
+                            {"lib":"LTDeviceSPI"},
+                            {"lib":"LTDeviceThermometer"},
+                            {"lib":"LTDeviceWatchdog",  "driver":[{"lib":"MockLinuxDriverWatchdog"}]},
+                            {"lib":"LTDeviceWiFi",      "driver":[{"lib":"LinuxDriverWiFi"}]}],
+         "net":{"transport":[{"lib":"LinuxDriverNetIp"}]} }}

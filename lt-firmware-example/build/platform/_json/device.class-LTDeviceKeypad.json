@@ -1,0 +1,17 @@
+{ "class": "LTDeviceKeypad",
+   "unit": [
+             {    "name": "KEYPAD0",
+                "driver": "ESP32DriverKeypad",
+                "config": { 
+                           "row_pins":[ 12, 18, 24, 21 ],
+                           "col_pins":[ 23, 29, 27, 26, 28, 20 ],
+                           "key_map" :[
+                                       [ "Back",    "Power",   "Left",     "Invalid",  "VolumeDown", "VolumeMute" ],
+                                       [ "Up",      "Home",    "OK",       "Down",     "VolumeUp",    "Right"     ],
+                                       [ "Search",  "Play",    "Replay",   "Reverse",  "Forward",     "Info"      ],
+                                       [ "Invalid", "Invalid", "PartnerC", "PartnerA", "PartnerD",    "PartnerB"  ] ]
+                           }
+             }
+           ]
+ }
+

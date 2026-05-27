@@ -1,0 +1,89 @@
+/**
+@file LTTypes.h
+This file defines the core type system that enables platform independence for
+the LT system of modules.  The types defined herein do not depend on any other
+header files, and enable LT modules to target arbitrary platforms with a
+simple recompile, free from code modification and completely free from
+conditional compilation, independent of hardware, operating system (including
+RTOS), and compiler toolchain.  This is accomplished by narrowing the set of
+allowable types to the types defined herein, and to restrict the use of
+conditional compilation to this file exclusively.
+
+LT modules, in order to assure platform independence, must only
+use the types defined herein, or aggregates thereof, and are restricted
+from using preprocessor conditional compilation directives except
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #ifdef DEBUG
+    #ifdef_DEBUG
+    #ifdef NDEBUG
+    #ifdef RELEASE
+    #if 0
+    #if 1
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+and must not include any system header files, but instead must use the LTCore
+library for access to an idealized and minimized set of an efficient, platform
+independent, (abstracted), high performance set of system services.  For clarity
+this means inclusions such as
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #include <stdio.h>
+    #include <sys/socket.h>
+    #include <memory>
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+are prohibited.
+
+This is an absolute requirement for all header files of all public interfaces
+of lt libraries (all files in the (p4_root)/lt/include/lt/ subtree), and a 99.99%
+requirement of all source files in the (p4_root)/lt/source/lt/ subtree.  Narrow exceptions
+are granted for LT libraries that are hardware drivers and must reference hardware
+specific includes, but not in the driver library public interface, only in the
+driver library implementation.  The treatment (usage model) of open source
+software in LT is an open design question, namely if, when,
+and how to leverage open source software such that the LT property of self-containment
+of dependencies is preserved.  Two approaches for third party software have been
+contemplated - (a) wrap open source library interfaces in an LT library and treat
+that LT library as a 'driver', e.g. a JSONParser driver, a CURL driver, etc.
+Approach (b) is to only consider open source with MIT style licenses and take what
+is needed from the library (not the whole library) and and incorporate that
+taken functionality into an LT library where the external dependencies of the cribbed
+source code have been removed, i.e. 'port' that subset of source code to LT so that
+it now satisfies the self-containment dependency requirement.
+
+Following is a table of LT 'intrinsic' types along with permitted use, chosen carefully
+to fulfill the requirements of LT Platform Independence. Some of the 'intrinsic' types
+are typedef'd herein; others are C language intrisic types.  For brevity, the integer type names
+u8, u16, u32, u64, s8, s16, s32, and s64 are preferred over
+uint8_t, uint16_t uint32_t, uint64_t, int8_t, int16_t, int32_t and int64_t
+and are defined in the same way that stdint.h defines them so they are type compatible.
+
+ TABLE OF LT 'INTRINSIC' TYPES
+
+  Type				           | Permitted Use
+-------------------------------|-----------------------------------------------------------------------------------------
+  u8                           | an unsigned 8  bit quantity
+  u16                          | an unsigned 16 bit quantity
+  u16                          | an unsigned 32 bit quantity
+  u64                          | an unsigned 64 bit quantity
+  s8                           | a  signed   8  bit quantity
+  s16                          | a  signed   16 bit quantity
+  s32                          | a  signed   32 bit quantity
+  s64                          | a  signed   64 bit quantity
+  char                         | a  character
+  const char                   | a  constant character
+  char *                       | a  modifiable c string
+  const char *                 | a  read-only c string
+  void                         | when function returns no value
+  void *                       | an opaque pointer or handle
+  int                          | only permitted in ILTKernel.h c std lib emulation functions
+  LT_SIZE                      | platform independent size_t equivalent; should only be used for overloading operator new
+
+  Pointers in function args          | Semantic Use
+-------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------
+  func(const u32 * pNum, u32 nCount) | When pNum supplies a vector of nCount elements that will not be modified within the function
+  func(u32 * pNumsToSet, u32 nCount) | When pNumsToSet supplies the start address of a vector of at least nCount elements, where 0 to nCount elements may be modified within the function
+
+Platform independence also requires that the aforementioned types
+are only permitted for use as function arguments, local variables,
+class and structure member variables, and static variables at file
+scope.  Global variables are not permitted.
+
+*/

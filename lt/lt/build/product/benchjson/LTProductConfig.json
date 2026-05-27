@@ -1,0 +1,27 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+/*******************************************************************************
+ * lt/build/product/benchjson/LTProductConfig.json
+ *                       LT product configuration that boots into json benchmark
+ *
+ * Copyright 2023, Roku, Inc.  All Rights Reserved
+ *******************************************************************************/
+
+{"config":{"product":{
+                      "genesis":{ "lib":  "ExampleBenchJson" },
+                        "build":{"libs": ["ExampleBenchJson",
+                                          "LTUtilityJsonParser"
+									  	 ]
+}         }          }          }
+
+/*******************************************************************************
+ *  LOG
+ *******************************************************************************
+ *  06-Mar-23   augustus    created
+ */
+

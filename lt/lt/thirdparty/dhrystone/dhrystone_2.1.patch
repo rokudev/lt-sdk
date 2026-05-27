@@ -1,0 +1,290 @@
+diff -Nur dhrystone_2.1/dhry_1.c dhrystone_2.1.patched/dhry_1.c
+--- dhrystone_2.1/dhry_1.c	2021-03-06 00:32:00.000000000 -0800
++++ dhrystone_2.1.patched/dhry_1.c	2021-03-06 18:54:25.000000000 -0800
+@@ -28,7 +28,18 @@
+ int             Arr_1_Glob [50];
+ int             Arr_2_Glob [50] [50];
+
++#ifdef DHRY_ROKULT
++
++#include "include/libdhry_2.1.h"
++#define malloc lt_malloc
++#define printf(...) pPrintFunction(pPrintFunctionClientData, __VA_ARGS__)
++
++#else
++
+ extern char     *malloc ();
++
++#endif /* #ifdef DHRY_ROKULT */
++
+ Enumeration     Func_1 ();
+   /* forward declaration necessary since Enumeration may not simply be int */
+
+@@ -41,8 +52,15 @@
+         Boolean Reg = true;
+ #endif
+
++
+ /* variables for time measurement: */
+
++#ifdef DHRY_ROKULT
++
++LTTime Begin_Time_NS, End_Time_NS;
++
++#else
++
+ #ifdef TIMES
+ struct tms      time_info;
+ extern  int     times ();
+@@ -57,6 +75,8 @@
+                 /* Measurements should last at least 2 seconds */
+ #endif
+
++#endif /* #ifdef DHRY_ROKULT */
++
+ long            Begin_Time,
+                 End_Time,
+                 User_Time;
+@@ -65,8 +85,14 @@
+
+ /* end of variables for time measurement */
+
+-
++#ifdef DHRY_ROKULT
++float run_dhrystone_benchmark(
++         int nNumberOfRuns,
++         Dhrystone_PrintFunction * pPrintFunction,
++         void * pPrintFunctionClientData)
++#else
+ main ()
++#endif /* #ifdef DHRY_ROKULT */
+ /*****/
+
+   /* main program, corresponds to procedures        */
+@@ -114,6 +140,10 @@
+     printf ("Program compiled without 'register' attribute\n");
+     printf ("\n");
+   }
++
++#ifdef DHRY_ROKULT
++  Number_Of_Runs = nNumberOfRuns;
++#else
+   printf ("Please give the number of runs through the benchmark: ");
+   {
+     int n;
+@@ -121,12 +151,19 @@
+     Number_Of_Runs = n;
+   }
+   printf ("\n");
++#endif /* #ifdef DHRY_ROKULT */
+
+   printf ("Execution starts, %d runs through Dhrystone\n", Number_Of_Runs);
+
+   /***************/
+   /* Start timer */
+   /***************/
++
++#ifdef DHRY_ROKULT
++
++Begin_Time_NS = LT_GetCore()->GetKernelTime();
++
++#else
+
+ #ifdef TIMES
+   times (&time_info);
+@@ -136,6 +173,8 @@
+   Begin_Time = time ( (long *) 0);
+ #endif
+
++#endif /* #ifdef DHRY_ROKULT */
++
+   for (Run_Index = 1; Run_Index <= Number_Of_Runs; ++Run_Index)
+   {
+
+@@ -185,7 +224,13 @@
+   /**************/
+   /* Stop timer */
+   /**************/
+-
++
++#ifdef DHRY_ROKULT
++
++    End_Time_NS = LT_GetCore()->GetKernelTime();
++
++#else
++
+ #ifdef TIMES
+   times (&time_info);
+   End_Time = (long) time_info.tms_utime;
+@@ -194,6 +239,8 @@
+   End_Time = time ( (long *) 0);
+ #endif
+
++#endif /* #ifndef DHRY_ROKULT */
++
+   printf ("Execution ends\n");
+   printf ("\n");
+   printf ("Final values of the variables used in the benchmark:\n");
+@@ -247,7 +294,51 @@
+   printf ("        should be:   DHRYSTONE PROGRAM, 2'ND STRING\n");
+   printf ("\n");
+
+-  User_Time = End_Time - Begin_Time;
++#ifdef DHRY_ROKULT
++
++    lt_free(Next_Ptr_Glob);
++    lt_free(Ptr_Glob);
++
++    long double Dhrystone_MIPS = 0;
++    long double User_Time_NS = LTTime_GetNanoseconds(End_Time_NS) - LTTime_GetNanoseconds(Begin_Time_NS);
++    long double User_Time_US = User_Time_NS / 1000;
++    long double User_Time_MS = User_Time_US / 1000;
++    long double User_Time_S = User_Time_MS / 1000;
++
++    printf ("Elapsed Time:\n");
++    printf ("%16.2f NS\n", (float)User_Time_NS);
++    printf ("%16.2f US\n", (float)User_Time_US);
++    printf ("%16.2f MS\n", (float)User_Time_MS);
++    printf ("%16.2f  S\n", (float)User_Time_S);
++    printf ("\n");
++
++    if (User_Time_S < 2.0)
++    {
++      printf ("Measured time too small (< 2.0 S) to obtain meaningful results\n");
++      printf ("Please increase number of runs\n");
++      printf ("\n"); return 0.0;
++    }
++    else
++    {
++      long double Dhrystones_Per_Second = 1000000000;
++      long double Microseconds = User_Time_US / (long double)Number_Of_Runs;
++      Dhrystones_Per_Second *= (long double)Number_Of_Runs;
++      Dhrystones_Per_Second /= User_Time_NS;
++      Dhrystone_MIPS = Dhrystones_Per_Second / (long double)1757;
++      printf ("Microseconds for one run through Dhrystone: ");
++      printf ("%12.2f\n", (float)Microseconds);
++      printf ("Dhrystones per Second:                      ");
++      printf ("%12.2f\n", (float)Dhrystones_Per_Second);
++      printf ("Dhrystone MIPS       :                      ");
++      printf ("%12.2f\n", (float)Dhrystone_MIPS);
++      printf ("\n");
++    }
++
++    return (float)Dhrystone_MIPS;
++
++#else
++
++    User_Time = End_Time - Begin_Time;
+
+   if (User_Time < Too_Small_Time)
+   {
+@@ -273,6 +364,8 @@
+     printf ("%6.1f \n", Dhrystones_Per_Second);
+     printf ("\n");
+   }
++
++#endif /* #ifdef ROKU_LT */
+
+ }
+
+diff -Nur dhrystone_2.1/dhry.h dhrystone_2.1.patched/dhry.h
+--- dhrystone_2.1/dhry.h	2021-03-06 00:32:00.000000000 -0800
++++ dhrystone_2.1.patched/dhry.h	2021-03-06 18:53:56.000000000 -0800
+@@ -345,8 +345,12 @@
+  ***************************************************************************
+  */
+
++#define DHRY_ROKULT
++
+ /* Compiler and system dependent definitions: */
+
++#ifndef DHRY_ROKULT
++
+ #ifndef TIME
+ #define TIMES
+ #endif
+@@ -359,6 +363,8 @@
+                 /* for "times" */
+ #endif
+
++#endif /* #ifndef DHRY_ROKULT */
++
+ #define Mic_secs_Per_Second     1000000.0
+                 /* Berkeley UNIX C returns process times in seconds/HZ */
+
+@@ -383,9 +389,20 @@
+
+ /* General definitions: */
+
++#ifdef DHRY_ROKULT
++
++#include <lt/core/LTCore.h>
++
++#define strcpy(s1, s2) lt_strncpyTerm(s1, s2, sizeof(s1))
++#define strcmp(s1, s2) lt_strcmp(s1, s2)
++
++#else
++
+ #include <stdio.h>
+                 /* for strcpy, strcmp */
+
++#endif /* #ifndef DHRY_ROKULT */
++
+ #define Null 0
+                 /* Value of a Null pointer */
+ #define true  1
+diff -Nur dhrystone_2.1/include/libdhry_2.1.h dhrystone_2.1.patched/include/libdhry_2.1.h
+--- dhrystone_2.1/include/libdhry_2.1.h	1969-12-31 16:00:00.000000000 -0800
++++ dhrystone_2.1.patched/include/libdhry_2.1.h	2021-03-06 18:53:56.000000000 -0800
+@@ -0,0 +1,28 @@
++/******************************************************************************
++ * libdhry_2.1.h - interface to running dhrystone 2.1 benchmark programatically
++ *
++ * Copyright 2020, Roku, Inc.  All Rights Reserved
++ ******************************************************************************/
++
++#ifndef ROKU_LT_THIRDPARTY_DHRYSTONE_INCLUDE_LIBDHRY_2_1_H
++#define ROKU_LT_THIRDPARTY_DHRYSTONE_INCLUDE_LIBDHRY_2_1_H
++
++LT_EXTERN_C_BEGIN
++
++typedef void (Dhrystone_PrintFunction)(void * pClientData, const char * pFormat, ...);
++
++float run_dhrystone_benchmark(
++         int nNumberOfRuns,
++         Dhrystone_PrintFunction * pPrintFunction,
++         void * pPrintFunctionClientData);
++
++LT_EXTERN_C_END
++
++#endif /* #ifndef ROKU_LT_THIRDPARTY_DHRYSTONE_INCLUDE_LIBDHRY_2_1_H */
++
++/******************************************************************************
++ *  LOG
++ ******************************************************************************
+ *  06-Mar-21   augustus    created
++ */
++
+diff -Nur dhrystone_2.1/Makefile dhrystone_2.1.patched/Makefile
+--- dhrystone_2.1/Makefile	1969-12-31 16:00:00.000000000 -0800
++++ dhrystone_2.1.patched/Makefile	2021-03-06 18:53:56.000000000 -0800
+@@ -0,0 +1,19 @@
++################################################################################
++# Makefile - dhrystone libdhry2_1.a makefile
++#
++# Copyright 2021, Roku, Inc.  All rights reserved.
++################################################################################
++
++.PHONY: all
++all:
++	mkdir -p lib
++	rm -f lib/libdhry_2.1.a
++	$(CC) $(CFLAGS) -c dhry_1.c -o dhry_1.o
++	$(CC) $(CFLAGS) -c dhry_2.c -o dhry_2.o
++	$(AR) $(ARFLAGS) lib/libdhry_2.1.a dhry_1.o dhry_2.o
++
++###############################################################################
++#	LOG
++###############################################################################
+#   06-Mar-21   augustus    created
++

@@ -1,0 +1,184 @@
+#!/bin/bash
+################################################################################
+# examinate: script invoked by LT Master Makefile on an LTLibrary
+#            when make 'examinate-<library_name>' is used.
+#
+# Copyright 2020-2026, Roku, Inc.  All rights reserved.
+################################################################################
+#
+#        usage:  examinate [--comments]
+#
+# environment:   examinate is designed to run from the LT master makefile and
+#                depends on the following environment variables being set:
+#                  . LT_PROJECT
+#                  . LT_PROJECT_SOURCE_DIR
+#                  . LT_PROJECT_OBJ_DIR
+#                  . LT_CC
+#                  . LT_CFLAGS
+#                  . LT_OS_PUBLIC_INCLUDE_DIR
+#                  . LT_PLATFORM_PUBLIC_INCLUDE_DIR
+#                  . LT_PRODUCT_PUBLIC_INCLUDE_DIR
+#                  . LT_OS_PRIVATE_SOURCE_DIR
+#                  . LT_PLATFORM_PRIVATE_SOURCE_DIR
+#                  . LT_PRODUCT_PRIVATE_SOURCE_DIR
+#                  . LT_TARGET_EXAMINATE_DIR
+#                  . LT_ROOTS_BASE
+#                  . LT_OS_BUILD_SCRIPTS_DIR
+#                  . LT_TOOLCHAIN_HOST_ARCHITECTURE
+#
+# dependencies:  examinate requires the following programs to be present on build and developer machines:
+#                  .  /bin/bash
+#                  .  dirname
+#                  .  find
+#                  .  sed
+#                  .  awk
+#                  .  date
+#
+
+shout() {
+  if [ "$LT_QUIET" != "1" ]; then
+      echo "$@"
+  fi
+}
+
+verboxycute() {
+  shout "$LT_VERBOXYCUTE"
+  /bin/bash -c "$LT_VERBOXYCUTE"
+}
+
+examinate_header() {
+    LT_EXAMINATE_INTERMEDIATE_DIR=$LT_EXAMINATE_INTERMEDIATE_DIR_BASE/$LT_HEADER
+    LT_VERBOXYCUTE="mkdir -p $LT_EXAMINATE_INTERMEDIATE_DIR" verboxycute
+    LT_VERBOXYCUTE="echo '#include <$LT_PROJECT_OFFSET_DIR/$LT_HEADER>' > $LT_EXAMINATE_INTERMEDIATE_DIR/input.c" verboxycute
+    LT_VERBOXYCUTE="$LT_CC $LT_EXAMINATE_CFLAGS $DOXY_SKIP $COMMENTS -c -E $LT_EXAMINATE_INTERMEDIATE_DIR/input.c > $LT_EXAMINATE_INTERMEDIATE_DIR/output.c" verboxycute
+    cat $LT_EXAMINATE_INTERMEDIATE_DIR/output.c | awk ' /^#/ { filename = $3 } !/^#/ { if (filename == "\"'$LT_SOURCE'\"") print $0 }' > $LT_EXAMINATE_INTERMEDIATE_DIR/stripped.c
+    LT_VERBOXYCUTE="sed -i 's/_Bool/bool/g' $LT_EXAMINATE_INTERMEDIATE_DIR/stripped.c" verboxycute
+    LT_VERBOXYCUTE="$LT_OS_BUILD_SCRIPTS_DIR/examinate/uncrustify.$LT_TOOLCHAIN_HOST_ARCHITECTURE -c $LT_OS_BUILD_SCRIPTS_DIR/examinate/uncrustify-examinate.cfg -o $LT_EXAMINATE_INTERMEDIATE_DIR/uncrustified.c < $LT_EXAMINATE_INTERMEDIATE_DIR/stripped.c > /dev/null 2>&1" verboxycute
+    LT_VERBOXYCUTE="sed -i 's./\*\*.    /\*\*.g' $LT_EXAMINATE_INTERMEDIATE_DIR/uncrustified.c" verboxycute
+    LT_VERBOXYCUTE="sed -i 's.^/\*_.   /\*_.g' $LT_EXAMINATE_INTERMEDIATE_DIR/uncrustified.c" verboxycute
+    shout "echoing result into $LT_EXAMINATE_INTERMEDIATE_DIR/examinated.c"
+    echo -en "$LEADER_PRE" > $LT_EXAMINATE_INTERMEDIATE_DIR/examinated.c
+    echo -en "$LT_PROJECT_OFFSET_DIR/$LT_HEADER" >> $LT_EXAMINATE_INTERMEDIATE_DIR/examinated.c
+    echo -e "$LEADER_POST" >> $LT_EXAMINATE_INTERMEDIATE_DIR/examinated.c
+
+    cat "$LT_EXAMINATE_INTERMEDIATE_DIR/uncrustified.c" >> $LT_EXAMINATE_INTERMEDIATE_DIR/examinated.c
+    echo -e "$TRAILER" >> $LT_EXAMINATE_INTERMEDIATE_DIR/examinated.c
+    LT_VERBOXYCUTE="cp $LT_EXAMINATE_INTERMEDIATE_DIR/examinated.c $LT_DEST" verboxycute
+}
+
+examinate_or_copy_header() {
+    # calculate the source and destination paths
+    # and make sure the dest dir exists
+    LT_SOURCE=$LT_PROJECT_PUBLIC_INCLUDE_DIR/$LT_HEADER
+    LT_DEST=$LT_EXAMINATE_OUTPUT_DIR/$LT_HEADER
+    LT_DESTDIR=`dirname $LT_DEST`
+    LT_VERBOXYCUTE="mkdir -p $LT_DESTDIR" verboxycute
+    # see if the source header has any LT interfaces, if so examinate, else copy
+    grep -q 'typedef_LT\|TYPEDEF_LT' $LT_SOURCE
+    if [ $? -eq 0 ]; then
+        shout "[? $LT_HEADER] --> EXAMINATING"
+        examinate_header
+    else
+        shout "[? $LT_HEADER] --> COPYING"
+        LT_VERBOXYCUTE="cp -f $LT_SOURCE $LT_DESTDIR" verboxycute
+    fi
+}
+
+############
+############
+############
+############
+############
+###########################
+# MAINLINE SCRIPT EXECUTION
+###########################
+##
+## figure out where the public include directory for this library is
+## based on the offset of the private source dir from source base
+## where the source dir base (and consequent include base) can come from
+## any of the lt, platform, or product roots
+
+echo -n EXAMINATE $LT_PROJECT
+if [ "$LT_PROJECT_SOURCE_DIR" == "" ]; then
+    echo " is not an LT library, skipping..."
+    exit 0
+fi
+
+LT_PROJECT_OFFSET_DIR=${LT_PROJECT_SOURCE_DIR#$LT_PROJECT_SOURCE_DIR_BASE/}
+  if [ $LT_OS_PRIVATE_SOURCE_DIR == $LT_PROJECT_SOURCE_DIR_BASE ]; then
+    LT_PROJECT_PUBLIC_INCLUDE_DIR_BASE=$LT_OS_PUBLIC_INCLUDE_DIR
+elif [ $LT_PLATFORM_PRIVATE_SOURCE_DIR == $LT_PROJECT_SOURCE_DIR_BASE ]; then
+    LT_PROJECT_PUBLIC_INCLUDE_DIR_BASE=$LT_PLATFORM_PUBLIC_INCLUDE_DIR
+elif [ $LT_PRODUCT_PRIVATE_SOURCE_DIR == $LT_PROJECT_SOURCE_DIR_BASE ]; then
+    LT_PROJECT_PUBLIC_INCLUDE_DIR_BASE=$LT_PRODUCT_PUBLIC_INCLUDE_DIR
+else
+    echo " source dir not under lt, platform or product root, skipping..."
+    exit 0
+  fi
+LT_PROJECT_PUBLIC_INCLUDE_DIR=$LT_PROJECT_PUBLIC_INCLUDE_DIR_BASE/$LT_PROJECT_OFFSET_DIR
+if [ ! -d $LT_PROJECT_PUBLIC_INCLUDE_DIR ]; then
+    echo " has no public interface, skipping..."
+    exit 0
+fi
+echo
+
+############
+############
+## calculate the intermediate and output dirs for the examination
+## and blow them away for a clean start!
+#
+LT_EXAMINATE_INTERMEDIATE_DIR_BASE=$LT_PROJECT_OBJ_DIR/examinate
+LT_EXAMINATE_OUTPUT_DIR=$LT_TARGET_EXAMINATE_DIR${LT_PROJECT_PUBLIC_INCLUDE_DIR#$LT_ROOTS_BASE}
+LT_VERBOXYCUTE="rm -rf $LT_EXAMINATE_INTERMEDIATE_DIR_BASE" verboxycute
+LT_VERBOXYCUTE="rm -rf $LT_EXAMINATE_OUTPUT_DIR" verboxycute
+
+LEADER_PRE="\
+/********************************************************************************\n\
+ *  File: Examinated <"
+LEADER_POST=">\n\
+ *\n\
+ *  Copyright 2022, Roku, Inc.  All rights reserved.\n\
+ ********************************************************************************/\n"
+
+LOGDATE=$(date +%d-%b-%y)
+TRAILER="\n\
+/********************************************************************************\n\
+ *  LOG\n\
+ ********************************************************************************\n\
+ *  "$LOGDATE"   examinator  examinated"$WITH_COMMENTS"\n\
+ */\n"
+
+############
+############
+## set examinate comment parameters and gcc command line options
+##
+if [ "$1" == "--comments" ]; then
+    COMMENTS=-CC
+    WITH_COMMENTS=" with comments"
+    DOXY_SKIP="-DDOXY_SKIP"
+else
+    COMMENTS=
+    WITH_COMMENTS=
+    DOXY_SKIP=
+fi
+LT_EXAMINATE_CFLAGS=`echo $LT_CFLAGS | sed 's/-MMD//g; s/-MP//g'`
+
+############
+############
+## find all of the header files in the public interface
+##
+LT_PROJECT_PUBLIC_HEADERS=`find $LT_PROJECT_PUBLIC_INCLUDE_DIR -type f -printf '%P ' -name '*.h'`
+for LT_HEADER in $LT_PROJECT_PUBLIC_HEADERS; do
+    examinate_or_copy_header
+    done
+
+if [ "$LT_PROJECT" == "LTCore" ]; then
+  # special case root level includes: LT.h, LTTypes.h, LTObject.h
+  LT_PROJECT_PUBLIC_HEADERS=`find $LT_OS_PUBLIC_INCLUDE_DIR/lt -maxdepth 1 -type f -name '*.h'`
+  LT_DEST_DIR=$LT_TARGET_EXAMINATE_DIR${LT_OS_PUBLIC_INCLUDE_DIR#$LT_ROOTS_BASE}/lt
+  LT_VERBOXYCUTE="rm -f $LT_DEST_DIR/*.h" verboxycute
+  for LT_HEADER in $LT_PROJECT_PUBLIC_HEADERS; do
+    LT_VERBOXYCUTE="cp $LT_HEADER $LT_DEST_DIR" verboxycute
+    done
+fi
+# echo $LT_PROJECT EXAMINATED

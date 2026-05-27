@@ -1,0 +1,130 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+//
+// wroom32 flash configuration
+//
+// wroom32_unittest.cfg must be kept in sync with wroom32.cfg
+//
+{
+  platform: {
+    // Platform name
+    name: "wroom32",
+
+    // Target device (SoC)
+    device: "ESP32",
+
+    // Target device family
+    family: "esp32",
+
+    // Target endian: "little" or "big"
+    endian: "little"
+  },
+  flash: {
+    // Size of minimum eraseable flash unit (sector) in bytes
+    block_size: 4096,
+
+    // Number of blocks in flash
+    num_blocks: 1024,
+
+    // Partition table version number
+    table_version: 0,
+
+    // Encryption write alignment requirement
+    write_quantum: 32,
+
+    // Default partition name to flash (typically a firmware partition)
+    default_partition: "fw0"
+  },
+  // Partition table
+  partitions: {
+    ltat : {
+      offs: 0x0,
+      size: 0x1,
+      type: "ltat",
+    },
+    boot : {
+      offs: 0x1,
+      size: 0xc,
+      type: "boot",
+      file: "LTBootloader.bin",
+    },
+    part : {
+      offs: 0x11,
+      size: 0x1,
+      type: "part",
+      file: "LTPartitionTable.bin",
+    },
+    part_backup : {
+      offs: 0x12,
+      size: 0x1,
+      type: "part",
+      file: "LTPartitionTable.bin",
+    },
+    ota : {
+      offs: 0x13,
+      size: 0x2,
+      type: "otainfo",
+    },
+    settings : {
+      offs: 0x17,
+      size: 0x6,
+      type: "settings",
+    },
+    fw0 : {
+      offs: 0x20,
+      size: 0x1c0,
+      type: "fw",
+      file: "LTFirmwareImage.bin",
+    },
+    fw1 : {
+      offs: 0x200,
+      size: 0x1c0,
+      type: "fw",
+    },
+    crashdump : {
+      offs: 0x3c0,
+      size: 0x20,
+      type: "misc",
+    },
+    log : {
+      offs: 0x3e0,
+      size: 0xc,
+      type: "log",
+    },
+    migration : {
+      offs: 0x3ec,
+      size: 0xf,
+      type: "misc",
+    },
+    crypto : {
+      offs: 0x3fb,
+      size: 0x4,
+      type: "settings",
+    },
+    prov : {
+      offs: 0x3ff,
+      size: 0x1,
+      type: "misc",
+    }
+  }
+}
+// Reserved partition types:
+//   part     - LT partition table (size is one sector)
+//   boot     - bootloader
+//   ltat     - LT authentication token
+//   otainfo  - OTA update information (size in sectors equal to number of firmware partitions)
+//   fw       - firmware
+//   fw_mfg   - manufacturing firmware
+//   settings - settings partition
+//   misc     - an explicitly miscellaneous partition, identified by name rather than type.
+// Custom partition types (any other name)
+//   <custom> - none of the above, a miscellaneous partition
+//
+//  Partition offset ("offs") is the starting location of the partition (in blocks).
+//  Partition "size" is also given in blocks.
+//  Partition "file" is the optional source filename used for building a full flash image.

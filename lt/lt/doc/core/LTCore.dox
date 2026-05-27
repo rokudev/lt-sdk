@@ -1,0 +1,279 @@
+/*!
+@defgroup ltcore LT Core
+@{
+
+@brief The core of Roku LT OS.  BAM.
+
+<a href="#themeat"><b>Skip the description</b></a>
+
+LTCore provides core OS services, including:
+- Opening and closing LT Libraries
+- Allocating and freeing memory
+- Creating and destroying:
+    - LT threads
+    - mutexes
+    - signals
+    - message queues
+- Delaying (sleep)
+- memory copying, moving, comparing
+- string concatenation and comparison
+- conversion to integer types
+- sorting
+- asserts
+- debug console I/O
+- obtaining command-line arguments
+
+@see LT::GetCore
+
+<hr><a name=themeat></a>
+
+
+@addtogroup ltcore_stdlib
+@{
+
+@fn int LTStdlib::strcasecmp
+    @brief compares two null-terminated strings, ignoring case.
+
+    @param pString1 the first string to compare
+    @param pString2 the second string to compare
+    @return an integer less than, equal to, or greater than zero if the string
+            at pString1 is found, respectively, to be less than, to match, or be
+            greater than the string at pString2.
+    @see memcmp(), strcmp(), strncmp(), strncasecmp()
+
+@fn char * LTStdlib::strchr
+    @brief locates the first occurrence of a character in a null-terminated
+           string.
+
+    @param pString the string to search
+    @param c the character for which to search
+    @return a pointer to the matched character, or \p NULL if the character does
+            not appear in the string
+    @see strrchr(), strstr()
+
+@fn int LTStdlib::strcmp
+    @brief compares two null-terminated strings.
+
+    @param pString1 the first string to compare
+    @param pString2 the second string to compare
+    @return an integer less than, equal to, or greater than zero if the string
+            at \p pString1 is found, respectively, to be less than, to match, or
+            be greater than the string at \p pString2
+    @see memcmp(), strncmp(), strcasecmp(), strncasecmp()
+
+@fn u32 LTStdlib::strlen
+    @brief calculates the length of a null-terminated string.
+
+    @param pString a pointer to the string to measure
+    @return the number of bytes in the string, excluding the null terminator.
+
+@fn int LTStdlib::strncasecmp
+    @brief compares at most the first \p nCount bytes of two null-terminated
+           strings, ignoring case.
+
+    @param pString1 the first string to compare
+    @param pString2 the second string to compare
+    @param nCount the maximum number of bytes to compare
+    @return an integer less than, equal to, or greater than zero if the first
+            \p nCount bytes of the string at \p pString1 is found, respectively,
+            to be less than, to match, or be greater than the the first
+            \p nCount bytes of the string at \p pString2.  If either string are
+            less than \p nCount bytes in length, that entire string is compared
+    @see memcmp(), strcmp(), strncmp(), strcasecmp()
+
+@fn int LTStdlib::strncmp
+    @brief compares at most the first \p nCount bytes of two null-terminated
+           strings.
+
+    @param pString1 the first string to compare
+    @param pString2 the second string to compare
+    @param nCount the maximum number of bytes to compare
+    @return an integer less than, equal to, or greater than zero if the first
+            \p nCount bytes of the string at \p pString1 is found, respectively,
+            to be less than, to match, or be greater than the the first
+            \p nCount bytes of the string at \p pString2.  If either string are
+            less than \p nCount bytes in length, that entire string is compared
+    @see memcmp(), strcmp(), strcasecmp(), strncasecmp()
+
+@fn void LTStdlib::strncpyTerm
+    @brief copies \p pStringSource to \p pStringDest, writing at most
+           \p nDestBuffLen bytes, including a null terminator, to
+           \p pStringDest.
+
+    For instance, copying \c "foo" into a buffer with \p nDestBuffLen as 3 will
+    result in \c "fo\0" written to the buffer.  The strings may not overlap,
+    and the destination string dest must be large enough to receive the copy.
+    _Beware of buffer overruns!_
+
+    @param pStringDest a pointer to the destination of the copy
+    @param pStringSource a pointer to the string to copy
+    @param nDestBuffLen the number of bytes to write to the buffer at
+                        \p pStringDest
+    @return a pointer to the resultant string \p pStringDest
+    @see memcpy(), memmove(), strcpy()
+
+@fn char * LTStdlib::strrchr
+    @brief locates the last occurrence of a character in a null-terminated
+           string.
+
+    @param pString the string to search
+    @param c the character for which to search
+    @return a pointer to the matched character, or \p NULL if the character does
+            not appear in the string
+    @see strchr(), strstr()
+
+@fn char * LTStdlib::strstr
+    @brief locates a substring in a string.
+
+    @param pStringHaystack a pointer to the string to search for
+                           \p pStringNeedle
+    @param pStringNeedle a pointer to the string to find in \p pStringHaystack
+    @return a pointer to the first occurrence of \p pStringNeedle in
+            \p pStringHaystack, or \p NULL if the string does not appear
+    @see strchr(), strrchr()
+
+@fn double LTStdlib::strtod
+    @brief converts a string to a double-precision floating-point number.
+
+    If \p pStringToSet is not null, a pointer to the character after the last
+    character used in the conversion is stored in the location referenced by
+    the variable.  The string may contain leading whitespace, an optional plus
+    ('+') or minus ('-') sign, then either a decimal number (followed by an
+    optional decimal exponent delineated by 'E' or 'e'), a hexadecimal number
+    (preceded by "0x" or "0X", (followed by an optional binary exponent
+    delineated by 'P' or 'p'), "INF" or "INFINITY", disregarding case, or
+    "NAN", disregarding case.  Hexadecimal numbers must include either a radix
+    character or the binary exponent.
+
+    @param pString a pointer to the string to convert
+    @param pStringToSet if not \p NULL, a pointer to a pointer to the character
+                        after the last character used in the conversion
+    @return the converted value, if any, or zero if no conversion is performed
+            or if the conversion would cause an underflow, or plus/minus
+            \p HUGE_VAL if the correct value would cause an overflow.
+    @see strtos32(), strtos64(), strtou32(), strtou64()
+
+@fn s32 LTStdlib::strtos32
+    @brief converts a string to a 32-bit signed integer.
+
+    If \p pStringToSet is not null, a pointer to the character after the last
+    character used in the conversion is stored in the location referenced by
+    the variable.
+    @todo Is there such a concept as errno in RokuLT?  If so, setting of
+    errno (e.g., to EINVAL or ERANGE) should be documented here (and
+    elsewhere) ***
+
+    @param pString a pointer to the string to convert
+    @param pStringToSet if not \p NULL, a pointer to a pointer to the character
+                        after the last character used in the conversion
+    @param base the base of the representation of the number at \p pString
+    @return the result of the conversion, \p LONG_MIN if the conversion would
+            underflow, \p LONG_MAX if the conversion would overflow.
+    @see strtod(), strtos64(), strtou32(), strtou64()
+
+@fn s64 LTStdlib::strtos64
+    @brief converts a string to a 64-bit signed integer.
+
+    If \p pStringToSet is not null, a pointer to the character after the last
+    character used in the conversion is stored in the location referenced by
+    the variable.
+
+    @param pString a pointer to the string to convert
+    @param pStringToSet if not \p NULL, a pointer to a pointer to the character
+                        after the last character used in the conversion
+    @param base the base of the representation of the number at \p pString
+    @return the result of the conversion, \p LONG_MIN if the conversion would
+            underflow, \p LONG_MAX if the conversion would overflow.
+    @see strtod(), strtos32(), strtou32(), strtou64()
+
+@fn u32 LTStdlib::strtou32
+    @brief converts a string to a 32-bit unsigned integer.
+
+    If \p pStringToSet is not null, a pointer to the character after the last
+    character used in the conversion is stored in the location referenced by
+    the variable.
+
+    @param pString a pointer to the string to convert
+    @param pStringToSet if not \p NULL, a pointer to a pointer to the character
+                        after the last character used in the conversion
+    @param base the base of the representation of the number at \p pString
+    @return the result of the conversion, \p LONG_MIN if the conversion would
+            underflow, \p LONG_MAX if the conversion would overflow.
+    @see strtod(), strtos32(), strtos64(), strtou64()
+
+@fn u64 LTStdlib::strtou64
+    @brief converts a string to a 64-bit unsigned integer.
+
+    If \p pStringToSet is not null, a pointer to the character after the last
+    character used in the conversion is stored in the location referenced by
+    the variable.
+
+    @param pString a pointer to the string to convert
+    @param pStringToSet if not \p NULL, a pointer to a pointer to the character
+                        after the last character used in the conversion
+    @param base the base of the representation of the number at \p pString
+    @return the result of the conversion, \p LONG_MIN if the conversion would
+            underflow, \p LONG_MAX if the conversion would overflow.
+    @see strtod(), strtos32(), strtos64(), strtou32()
+
+@fn int LTStdlib::isalnum
+    @brief returns true if the character is alphanumeric (A-Z, a-z, 0-9).
+
+    @param c the character under test
+    @return true if the character is alphanumeric, false otherwise
+    @see isalpha(), isdigit(), isspace()
+
+@fn int LTStdlib::isalpha
+    @brief returns true if the character is a letter (A-Z, a-z).
+
+    @param c the character under test
+    @return true if the character is a letter, false otherwise.
+    @see isalnum(), isdigit(), isspace()
+
+@fn int LTStdlib::isdigit
+    @brief returns true if the character is a numeral (0-9).
+
+    @param c the character under test
+    @return true if the character is a numeral, false otherwise.
+    @see isalnum(), isalpha(), isspace()
+
+@fn int LTStdlib::isspace
+    @brief returns true if the character is a space or tab character.
+
+    @param c the character under test
+    @return true if the character is a space or tab character, false otherwise.
+    @see isalnum(), isalpha(), isdigit()
+
+
+@fn void LTStdlib::qsort
+    @brief reentrantly sorts an array of objects.
+
+    @param pBase a pointer to the start of the array
+    @param nCount the number of elements in the array
+    @param nSize the size of each element in the array
+    @param pCompareFunc a pointer to a function which compares array elements
+                        (according to \p qsortCompareFunction)
+    @param pClientData a pointer to instance-specific information
+                       (for reentrancy)
+    @see qsortCompareFunction
+
+@def LT_ASSERT(x)
+    @brief asserts in \p DEBUG mode, noop in \p RELEASE mode.
+
+@def lt_malloc(n)
+    @brief allocates n bytes.
+
+    @return address of allocated memory block (void *)
+
+@def lt_realloc(p, n)
+    @brief reallocates \p p to new size of \p n bytes.
+
+    Only use on p returned from \p lt_malloc or \p lt_realloc.
+
+    @return address of reallocated memory block (void *)
+
+@def lt_free(p)
+    @brief deallocates memory block at \p p.
+@}
+@}
+*/

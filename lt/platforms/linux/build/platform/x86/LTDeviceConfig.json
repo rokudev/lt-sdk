@@ -1,0 +1,42 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+{
+    "config":
+    {
+        "net": { "transport": [{ "lib": "LinuxDriverNetIp" }]},
+
+        "device":
+        [
+                    { "lib": "LTDeviceConfig" },
+                    { "lib": "LTDeviceFS",          "driver": [{ "lib": "LinuxDriverFS", "obj": "LinuxDriverFSImpl"                  } ] },
+                    { "lib": "LTDeviceCrypto",      "driver": [{ "lib": "LinuxDriverCrypto" }]},
+                    { "lib": "LTDeviceFlash",       "driver": [{ "lib": "LinuxDriverFlash" }]},
+                    { "lib": "LTDevicePushButton",  "driver": [{ "lib": "LinuxDriverPushButton",
+                                                     "units": [{"name": "setup_button", "pin": "setup_button", "pull": "none" } ]    } ] },
+                    { "lib": "LTDeviceSDCard",      "driver": [{ "lib": "LinuxDriverSDCard" }]},
+                    { "lib": "LTDeviceOta",         "driver": [{ "lib": "LinuxDriverOta" }]},
+                    { "lib": "LTDeviceIdentity",    "identity": { "manufacturer":"Roku, Inc.", "model":"None", "type":"None" },
+                                                    "driver": [{ "lib": "LinuxDriverIdentity" }]},
+                    { "lib": "LTDeviceMedia",       "driver": [{ "lib": "LinuxDriverMediaVideo" }]},
+                    { "lib": "LTDeviceWatchdog",
+                        "uts": "pass", /* this variable "uts" is short for "unit test string" and is present for UnitTestLTDeviceConfig */
+                        "uti": 42,     /* this variable "uti" is short for "unit test integer" and is present for UnitTestLTDeviceConfig */
+                                                    "driver": [{ "lib": "MockLinuxDriverWatchdog",
+                                                                  "stu": "ssap", /* this variable "stu" is present for UnitTestLTDeviceConfig */
+                                                                  "itu": 24      /* this variable "itu" is present for UnitTestLTDeviceConfig */
+                                                                   }]},
+                    { "lib": "LTDeviceWiFi",        "driver": [{ "lib": "LinuxDriverWiFi" }]},
+                    { "lib": "LTDeviceFloodlight", "driver": [{ "lib": "LTDriverFloodlight" }]},
+                    { "lib": "LTDeviceFlPIR",       "driver": [{ "lib": "LTDriverFlPIR" }]},
+                    { "lib": "LTDeviceLightSensor", "driver": [ {   "lib": "LTDriverLightSensor" }]},
+                    /* TODO will be removing "port" on integrating LTDeviceSerialPort in DoublehornAccessoryDriver */
+                    { "lib": "LTDeviceFloodlightAccessory", "driver": [ {"lib" : "DoublehornAccessoryDriver", "port":"/dev/ttyUSB0" }]},
+                    { "lib": "LTDeviceUSBSerial",           "driver": [{ "lib": "LinuxDriverUSBSerial" }]}
+        ]
+    }
+}
