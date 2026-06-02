@@ -1,6 +1,7 @@
 Welcome to the _Roku LT Operating System_ open source distribution.
 
-LT Open Source instructional videos may be found on the Roku Developer YouTube channel at https://go.roku.com/roku-lt-os-videos.
+LT Open Source instructional videos may be found on the Roku Developer YouTube channel at https://go.roku.com/roku-lt-os-videos  
+The LT Open Source announcement may be found on the Roku Developer Blog at https://blog.roku.com/developer/roku-lt-os
 
 To build LT OS for ESP32:
 ```
