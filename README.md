@@ -18,7 +18,7 @@ To flash, clean:
 ```
 To perform first time initialziation of all partitions of the Flash (build first):
 ```
-LT_FLASH=all make FlashFirmware
+% LT_FLASH=all make FlashFirmware
 ```
 
 To build LT OS for Linux:
