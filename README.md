@@ -11,10 +11,14 @@ To build LT OS for ESP32:
 % make quiet
 ```
 
-To flash clean:
+To flash, clean:
 ```
 % make FlashFirmware
 % make clean
+```
+To perform first tiem initialziation of all partitions of the Flash (build first):
+```
+LT_FLASH=all make FlashFirmware
 ```
 
 To build LT OS for Linux:
