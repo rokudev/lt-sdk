@@ -16,7 +16,7 @@ To flash, clean:
 % make FlashFirmware
 % make clean
 ```
-To perform first tiem initialziation of all partitions of the Flash (build first):
+To perform first time initialziation of all partitions of the Flash (build first):
 ```
 LT_FLASH=all make FlashFirmware
 ```
