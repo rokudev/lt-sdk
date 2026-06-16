@@ -16,10 +16,77 @@
 #include <lt/device/watchdog/LTDeviceWatchdog.h>
 
 #include "Esp32_GPIO.h"
+#include "Esp32_Clock.h"
+#include "Esp32_Registers.h"
 
 DEFINE_LTLOG_SECTION("esp32.drv.pins");
 
-#define LTDEVICEPINS_DO_DLOG     1
+/* =========================================================================
+ * Optional XCLK generation via LEDC high-speed timer 0 / channel 0.
+ *
+ * Enabled by adding "xclk-gpio" and optionally "xclk-freq-hz" to the
+ * Esp32DriverPins driver section in LTDeviceConfig.json, e.g.:
+ *
+ *   { "lib": "LTDevicePins", "driver": [ { "lib": "Esp32DriverPins",
+ *       "xclk-gpio": 0, "xclk-freq-hz": 16000000,
+ *       "units": [ ... ] } ] }
+ *
+ * LEDC HS timer 0 / channel 0 is dedicated to XCLK.  The output is routed
+ * through the GPIO matrix (signal LEDC_HS_SIG_OUT0_IDX = 71) to the
+ * configured GPIO pin.
+ *
+ * LEDC frequency formula:
+ *   f_out = f_apb / (clock_divider/256) / (2^duty_resolution)
+ * With duty_resolution=2 (4-count period) and 50% duty (count=2):
+ *   clock_divider = f_apb * 256 / (f_out * 4)
+ * ========================================================================= */
+
+#define XCLK_LEDC_SIG_OUT0      71u   /* LEDC_HS_SIG_OUT0_IDX in gpio_sig_map.h */
+#define XCLK_DUTY_RES            2u   /* 2-bit → 4-count period */
+#define XCLK_APB_HZ     80000000UL
+#define XCLK_GPIO_NONE        0xFFu
+
+static u8  s_xclkGpio  = XCLK_GPIO_NONE;
+static u32 s_xclkFreqHz = 0u;
+
+static void XclkStart(void) {
+    if (s_xclkGpio == XCLK_GPIO_NONE) return;
+
+    u32 freq = s_xclkFreqHz ? s_xclkFreqHz : 16000000u;
+    u32 divider = (u32)(((u64)XCLK_APB_HZ * 256UL) / ((u64)freq * (1u << XCLK_DUTY_RES)));
+    if (!divider) divider = 1u;
+
+    Esp32_ClockEnablePeripheralClock(kEsp32_Clock_LEDC);
+
+    ESP32_LEDC_TIMER_REG(CONF, 0) = kEsp32_RegisterLEDC_HSTIMER_CONF_RST_M;
+    ESP32_LEDC_TIMER_REG(CONF, 0) =
+        (XCLK_DUTY_RES << kEsp32_RegisterLEDC_HSTIMER_CONF_DUTY_RES_S)
+      | (divider       << kEsp32_RegisterLEDC_HSTIMER_CONF_CLK_DIV_NUM_S)
+      | kEsp32_RegisterLEDC_HSTIMER_CONF_TICK_SEL_APB_M;
+
+    ESP32_LEDC_CHANNEL_REG(HPOINT, 0) = 0u;
+    ESP32_LEDC_CHANNEL_REG(DUTY,   0) = (1u << XCLK_DUTY_RES) / 2u << 4u;  /* 50%, 4 frac bits */
+    ESP32_LEDC_CHANNEL_REG(CONF0,  0) = kEsp32_RegisterLEDC_HSCH_CONF0_OUT_EN_M;
+    ESP32_LEDC_CHANNEL_REG(CONF1,  0) = kEsp32_RegisterLEDC_HSCH_CONF1_DUTY_START_M;
+
+    Esp32GPIO_ConfigPin(s_xclkGpio, kEsp32GPIO_Direction_Input,
+                        kEsp32GPIO_PullNone, kEsp32GPIO_Function_GPIO);
+    Esp32GPIO_ConfigMatrixPin(s_xclkGpio, XCLK_LEDC_SIG_OUT0,
+                              kEsp32GPIO_Direction_Output, false);
+
+    LTLOG_DEBUG("xclk", "XCLK %luHz on GPIO%lu (div=%lu)",
+        LT_Pu32(freq), LT_Pu32((u32)s_xclkGpio), LT_Pu32(divider));
+}
+
+static void XclkStop(void) {
+    if (s_xclkGpio == XCLK_GPIO_NONE) return;
+    Esp32GPIO_ClearPinConfig(s_xclkGpio);
+    ESP32_LEDC_CHANNEL_REG(CONF0, 0) = 0u;
+    ESP32_LEDC_TIMER_REG(CONF,   0) = kEsp32_RegisterLEDC_HSTIMER_CONF_RST_M;
+    Esp32_ClockDisablePeripheralClock(kEsp32_Clock_LEDC);
+}
+
+#define LTDEVICEPINS_DO_DLOG     0
 #if     LTDEVICEPINS_DO_DLOG
 #define DLOG                    LTLOG
 #else
@@ -398,6 +465,16 @@ static bool ConfigureDeviceUnits(void) {
         LTLOG_REDALERT("cdus.context", NULL);
         return false;
     }
+
+    /* Optional XCLK config at the driver level (not per-unit) */
+    {
+        u32 xclkGpio = pContext->pDeviceConfig->ReadInteger(pContext->driverConfigOffset, "xclk-gpio");
+        u32 xclkFreq = pContext->pDeviceConfig->ReadInteger(pContext->driverConfigOffset, "xclk-freq-hz");
+        /* ReadInteger returns 0 for absent keys; treat 0 as absent since GPIO0 is
+         * a valid pin — caller must always provide xclk-gpio explicitly. */
+        s_xclkGpio   = (xclkGpio < 40u) ? (u8)xclkGpio : XCLK_GPIO_NONE;
+        s_xclkFreqHz = xclkFreq;
+    }
     LT_SIZE nInstanceStorageBytes = pContext->nInitialNumDeviceUnitInstances * sizeof(PinInstance);
     if (!(s_DeviceUnits.pDeviceUnits = pContext->pNextInstanceToInitialize = lt_malloc(nInstanceStorageBytes))) {
         LTLOG_REDALERT("cdus.oom", NULL);
@@ -424,6 +501,9 @@ static bool ConfigureDeviceUnits(void) {
  * Tear down all Device Units and reclaim resources.                          */
 
 static bool Shutdown(Esp32DriverPinsConfigContext *pContext) {
+    XclkStop();
+    s_xclkGpio   = XCLK_GPIO_NONE;
+    s_xclkFreqHz = 0u;
     DestroyConfigurationContext(pContext);
     if (s_DeviceUnits.pDeviceUnits) {
         PinInstance *pInstance = s_DeviceUnits.pDeviceUnits;
@@ -492,8 +572,9 @@ static bool Esp32DriverPinsImpl_LibInit(void) {
     s_iThread = lt_getlibraryinterface(ILTThread, LT_GetCore());
     s_iThread->SetStackSize(s_hRebootThread, REBOOT_THREAD_STACKSIZE);
     s_iThread->Start(s_hRebootThread, RebootHandlerStart, NULL);
-    if (ConfigureDeviceUnits()) return true;
-    else return Shutdown(NULL);
+    if (!ConfigureDeviceUnits()) return Shutdown(NULL);
+    XclkStart();
+    return true;
 }
 
 /* Library finalization or bailure: */

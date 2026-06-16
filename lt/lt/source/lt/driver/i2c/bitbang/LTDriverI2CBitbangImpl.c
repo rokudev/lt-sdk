@@ -1,5 +1,5 @@
 /*******************************************************************************
- * platforms/common/source/common/driver/i2cbitbang/CommonDriverI2CBitbangImpl.c>
+ * lt/source/lt/driver/i2cbitbang/LTDriverI2CBitbangImpl.c>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
  * If a copy of the MPL was not distributed with this file, you can obtain one at
@@ -7,10 +7,10 @@
  *
  * Copyright 2026 Roku Inc. All rights reserved.
  *
- *  Common LT Driver Library for I2C bitbanging
+ *  LT LT Driver Library for I2C bitbanging
  *
  ******************************************************************************/
-/** @file CommonDriverI2CBitbangImpl.c Implementation of I2C bitbang driver */
+/** @file LTDriverI2CBitbangImpl.c Implementation of I2C bitbang driver */
 
 #include <lt/core/LTCore.h>
 #include <lt/core/LTTime.h>
@@ -20,7 +20,7 @@
 #include <lt/device/pins/LTDevicePins.h>
 
 
-DEFINE_LTLOG_SECTION("lt.drv.bitbang.i2c");
+DEFINE_LTLOG_SECTION("lt.drv.i2c.bitbang");
 
 /*******************************************************************************
  * I2C descriptions                                                   */
@@ -103,8 +103,8 @@ static bool InitializeI2C(I2C_Instance *pInstI2C) {
     pInstI2C->hSdaBank = s_pDevicePins ? s_pDevicePins->CreateDeviceUnitHandle(nBankNumber) : 0;
 
     if (s_pIBiDirBank) {
-        s_pIBiDirBank->ConfigureAsOutput(pInstI2C->hSclBank, kLTDevicePin_PinConfiguration_OutputType_PushPull);
-        s_pIBiDirBank->ConfigureAsOutput(pInstI2C->hSdaBank, kLTDevicePin_PinConfiguration_OutputType_PushPull);
+        s_pIBiDirBank->ConfigureAsOutput(pInstI2C->hSclBank, kLTDevicePin_PinConfiguration_OutputType_OpenDrain);
+        s_pIBiDirBank->ConfigureAsOutput(pInstI2C->hSdaBank, kLTDevicePin_PinConfiguration_OutputType_OpenDrain);
         s_pIBiDirBank->Set(pInstI2C->hSdaBank, 1);
     } else {
         LT_GetCore()->DestroyHandle(pInstI2C->hSdaBank);
@@ -115,9 +115,9 @@ static bool InitializeI2C(I2C_Instance *pInstI2C) {
 }
 
 static void ShutdownI2C(I2C_Instance *pInstI2C) {
-    LT_GetCore()->DestroyHandle(pInstI2C->hSdaBank);
-    LT_GetCore()->DestroyHandle(pInstI2C->hSclBank);
-    lt_destroyobject(pInstI2C->mutex);
+    LT_GetCore()->DestroyHandle(pInstI2C->hSdaBank); pInstI2C->hSdaBank = 0;
+    LT_GetCore()->DestroyHandle(pInstI2C->hSclBank); pInstI2C->hSdaBank = 0;
+    lt_destroyobject(pInstI2C->mutex); pInstI2C->mutex = NULL;
     return;
 }
 
@@ -144,7 +144,7 @@ static bool ConfigureDeviceUnit(LTDeviceConfig *pDeviceConfig, I2C_Instance *ins
         LTLOG_YELLOWALERT("cdu.scl.err", NULL);
         return false;
     }
-    
+
     instance->pinNameSda = pDeviceConfig->ReadString(deviceUnitSection, "sda");
     if (!instance->pinNameSda) {
         LTLOG_YELLOWALERT("cdu.sda.err", NULL);
@@ -169,7 +169,7 @@ static bool ConfigureDeviceUnits(void) {
     }
 
     do {
-        u32 driverSection = pDeviceConfig->GetDriverSection("LTDeviceI2C", "CommonDriverI2CBitbang");
+        u32 driverSection = pDeviceConfig->GetDriverSection("LTDeviceI2C", "LTDriverI2CBitbang");
         u32 initialized;
         S.NumI2CConnections = pDeviceConfig->GetNumDeviceUnits(driverSection);
         if (S.NumI2CConnections == 0) {
@@ -211,16 +211,18 @@ static bool Shutdown(void) {
     }
     lt_free(S.pI2C_Instance);
     S.NumI2CConnections = 0;
+    lt_closelibrary(s_pDevicePins);
+    s_pDevicePins = NULL;
     return true;
 }
 
-define_LTDEVICE_DRIVER_IMPLEMENTATION(ILTDriverI2C, CommonDriverI2CBitbang);
+define_LTDEVICE_DRIVER_IMPLEMENTATION(ILTDriverI2C, LTDriverI2CBitbang);
 /********************************************************************************************************************************
  * Library initialization and deinitialization                                                                                 */
-static bool CommonDriverI2CBitbangImpl_LibInit(void) {
+static bool LTDriverI2CBitbangImpl_LibInit(void) {
     S = (struct statics) {0};
 
-    s_pDevicePins = (LTDevicePins *)LT_GetCore()->OpenLibrary("LTDevicePins");
+    s_pDevicePins = lt_openlibrary(LTDevicePins);
     if (!s_pDevicePins) return false;
     if (!ConfigureDeviceUnits()) {
         Shutdown();
@@ -230,7 +232,7 @@ static bool CommonDriverI2CBitbangImpl_LibInit(void) {
     return true;
 }
 
-static void CommonDriverI2CBitbangImpl_LibFini(void) {
+static void LTDriverI2CBitbangImpl_LibFini(void) {
     Shutdown();
 }
 
@@ -239,9 +241,9 @@ static ILTDriverI2C s_ILTDriverI2C;
 /********************************************************************************************************************************
  * Device-unit creation interface.
  */
-static u32 CommonDriverI2CBitbangImpl_GetNumDeviceUnits(void) { return S.NumI2CConnections; }
+static u32 LTDriverI2CBitbangImpl_GetNumDeviceUnits(void) { return S.NumI2CConnections; }
 
-static u32 CommonDriverI2CBitbangImpl_GetBusIndexFromName(const char *busName) {
+static u32 LTDriverI2CBitbangImpl_GetBusIndexFromName(const char *busName) {
     for (u32 i = 0; i < S.NumI2CConnections; ++i) {
         if (lt_strcmp(busName, S.pI2C_Instance[i].name) == 0) {
             return i;
@@ -250,7 +252,7 @@ static u32 CommonDriverI2CBitbangImpl_GetBusIndexFromName(const char *busName) {
     return LT_U32_MAX;
 }
 
-static LTDeviceUnit CommonDriverI2CBitbangImpl_CreateDeviceUnitHandle(u32 nDeviceUnitNumber) {
+static LTDeviceUnit LTDriverI2CBitbangImpl_CreateDeviceUnitHandle(u32 nDeviceUnitNumber) {
     LTDeviceUnit hDevice = 0;
     if (nDeviceUnitNumber < S.NumI2CConnections) {
         hDevice = LT_GetCore()->CreateHandle((LTInterface *)&s_ILTDriverI2C, sizeof(I2C_Instance *));
@@ -277,7 +279,7 @@ static LTDeviceUnit CommonDriverI2CBitbangImpl_CreateDeviceUnitHandle(u32 nDevic
     return hDevice;
 }
 
-static bool CommonDriverI2CBitbangImpl_GetDeviceCapabilities(LTDeviceUnit unit, LTDeviceI2C_Capabilities* pCaps) {
+static bool LTDriverI2CBitbangImpl_GetDeviceCapabilities(LTDeviceUnit unit, LTDeviceI2C_Capabilities* pCaps) {
     I2C_Instance * pInstance = InstanceFromHandle(unit);
     if (!pInstance || !pCaps) {
         LTLOG("i2c.init.err.caps", "handle %lx pInstance %p pCaps %p", LT_PLT_HANDLE(unit), pInstance, pCaps);
@@ -287,14 +289,14 @@ static bool CommonDriverI2CBitbangImpl_GetDeviceCapabilities(LTDeviceUnit unit, 
     return true;
 }
 
-static bool CommonDriverI2CBitbangImpl_GetDeviceConfiguration(LTDeviceUnit unit, LTDeviceI2C_Configuration* pI2CConfig) {
+static bool LTDriverI2CBitbangImpl_GetDeviceConfiguration(LTDeviceUnit unit, LTDeviceI2C_Configuration* pI2CConfig) {
     I2C_Instance * pInstance = InstanceFromHandle(unit);
     if (!pInstance || !pI2CConfig) return false;
     lt_memcpy(pI2CConfig, &pInstance->cfg, sizeof(LTDeviceI2C_Configuration));
     return true;
 }
 
-static bool CommonDriverI2CBitbangImpl_SetDeviceConfiguration(LTDeviceUnit unit, const LTDeviceI2C_Configuration* pI2CConfig) {
+static bool LTDriverI2CBitbangImpl_SetDeviceConfiguration(LTDeviceUnit unit, const LTDeviceI2C_Configuration* pI2CConfig) {
     I2C_Instance * pInstance = InstanceFromHandle(unit);
     if (!pInstance || !pI2CConfig) {
         LTLOG("cfg.instance.fail", "error");
@@ -322,6 +324,7 @@ static bool CommonDriverI2CBitbangImpl_SetDeviceConfiguration(LTDeviceUnit unit,
 #define LOW 0
 #define HIGH 1
 
+#if 0
 /* TODO: make a better busy uDelay function */
 #define NUM_NOPS 10
 static void I2CusDelayBusy(u32 uSec) {
@@ -337,15 +340,26 @@ static void I2CusDelayBusy(u32 uSec) {
     }while (LTTime_IsLessThan(current, target));
     return;
 }
+#endif
+
+#define SECTION_IRAM  __attribute__((section(".iram1.text")))
+SECTION_IRAM
+static void I2CusDelayBusy(u32 uSec) {
+    LTCore *pCore = LT_GetCore();
+    LT_SIZE nMask = pCore->Disable();
+    LTTime target = LTTime_Add(pCore ->GetKernelTime(), LTTime_Microseconds(uSec));
+    while (LTTime_IsLessThan(pCore->GetKernelTime(), target)) { }
+    pCore->Enable(nMask);
+}
 
 #define DELAY_I2C_BITBANG_US(us) I2CusDelayBusy(us)
-#define SDA_CONFIG_OUTPUT(pInst) s_pIBiDirBank->ConfigureAsOutput((pInst)->hSdaBank, kLTDevicePin_PinConfiguration_OutputType_PushPull)
+#define SDA_CONFIG_OUTPUT(pInst) s_pIBiDirBank->ConfigureAsOutput((pInst)->hSdaBank, kLTDevicePin_PinConfiguration_OutputType_OpenDrain)
 #define SDA_CONFIG_INPUT(pInst)  s_pIBiDirBank->ConfigureAsInput((pInst)->hSdaBank, kLTDevicePin_PinConfiguration_PullType_PullUp)
 #define SDA_SET(pInst,val) do { SDA_CONFIG_OUTPUT(pInst); s_pIBiDirBank->Set((pInst)->hSdaBank, val);}while (0)
 #define SCL_SET(pInst,val) s_pIBiDirBank->Set((pInst)->hSclBank, val)
 #define SDA_GET(pInst) s_pIBiDirBank->Read((pInst)->hSdaBank)
 
-static void CommonDriverI2CBitbangImpl_SendStartBit(I2C_Instance * pInstance) {
+static void LTDriverI2CBitbangImpl_SendStartBit(I2C_Instance * pInstance) {
     SDA_SET(pInstance,HIGH);
     DELAY_I2C_BITBANG_US(START_BIT);
     SCL_SET(pInstance,HIGH);
@@ -356,7 +370,7 @@ static void CommonDriverI2CBitbangImpl_SendStartBit(I2C_Instance * pInstance) {
     DELAY_I2C_BITBANG_US(START_BIT);
 }
 
-static void CommonDriverI2CBitbangImpl_SendStopBit(I2C_Instance * pInstance) {
+static void LTDriverI2CBitbangImpl_SendStopBit(I2C_Instance * pInstance) {
     SCL_SET(pInstance,LOW);
     DELAY_I2C_BITBANG_US(STOP_BIT);
     SDA_SET(pInstance,LOW);
@@ -366,7 +380,7 @@ static void CommonDriverI2CBitbangImpl_SendStopBit(I2C_Instance * pInstance) {
     SDA_SET(pInstance,HIGH);
 }
 
-static void CommonDriverI2CBitbangImpl_SendBit(I2C_Instance * pInstance, u8 bit) {
+static void LTDriverI2CBitbangImpl_SendBit(I2C_Instance * pInstance, u8 bit) {
     if(bit) {
         SDA_SET(pInstance,HIGH);
     } else {
@@ -380,7 +394,7 @@ static void CommonDriverI2CBitbangImpl_SendBit(I2C_Instance * pInstance, u8 bit)
     DELAY_I2C_BITBANG_US(CLOCK_LOW_LEVEL);
 }
 
-static u8 CommonDriverI2CBitbangImpl_ReceiveBit(I2C_Instance * pInstance) {
+static u8 LTDriverI2CBitbangImpl_ReceiveBit(I2C_Instance * pInstance) {
     u8 bit;
     SDA_CONFIG_INPUT(pInstance);
     SCL_SET(pInstance,HIGH);
@@ -395,32 +409,32 @@ static u8 CommonDriverI2CBitbangImpl_ReceiveBit(I2C_Instance * pInstance) {
     return bit;
 }
 
-static u8 CommonDriverI2CBitbangImpl_ReceiveByte(I2C_Instance * pInstance, bool AckBit) {
+static u8 LTDriverI2CBitbangImpl_ReceiveByte(I2C_Instance * pInstance, bool AckBit) {
     u8 byte = 0;
     for (u8 bit = 1 << 7; bit; bit >>= 1) {
-        if (CommonDriverI2CBitbangImpl_ReceiveBit(pInstance)) {
+        if (LTDriverI2CBitbangImpl_ReceiveBit(pInstance)) {
             byte |= bit;
         }
     }
-    CommonDriverI2CBitbangImpl_SendBit(pInstance, ((AckBit)?(1):(0)));
+    LTDriverI2CBitbangImpl_SendBit(pInstance, ((AckBit)?(1):(0)));
     return byte;
 }
 
-static bool CommonDriverI2CBitbangImpl_SendByte(I2C_Instance * pInstance, u8 byte) {
+static bool LTDriverI2CBitbangImpl_SendByte(I2C_Instance * pInstance, u8 byte) {
     for (u8 bit = 1 << 7; bit; bit >>= 1) {
-        CommonDriverI2CBitbangImpl_SendBit(pInstance, ((byte & bit)?(1):(0)));
+        LTDriverI2CBitbangImpl_SendBit(pInstance, ((byte & bit)?(1):(0)));
     }
     /* Read ACK bit */
-    return CommonDriverI2CBitbangImpl_ReceiveBit(pInstance);
+    return LTDriverI2CBitbangImpl_ReceiveBit(pInstance);
 }
 
-static void CommonDriverI2CBitbangImpl_SetTransferTimeout(LTDeviceUnit unit, LTTime timeout) {
+static void LTDriverI2CBitbangImpl_SetTransferTimeout(LTDeviceUnit unit, LTTime timeout) {
     LT_UNUSED(unit);
     LT_UNUSED(timeout);
     // this device has no loops for waiting on registers/data, so no timeout is needed
 }
 
-static bool CommonDriverI2CBitbangImpl_I2CMasterTransfer(LTDeviceUnit unit,
+static bool LTDriverI2CBitbangImpl_I2CMasterTransfer(LTDeviceUnit unit,
     u8 addr, void * rx_buffer, u32 rx_len, const void * tx_buffer, u32 tx_len,
     bool issue_start, bool issue_stop,
     LTI2C_I2CMasterTransferStatusCallback * pCallback, void * pClientData) {
@@ -430,33 +444,36 @@ static bool CommonDriverI2CBitbangImpl_I2CMasterTransfer(LTDeviceUnit unit,
     I2C_Instance * pInstance = InstanceFromHandle(unit);
     if (!pInstance || (!rx_len && !tx_len) || (!rx_buffer && !tx_buffer)) return false;
 
-    if (tx_buffer) {
-        if (issue_start) CommonDriverI2CBitbangImpl_SendStartBit(pInstance);
-        bool nack = CommonDriverI2CBitbangImpl_SendByte(pInstance, ((addr << 1) | 0));
-        if (nack) goto error_stop;
-        for (u32 i = 0; i< tx_len; i++) {
-            nack = CommonDriverI2CBitbangImpl_SendByte(pInstance, ((u8 *)tx_buffer)[i]);
-            if (nack) goto error_stop;
-        }
+    /* SCCB (used by OV sensors) requires STOP between the register-address
+     * write and the data read — repeated START is not supported.  When both
+     * tx and rx buffers are provided, close the write phase with a STOP then
+     * open the read phase with a fresh START. */
+    bool sccb_split = (tx_buffer && tx_len && rx_buffer && rx_len);
+
+    if (tx_buffer && tx_len) {
+        if (issue_start || sccb_split)
+            LTDriverI2CBitbangImpl_SendStartBit(pInstance);
+        /* SCCB does not guarantee ACK — ignore NACK on address and data bytes */
+        LTDriverI2CBitbangImpl_SendByte(pInstance, ((addr << 1) | 0));
+        for (u32 i = 0; i < tx_len; i++)
+            LTDriverI2CBitbangImpl_SendByte(pInstance, ((u8 *)tx_buffer)[i]);
+        if (issue_stop || sccb_split)
+            LTDriverI2CBitbangImpl_SendStopBit(pInstance);
     }
 
-    if (rx_buffer) {
-        if (issue_start) CommonDriverI2CBitbangImpl_SendStartBit(pInstance);
-        bool nack = CommonDriverI2CBitbangImpl_SendByte(pInstance, ((addr << 1) | 1));
-        if (nack) goto error_stop;
-        for (u32 i = 0; i< rx_len; i++) {
+    if (rx_buffer && rx_len) {
+        if (issue_start || sccb_split)
+            LTDriverI2CBitbangImpl_SendStartBit(pInstance);
+        LTDriverI2CBitbangImpl_SendByte(pInstance, ((addr << 1) | 1));
+        for (u32 i = 0; i < rx_len; i++) {
             bool lastByte = (i >= rx_len - 1);
-            ((u8 *)rx_buffer)[i] = CommonDriverI2CBitbangImpl_ReceiveByte(pInstance, lastByte);
+            ((u8 *)rx_buffer)[i] = LTDriverI2CBitbangImpl_ReceiveByte(pInstance, lastByte);
         }
+        if (issue_stop || sccb_split)
+            LTDriverI2CBitbangImpl_SendStopBit(pInstance);
     }
 
-    if (issue_stop) {
-        CommonDriverI2CBitbangImpl_SendStopBit(pInstance);
-    }
     return true;
-error_stop:
-    CommonDriverI2CBitbangImpl_SendStopBit(pInstance);
-    return false;
 }
 
 static void OnDestroyHandle(LTHandle hDevice) {
@@ -473,7 +490,7 @@ static void OnDestroyHandle(LTHandle hDevice) {
     }
 }
 
-static bool CommonDriverI2CBitbangImpl_Reset(LTDeviceUnit unit) {
+static bool LTDriverI2CBitbangImpl_Reset(LTDeviceUnit unit) {
     I2C_Instance * pInstance = InstanceFromHandle(unit);
     if (!pInstance) {
         LTLOG("reset.instance.fail", "error");
@@ -482,31 +499,31 @@ static bool CommonDriverI2CBitbangImpl_Reset(LTDeviceUnit unit) {
     return true;
 }
 
-static bool CommonDriverI2CBitbangImpl_ProbeAddress(LTDeviceUnit unit, u8 addr) {
+static bool LTDriverI2CBitbangImpl_ProbeAddress(LTDeviceUnit unit, u8 addr) {
     I2C_Instance * pInstance = InstanceFromHandle(unit);
     if (!pInstance) {
         LTLOG("probe.instance.fail", "error");
         return false;
     }
-    CommonDriverI2CBitbangImpl_SendStartBit(pInstance);
-    bool nack = CommonDriverI2CBitbangImpl_SendByte(pInstance, ((addr << 1) | 0));
-    CommonDriverI2CBitbangImpl_SendStopBit(pInstance);
+    LTDriverI2CBitbangImpl_SendStartBit(pInstance);
+    bool nack = LTDriverI2CBitbangImpl_SendByte(pInstance, ((addr << 1) | 0));
+    LTDriverI2CBitbangImpl_SendStopBit(pInstance);
     LTLOG_DEBUG("probe", "address %lx result %d", LT_Pu32((u32)addr), (!nack)?(1):(0));
     return !nack;
 }
 
 define_LTLIBRARY_INTERFACE(ILTDriverI2C, OnDestroyHandle) {
-    .GetBusIndexFromName    = CommonDriverI2CBitbangImpl_GetBusIndexFromName,
-    .GetDeviceCapabilities  = CommonDriverI2CBitbangImpl_GetDeviceCapabilities,
-    .GetDeviceConfiguration = CommonDriverI2CBitbangImpl_GetDeviceConfiguration,
-    .SetDeviceConfiguration = CommonDriverI2CBitbangImpl_SetDeviceConfiguration,
-    .SetTransferTimeout     = CommonDriverI2CBitbangImpl_SetTransferTimeout,
-    .I2CMasterTransfer      = CommonDriverI2CBitbangImpl_I2CMasterTransfer,
-    .Reset                  = CommonDriverI2CBitbangImpl_Reset,
-    .ProbeAddress           = CommonDriverI2CBitbangImpl_ProbeAddress
+    .GetBusIndexFromName    = LTDriverI2CBitbangImpl_GetBusIndexFromName,
+    .GetDeviceCapabilities  = LTDriverI2CBitbangImpl_GetDeviceCapabilities,
+    .GetDeviceConfiguration = LTDriverI2CBitbangImpl_GetDeviceConfiguration,
+    .SetDeviceConfiguration = LTDriverI2CBitbangImpl_SetDeviceConfiguration,
+    .SetTransferTimeout     = LTDriverI2CBitbangImpl_SetTransferTimeout,
+    .I2CMasterTransfer      = LTDriverI2CBitbangImpl_I2CMasterTransfer,
+    .Reset                  = LTDriverI2CBitbangImpl_Reset,
+    .ProbeAddress           = LTDriverI2CBitbangImpl_ProbeAddress
 } LTLIBRARY_DEFINITION;
 
-LTLIBRARY_EXPORT_INTERFACES(CommonDriverI2CBitbang, (ILTDriverI2C))
+LTLIBRARY_EXPORT_INTERFACES(LTDriverI2CBitbang, (ILTDriverI2C))
 
 /******************************************************************************
  *  LOG

@@ -19,9 +19,9 @@
 #include <lt/net/core/LTNetCore.h>
 
 #define MAX_NET_BUFFER 512
+#define NO_CONTENT_RESPONSE "HTTP/1.1 204 No Content\r\nConnection: keep-alive\r\n\r\n"
 
 static struct Statics {
-    LTCore               *iCore;
     ILTThread            *iThread;
     LTNetCore            *iNetCore;
     ILTEvent             *iEvent;
@@ -32,6 +32,8 @@ static struct Statics {
     u16                   totalThreads;
     LTArray              *arrayOfThreads;
     bool                  debug;
+    bool                  favIconRequested;
+    LTLibrary            *myself;
 } S;
 
 static const char *s_HttpHeader =
@@ -90,7 +92,7 @@ static int ComparePriority(const void *pElement1, const void *pElement2, void * 
 static void GetThreads(void) {
     S.arrayOfThreads->API->SetCount(S.arrayOfThreads, 0);
     S.iThread->SnapshotRunningThreads(ThreadsSnapshotCallback, S.arrayOfThreads);
-    s.arrayOfThreads->API->Sort(S.arrayOfThreads, ComparePriority, NULL);
+    S.arrayOfThreads->API->Sort(S.arrayOfThreads, ComparePriority, NULL);
     S.totalThreads = S.arrayOfThreads->API->GetCount(S.arrayOfThreads);
     lt_consoleprint("%d threads\n", S.totalThreads);
 }
@@ -138,6 +140,11 @@ static void OnSocketEvent(LTSocket hSocket, LTSocket_Event event, void *clientDa
             GetThreads();
             break;
         case kLTSocket_Event_WriteReady:
+            if (S.favIconRequested) {
+                iSocket->WriteSocket(hSocket, NO_CONTENT_RESPONSE, sizeof(NO_CONTENT_RESPONSE));
+                S.favIconRequested = false;
+                return;
+            }
             if (S.writeCount == 0) { // small, so blast it out
                 iSocket->WriteSocket(hSocket, s_HtmlHeader,  lt_strlen(s_HtmlHeader));
                 iSocket->WriteSocket(hSocket, s_TableHeader, lt_strlen(s_TableHeader));
@@ -160,6 +167,15 @@ static void OnSocketEvent(LTSocket hSocket, LTSocket_Event event, void *clientDa
                 if (len <= 0) break;
                 S.netBuffer[len] = 0;
                 LT_GetCore()->ConsolePutString(S.netBuffer);
+                if (lt_strncmp(S.netBuffer, "GET /exit", 9) == 0) {
+                    lt_consoleprint("/exit received, exiting server.\n");
+                    iSocket->DisconnectSocket(hSocket);
+                    iSocket->Destroy(hSocket);
+                    S.iThread->Terminate(S.iThread->GetCurrentThread());
+                }
+                else if (lt_strncmp(S.netBuffer, "GET /favicon.ico", 9) == 0) {
+                    S.favIconRequested = true;
+                }
             } while (true);
             break;
         case kLTSocket_Event_Disconnected:
@@ -185,19 +201,23 @@ static void OnNetCoreEvent(LTTransport hTransport, LTTransport_Event event, void
         if (S.hListenSocket) return; // socket already open
         char spec[80];
         S.iNetCore->GetTransportSpec(hTransport, spec, 80);
-        lt_consoleprint("Browse http://%s\n", GetIpAddress(spec));
+        const char * ip = GetIpAddress(spec);
+        lt_consoleprint("Browse http://%s\n", ip);
+        lt_consoleprint("Browse http://%s/exit to exit web server\n", ip);
         S.hListenSocket = S.iNetCore->OpenSocket(0, "tcp listen port: 80 ", OnSocketEvent, clientData);
     }
 }
 
 static void OnThreadExit(void) {
-    if (S.debug) lt_consoleprint("Exiting server\n");
-    lt_destroyobject(S.arrayOfThreads);
-    lt_free(S.netBuffer);
+    lt_consoleprint("Exiting server\n");
     ILTSocket *iSocket = lt_gethandleinterface(ILTSocket, S.hListenSocket);
     iSocket->Destroy(S.hListenSocket);
-    S.hListenSocket = 0;
-    S.iCore->DestroyHandle(S.hTransport);
+    lt_destroyhandle(S.hTransport);
+    lt_destroyobject(S.arrayOfThreads);
+    lt_free(S.netBuffer);
+    LTLibrary *library = (LTLibrary*)S.myself;
+    S = (struct Statics) { };
+    lt_closelibrary(library);
 }
 
 static bool OnThreadStart(void) {
@@ -209,27 +229,35 @@ static bool OnThreadStart(void) {
         return false;
     }
     S.hTransport = S.iNetCore->OpenTransport(NULL, OnNetCoreEvent, NULL);
+    if (S.hTransport) {
+        if (S.iNetCore->IsOperating(S.hTransport, kLTTransport_Nudge_None) >=0) {
+            OnNetCoreEvent(S.hTransport, kLTTransport_Event_Up, NULL);
+        }
+    }
     if (!S.hTransport) {
-        OnThreadExit();
         return false;
     }
+
     return true;
 }
 
 static int WebServer_Main(int argc, const char **argv) {
     S = (struct Statics) { // clears all other fields
-        .iCore    = LT_GetCore(),
         .iThread  = lt_getlibraryinterface(ILTThread, LT_GetCore()),
         .iEvent   = lt_getlibraryinterface(ILTEvent, LT_GetCore()),
         .iNetCore = lt_openlibrary(LTNetCore),
         .debug    = argc > 2 && (lt_strcmp(argv[2], "-d") == 0)
     };
     if (!S.iNetCore) return -1;
-    LTThread thread = S.iCore->CreateThread("LTWebServer");
+    LTThread thread = LT_GetCore()->CreateThread("LTWebServer");
     if (!thread) return -1;
     S.iThread->SetStackSize(thread, 2000);
-    S.iThread->Start(thread, OnThreadStart, OnThreadExit);
-    S.iThread->WaitUntilFinished(thread, LTTime_Infinite());
+    if (S.iThread->StartSynchronous(thread, OnThreadStart, OnThreadExit)) {
+        S.myself = LT_GetCore()->OpenLibrary("ExampleNetWebServer"); // open myself so the library doesn't get unloaded when main exits
+    }
+    else {
+        lt_consoleprint("Server failed to start.\n");
+    }
     return 0;
 }
 

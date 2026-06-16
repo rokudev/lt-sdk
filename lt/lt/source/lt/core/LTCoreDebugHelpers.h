@@ -83,6 +83,8 @@
    extended memstat shell command which will display information about each block that has been
    allocated. This information can be very helpful for understanding memory usage and debugging
    memory leaks. When done debugging, set LTCORE_TRACE_HEAP_ALLOCATIONS back to 0 (ZERO).
+   To get file and line information for each heap allocation set ENABLE_LT_CALLSITE_IN_RELEASE_MODE to 1
+   in LTTypes.h.
 */
 
 /*____________________________________________________________________

@@ -211,7 +211,7 @@ static int LTSystemShellImpl_Run(int argc, const char ** argv) {
 
 /*___________________________________________
  / LTSystemShell library interface binding */
-define_LTLIBRARY_ROOT_INTERFACE(LTSystemShell, LTSystemShellImpl_Run, 512) {
+define_LTLIBRARY_ROOT_INTERFACE(LTSystemShell, LTSystemShellImpl_Run, 1024) {
     .RegisterCommands             = &LTSystemShellImpl_RegisterCommands,
     .UnregisterCommands           = &LTSystemShellImpl_UnregisterCommands,
 } LTLIBRARY_DEFINITION;

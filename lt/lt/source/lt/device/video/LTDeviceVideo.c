@@ -101,7 +101,7 @@ static bool LTDeviceVideoImpl_LibInit(void) {
     do {
         s_driver = LTDeviceConfig_OpenDriverLibForDevice("LTDeviceVideo", 0);
         if (!s_driver) break;
-        s_hVideo = s_driver->CreateDeviceUnitHandle(1);
+        s_hVideo = s_driver->CreateDeviceUnitHandle(0);
         if (!s_hVideo) break;
         s_iVideo = lt_gethandleinterface(ILTVideo, s_hVideo);
         return true;

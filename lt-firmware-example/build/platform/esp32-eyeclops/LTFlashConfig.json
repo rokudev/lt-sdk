@@ -1,0 +1,96 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+/* WROOM 32 FLASH configuration for esp32-minimal */
+{
+  "platform": {
+    "name":         "wroom32",           /* Platform name                     */
+    "device":         "ESP32",           /* Target device (SoC)               */
+    "family":         "esp32",           /* Target device family              */
+    "endian":         "little"           /* Target endian: "little" or "big"  */
+   },
+
+  "flash": {
+    "block_size":        4096,           /* Size of minimum eraseable flash unit (sector) in bytes              */
+    "num_blocks":        1024,           /* Number of blocks in flash                                           */
+    "table_version":        0,           /* Partition table version number                                      */
+    "write_quantum":       32,           /* Encryption write alignment requirement                              */
+    "default_partition": "fw0"           /* Default partition name to program (typically a firmware partition)  */
+   },
+
+  "partitions": {                        /* Partition table */
+    "ltat" : {                             /*  Variables:                                                                             */
+      "offs": 0x0,                         /*   "offs" the block number offset (counting from 0) where partition starts               */
+      "size": 0x1,                         /*   "size" is the size of the partition given in blocks.                                  */
+      "type": "ltat",                      /*   "type" the type of the partition, see below for valid values                          */
+    },                                     /*   "file" (optional) the name of the source file used when building a full flash image.  */
+    "boot" : {                             /*                                                                                         */
+      "offs": 0x1,                         /*  Partition types (valid values for the "type" variable):                                */
+      "size": 0xc,                         /*    part     - LT partition table (size is one sector)                                   */
+      "type": "boot",                      /*    boot     - bootloader                                                                */
+      "file": "LTBootloader.bin",          /*    ltat     - LT authentication token                                                   */
+    },                                     /*    otainfo  - OTA update information (size = 1 sector per firmware partition)           */
+    "part" : {                             /*    fw       - firmware                                                                  */
+      "offs": 0x11,                        /*    fw_mfg   - manufacturing firmware                                                    */
+      "size": 0x1,                         /*    settings - settings partition                                                        */
+      "type": "part",                      /*    <custom> - a custom parition (any other name)                                        */
+      "file": "LTPartitionTable.bin",
+    },
+    "part_backup" : {
+      "offs": 0x12,
+      "size": 0x1,
+      "type": "part",
+      "file": "LTPartitionTable.bin",
+    },
+    "ota" : {
+      "offs": 0x13,
+      "size": 0x2,
+      "type": "otainfo",
+    },
+    "settings" : {
+      "offs": 0x17,
+      "size": 0x6,
+      "type": "settings",
+    },
+    "fw0" : {
+      "offs": 0x20,
+      "size": 0x1c0,
+      "type": "fw",
+      "file": "LTFirmwareImage.bin",
+    },
+    "fw1" : {
+      "offs": 0x200,
+      "size": 0x1c0,
+      "type": "fw",
+    },
+    "crashdump" : {
+      "offs": 0x3c0,
+      "size": 0x20,
+      "type": "misc",
+    },
+    "log" : {
+      "offs": 0x3e0,
+      "size": 0xc,
+      "type": "log",
+    },
+    "migration" : {
+      "offs": 0x3ec,
+      "size": 0xf,
+      "type": "misc",
+    },
+    "crypto" : {
+      "offs": 0x3fb,
+      "size": 0x4,
+      "type": "settings",
+    },
+    "prov" : {
+      "offs": 0x3ff,
+      "size": 0x1,
+      "type": "misc",
+    }
+  }
+}

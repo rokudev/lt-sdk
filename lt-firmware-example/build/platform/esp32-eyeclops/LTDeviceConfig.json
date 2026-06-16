@@ -1,0 +1,40 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+{
+ "config":{
+        "net":{ "transport": [ { "lib": "LTDriverNetTransportLwipWiFi" } ] },
+     "device":[
+                { "lib": "LTDeviceCrypto",   "driver": [ { "lib": "Esp32DriverCrypto"   } ] },
+                { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32DriverFlash"    } ] },
+                { "lib": "LTDeviceVideo",    "driver": [ { "lib": "Esp32DriverVideoDVP" } ] },
+                { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32DriverWatchdog" } ] },
+                { "lib": "LTDeviceWiFi",     "driver": [ { "lib": "Esp32DriverWiFi"     } ] },
+
+                { "lib": "LTDevicePins",
+                  "driver": [ { "lib": "Esp32DriverPins",
+                                "xclk-gpio": 0,
+                                "xclk-freq-hz": 16000000,
+                                "units": [ { "name": "cam-pwdn", "gpio": 32 },
+                                           { "name": "cam-sda",  "gpio": 26 },
+                                           { "name": "cam-scl",  "gpio": 27 } ] } ] },
+                { "lib": "LTDeviceI2C",
+                  "driver": [ { "lib": "LTDriverI2CBitbang",
+                                "units": [ { "name": "sccb",
+                                             "sda":  "cam-sda",
+                                             "scl":  "cam-scl" } ] } ] },
+                { "lib": "LTDeviceImageSensor",
+                  "driver": [ { "lib": "LTDriverImageSensorOV3660",
+                                "units": [ { "name":         "ov3660",
+                                             "i2c-bus":      "sccb",
+                                             "i2c-address":  60,
+                                             "powerdown-pin":"cam-pwdn" } ] } ] }
+              ]
+     },
+
+ "extra-libs":[ "LTThirdPartyLWIP", "Esp32_LTOSAdapter" ]
+}

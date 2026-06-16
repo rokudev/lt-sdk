@@ -266,9 +266,6 @@ typedef struct {
     #define LT_CALLSITE_FUNCTION_PARAMETER_PASSTHRU , callsite
     #define comma_lt_callsite()                     , (LTCallSite){__FILE__, __LINE__, lt_returnaddress()}
 #endif
-#if DISABLE_LT_CALLSITE
-#else
-#endif
 
 /****************************************************************************
  * 4. ATOMICS                                                               */

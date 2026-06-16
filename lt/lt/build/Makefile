@@ -2428,6 +2428,13 @@ saveconfig:
 endif
 
 ###########
+# help is not an actual target; it exists so a .mk file can check if help is in MAKECMDGOALS and make all: print help instead of build
+#
+.PHONY: help
+help:
+	@echo >/dev/null
+
+###########
 # dumpvar-%  prints VARNAME=value in the style of "make dumpvars" for interactive queries, e.g.
 #              % make dumpvar-LT_PRODUCT
 #              LT_PRODUCT=indoor_camera
