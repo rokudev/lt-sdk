@@ -112,6 +112,8 @@ LTCoreBSP_Initialize(const LTCoreBSP_LTCoreCallbacks * pCallbacks) {
     return &s_bsp;
 }
 
+
+
 void
 LTCoreBSP_Finalize(const LTCoreBSP * pBSP) {
     if ((! LTAtomic_Load(&s_LTCoreBSPInitialized)) || (pBSP != &s_bsp)) return; /* don't let anyone except LTCore in here */
@@ -147,7 +149,6 @@ void __wrap_longjmp(jmp_buf buf, int nVal) {
     esp_rom_printf("longjmp not supported.\n");
     while (1);
 }
-
 
 /*_____________________________
   LTCoreBSP interface struct */

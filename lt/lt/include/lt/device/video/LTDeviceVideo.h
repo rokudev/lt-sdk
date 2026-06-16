@@ -11,7 +11,7 @@
 #ifndef LT_INCLUDE_LT_DEVICE_VIDEO_LTDEVICEVIDEO_H
 #define LT_INCLUDE_LT_DEVICE_VIDEO_LTDEVICEVIDEO_H
 
-#include <lt/LTTypes.h>
+#include <lt/core/LTTime.h>
 LT_EXTERN_C_BEGIN
 
 // source generating raw image
@@ -60,10 +60,10 @@ typedef_LTENUM_SIZED(LTDeviceVideo_Param, s32) {
     kLTDeviceVideo_Param_GopLength,      // value = (LTDeviceVideo_Gop *)
     kLTDeviceVideo_Param_OsdLogo,        // value = (LTDeviceVideo_Osd *)
     kLTDeviceVideo_Param_OsdTimestamp,   // value = (LTDeviceVideo_Osd *),  data points to a timestamp string.
-    
+
     // Get resolution
-    kLTDeviceVideo_Param_ResolutionHD,   // value = (LTMediaVideoResolution *), get HD resolution of the video device
-    kLTDeviceVideo_Param_ResolutionSD,   // value = (LTMediaVideoResolution *), get SD resolution of the video device
+    kLTDeviceVideo_Param_ResolutionHD,   // value = (LTDeviceVideo_Resolution *), get HD resolution of the video device
+    kLTDeviceVideo_Param_ResolutionSD,   // value = (LTDeviceVideo_Resolution *), get SD resolution of the video device
 
     // kLTDeviceVideo_Param_More         // add more parameters here
     kLTDeviceVideo_Param_None = -1,
@@ -116,6 +116,11 @@ typedef struct LTDeviceVideo_TuningData {
     const u8 *data;
     u32 dataLen;
 } LTDeviceVideo_TuningData;
+
+typedef struct LTDeviceVideo_Resolution {
+    u32 width;
+    u32 height;
+} LTDeviceVideo_Resolution;
 
 typedef struct LTDeviceVideo_Bitrate {
     LTDeviceVideo_Channel channel;

@@ -59,7 +59,7 @@ static bool LTDeviceI2CImpl_LibInit(void) {
         }
     }
     s_pDriver_bb = (LTDriverLibrary *)
-        LT_GetCore()->OpenLibrary("CommonDriverI2CBitbang");
+        LT_GetCore()->OpenLibrary("LTDriverI2CBitbang");
     if (s_pDriver_bb) {
         s_ILTDriver_bb = lt_getlibraryinterface(ILTDriverI2C, s_pDriver_bb);
         if (s_ILTDriver_bb) {

@@ -43,6 +43,8 @@ DEFINE_LTLOG_SECTION("net.ip");
 //#define DBLOG(...) LTLOG_STOMP(__VA_ARGS__)
 #define DBLOG(...)
 
+#define TRANSPORT_THREAD_STACK_SIZE	1792
+
 /*******************************************************************************
 ** Debug and Code Documenting Definitions
 *******************************************************************************/
@@ -982,7 +984,7 @@ PUB u32 NetIpWiFi_OpenTransport(LTTransportData *tranData, LTSocket_Create *crea
     char name[20];
     lt_snprintf(name, 20, "LwipTran-%08x", LT_Pu32(tran));
     tran->hThread = S.iCore->CreateThread(name);
-    S.iThread->SetStackSize(tran->hThread, 1344);
+    S.iThread->SetStackSize(tran->hThread, TRANSPORT_THREAD_STACK_SIZE);
     S.iThread->SetThreadSpecificClientData(tran->hThread, LTNET_TRANSPORT_DATA_KEY, NULL, tran);
     S.iThread->StartSynchronous(tran->hThread, StartNetwork, StopNetwork);
     tran->openCount = 1;

@@ -1,6 +1,6 @@
 ################################################################################
-# CommonDriverI2CBitbang.mk - project makefile for the "common" platform's
-#				        "CommonDriverI2CBitbang" LT driver library
+# LTDriverI2CBitbang.mk - project makefile for the "common" platform's
+#				        "LTDriverI2CBitbang" LT driver library
 #
 # This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 # If a copy of the MPL was not distributed with this file, you can obtain one at
@@ -10,10 +10,11 @@
 ################################################################################
 
 # source dir and files
-LT_PROJECT_SOURCE_DIR	     :=	$(LT_PLATFORM_ROOT)/../common/source/common/driver/i2cbitbang
-LT_PROJECT_SOURCE_FILES      :=	CommonDriverI2CBitbangImpl.c
+LT_PROJECT_SOURCE_DIR		:=	$(LT_PROJECT_SOURCE_DIR_BASE)/lt/driver/i2c/bitbang
 
-# make
+LT_PROJECT_SOURCE_FILES     :=  LTDriverI2CBitbangImpl.c
+
+# get Rules.mk
 include $(LT_PROJECT_RULES_MAKEFILE)
 
 ###############################################################################

@@ -30,8 +30,10 @@ static u32               s_nNumDeviceUnits = 0;
  * Unload the Driver library:
  */
 static void ShutDownDriver(void) {
-    LT_GetCore()->CloseLibrary((LTLibrary *)s_pDriver);
+    lt_closelibrary(s_pDriver);
     s_pDriver = NULL;
+    s_nNumDeviceUnits = 0;
+    s_ILTDriver = NULL;
 }
 
 /******************************************************************************

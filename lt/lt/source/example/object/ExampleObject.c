@@ -60,11 +60,11 @@ static bool ExampleObject_LibInit(void) {
     return true;
 }
 
-static void LTUtilityMessagePackImpl_LibFini(void) {
+static void ExampleObject_LibFini(void) {
     lt_consoleprint("ExampleObject LibFini() !!\n");
 }
 
-define_LTObjectLibrary(1, ExampleObject_LibInit, LTUtilityMessagePackImpl_LibFini);
+define_LTObjectLibrary(1, ExampleObject_LibInit, ExampleObject_LibFini);
 
 /* ___
    LOG\_______________________________________________

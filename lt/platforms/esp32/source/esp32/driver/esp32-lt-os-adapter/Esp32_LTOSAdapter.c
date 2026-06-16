@@ -75,7 +75,7 @@ typedef struct handler_irq_info {
 /* Uncomment this for real debugging */
 // #define LT_DEBUG_WIRELESS_INFO                                      1
 #else
-#define LT_DEBUG_WIRELESS_ERROR                                     1
+//#define LT_DEBUG_WIRELESS_ERROR                                     1
 #endif
 
 /* Timing definitions */
@@ -3431,6 +3431,7 @@ static void lt_log_write(uint32_t level,
                          const char *tag,
                          const char *format, ...)
 {
+    LT_UNUSED(tag);
     lt_va_list args;
     lt_va_start(args, format);
     switch (level) {

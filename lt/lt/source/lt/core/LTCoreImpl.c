@@ -1317,6 +1317,7 @@ LTCoreImpl_MacroCreateObject(const char * pObjectName, const char * pSpecializat
             ltstring_destroy(objectRef);
         }
     }
+    bool bLibraryPrivateObject = false;
     const LTObjectApi * pObjectAPI = NULL;
     const char * pLibName = LTCoreImpl_FindLibraryFromObjectMap(pObjectName, pSpecialization);
     if (NULL == pLibName) {
@@ -1325,6 +1326,7 @@ LTCoreImpl_MacroCreateObject(const char * pObjectName, const char * pSpecializat
             pLibName = pObjectAPI->GetObjectLibrary()->GetLibraryExtrinsicName();
         }
         if (NULL == pLibName) return NULL;
+        bLibraryPrivateObject = true;
     }
     /* open the library before creating the object; this will load the lib if required and increase the ref count of the library */
     // LTLOG("macrocreateobject]", "%s%sopening %s for lt_createobject(%s, %s)", createParms->creatingLibrary ? createParms->creatingLibrary : "", createParms->creatingLibrary ? ": " : "", pLibName, pObjectName, pSpecialization);
@@ -1333,9 +1335,12 @@ LTCoreImpl_MacroCreateObject(const char * pObjectName, const char * pSpecializat
         /* we're creating an object from our own library, only open the library if it's already open;
            this will increase the reference count of the library; if the library isn't already open,
            it means we're creating a library object from it's LibInit proc; we won't open (we can't)
-           and won't increment the ref count of the lib
+           and won't increment the ref count of the lib.
+           NOTE: DRW 15-Jun-26, I'm preventing an openlibrary on itself also if there are private library objects still open
+           so that a close library can occur with private objects instantiated under the idea that the close will clean up those objects.
+           Probably should do this for all library created objects from the same library
         */
-       if (LTLibraryManager_IsLibraryOpen(pLibName)) pLibrary = LTLibraryManager_OpenLibrary(pLibName);
+       if ((! bLibraryPrivateObject) && LTLibraryManager_IsLibraryOpen(pLibName)) pLibrary = LTLibraryManager_OpenLibrary(pLibName);
        if (NULL == pObjectAPI) pObjectAPI = LTCoreImpl_FindObjectApiFromStaticallyBoundList(pObjectName, pSpecialization, *createParms->libraryExportedObjectList);
     }
     else {

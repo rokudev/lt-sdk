@@ -24,5 +24,22 @@ else
   LT_SMASH_ARG :=
 endif
 
+ifeq (help,$(findstring help,$(MAKECMDGOALS)))
+
+.PHONY: all
+all:
+	@echo "__________________"
+	@echo "FlashFirmware HELP"
+	@echo "---------------------------"
+	@echo " use 'make FlashFirmware' - to flash build into firmware partition"
+	@echo
+	@echo " use 'LT_FLASH=all make FlashFirmware' for first time flash init (all partitions flashed)"
+	@echo " use 'LT_NOSTUB=1  make FlashFirmware' for slower flashing on older ESP32 hardware"
+	@echo "==========================="
+
+else
+
 all:
 	$(LT_PLATFORM_ROOT)/build/image/esp32_flash_all.sh -D $(LT_FLASH_DEVICE) $(LT_NOSTUB_ARG) $(LT_SMASH_ARG) -c $(LT_PLATFORM_BUILD_PLATFORM_VARIANT_DIR)/LTFlashConfig.json -r $(LT_TARGET_BIN_DIR) program
+
+endif
