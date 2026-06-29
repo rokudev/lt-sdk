@@ -896,7 +896,11 @@ ifeq (1, $(LT_QUIET))
     LT_META_GOALS += quiet
     MAKECMDGOALS := $(strip $(subst quiet,,$(MAKECMDGOALS)))
 
-    LT_QUIET_CMD        :=
+    ifeq (listlibraries,$(findstring listlibraries,$(MAKECMDGOALS)))
+        LT_QUIET_CMD    := @echo > /dev/null
+    else
+        LT_QUIET_CMD    :=
+    endif
     LT_EXEC_CMD         := @
     LT_GNU_QUIET_ARG    := --quiet
     LT_UNZIP_FLAGS      := -q
