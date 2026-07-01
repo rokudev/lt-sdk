@@ -58,6 +58,6 @@ For reference only, and not an endorsement, some example ESP32 development board
 - [Espressif ESP32-DevKitC](https://www.espressif.com/en/products/devkits/esp32-devkitc/overview)
 - [Adafruit HUZZAH32 - ESP32 Feather Board (pre-soldered)](https://www.adafruit.com/product/3591)
 - [SparkFun ESP32 Thing](https://www.sparkfun.com/sparkfun-esp32-thing.html)
-- Don's advice is another option: [Amazon search for ESP32 camera boards](https://www.amazon.com/s?k=ESP32+cam)
+- [Amazon search for ESP32 camera boards](https://www.amazon.com/s?k=ESP32+cam)
 
 Availability, pricing, and features may vary by seller and region.
