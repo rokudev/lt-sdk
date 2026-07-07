@@ -94,6 +94,7 @@
 #                              directory which will receive all intermediate and final build artifacts.
 #                              If not specified, the LT_MASTER_MAKEFILE will derive it as ../..
 #                              relative to this Makefile location i.e. at the same level LT_OS_ROOT exists in.
+#                              May be overridden by creating Local.mk in the build directory.
 #    LT_PRODUCT              - the LT_PRODUCT variant within the product root to build for.  The term LT_PRODUCT_ROOT
 #                              is synonymous with "product family" and the term LT_PRODUCT is synonymous with "product
 #                              variant within a product family."  Product variants are located in subdirectories of the
@@ -203,6 +204,10 @@ else
     endif
     LT_PRODUCT_ROOT                 := $(abspath $(LT_PRODUCT_ROOT))
 endif
+
+# Include optional local overrides - create Local.mk to customize build paths
+# without environment variables. Silently ignored if absent.
+-include $(dir $(abspath $(lastword $(MAKEFILE_LIST))))Local.mk
 
 # LT_TARGET_ROOT
 ifeq (,$(LT_TARGET_ROOT))
