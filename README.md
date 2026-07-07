@@ -1,6 +1,6 @@
 Welcome to the _Roku LT Operating System_ open source distribution.
 
-You may view the <a href="https://go.roku.com/roku-lt-os-videos">LT Open Source instructional videos</a> and read the <a href="https://blog.roku.com/developer/roku-lt-os">LT Open Source announcement</a> to learn more.
+You may view the <a href="https://go.roku.com/roku-lt-os-videos">LT Open Source instructional videos</a> and read the <a href="https://blog.roku.com/developer/roku-lt-os">LT Open Source announcement</a> to learn more or read a <a href="LT-OS_Advantages.md">summary of LT-OS Advantages</a>.
 
 Before building LT OS for ESP32, ensure the pyserial Python module is installed. The bundled esptool.py requires it; otherwise you may see errors about pyserial not being installed. On Debian/Ubuntu Linux, install it with:
 ```
