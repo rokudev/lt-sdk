@@ -28,20 +28,17 @@ static bool STDriverFlashImpl_LibInit(void) {
 static void STDriverFlashImpl_LibFini(void) {
 }
 
-u32
-STDriverFlashImpl_GetNumDeviceUnits(void) {
+static u32 STDriverFlashImpl_GetNumDeviceUnits(void) {
     return 1;
 }
 
-LTDeviceUnit
-STDriverFlashImpl_CreateDeviceUnitHandle(u32 nDeviceUnitNumber) {
-    LTHandle hFlashDevice = (0 == nDeviceUnitNumber) ? STFlashDeviceUnit_CreateHandle() : 0;
-    return hFlashDevice;
+static LTDeviceUnit STDriverFlashImpl_CreateDeviceUnitHandle(u32 nDeviceUnitNumber) {
+    return (0 == nDeviceUnitNumber) ? STFlashDeviceUnit_CreateHandle() : 0;
 }
 
 
 /*******************************************************************************
  *  LOG
  *******************************************************************************
- *  23-Feb-26   augustus    created
+ *  23-Feb-26   augustus   created
  */

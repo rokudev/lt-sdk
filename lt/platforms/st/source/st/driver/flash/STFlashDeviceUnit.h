@@ -8,15 +8,20 @@
  * Copyright 2026 Roku Inc. All rights reserved.
  ******************************************************************************/
 
+#ifndef PLATFORMS_ST_SOURCE_ST_DRIVER_FLASH_STFLASHDEVICEUNIT_H
+#define PLATFORMS_ST_SOURCE_ST_DRIVER_FLASH_STFLASHDEVICEUNIT_H
+
 #include <lt/device/flash/LTDeviceFlash.h>
 
 /*__________________________________________________________________
  / STFlashDeviceUnit initialization and Handle Creation function */
-void STFlashDeviceUnit_Initialize(void);
+void         STFlashDeviceUnit_Initialize(void);
 LTDeviceUnit STFlashDeviceUnit_CreateHandle(void);
 
 /*******************************************************************************
  *  LOG
  *******************************************************************************
- *  23-Feb-26   augustus    created
+ *  23-Feb-26   augustus   created
  */
+
+#endif /* PLATFORMS_ST_SOURCE_ST_DRIVER_FLASH_STFLASHDEVICEUNIT_H */

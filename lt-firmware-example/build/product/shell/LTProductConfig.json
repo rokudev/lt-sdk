@@ -5,5 +5,10 @@
  *
  * Copyright 2026, Roku, Inc.  All rights reserved.
  ******************************************************************************/
-{"config":{"product":{"genesis":{ "lib":  "LTSystemShell" }
+{"config":{"product":{"genesis":{ "lib":  "LTSystemShell" },
+                        "build":{"libs":[
+                                         "LTUtilityByteOps",
+                                         "LTSystemSettings"
+                                        ]
+                        }
 }         }          }

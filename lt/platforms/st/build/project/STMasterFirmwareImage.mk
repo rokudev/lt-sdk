@@ -9,7 +9,7 @@
 ################################################################################
 
 # targets
-LT_PROJECT_POSTBUILD_TARGETS ?= firmware_image
+LT_PROJECT_POSTBUILD_TARGETS ?= firmware_image $(ST_PART_TABLE)
 
 include $(LT_PROJECT_RULES_MAKEFILE)
 
@@ -25,7 +25,8 @@ ST_LT_LIBRARIES := $(shell \
 	  LT_PLATFORM_ROOT=$(LT_PLATFORM_ROOT) LT_PLATFORM=$(LT_PLATFORM) \
 	   LT_PRODUCT_ROOT=$(LT_PRODUCT_ROOT)   LT_PRODUCT=$(LT_PRODUCT) \
 	    LT_TARGET_ROOT=$(LT_TARGET_ROOT) LT_BUILD_MODE=$(LT_BUILD_MODE) \
-	     MAKECMDGOALS=listlibraries $(MAKE) --no-print-directory listlibraries | grep -v LTBootloader)
+	     MAKECMDGOALS=listlibraries $(MAKE) --no-print-directory listlibraries | grep -v LTBootloader) \
+          $(LT_TARGET_LIB_DIR)/libstm32_sdk.a
 ST_LT_LIBRARIES_  := $(foreach ltlibrary, $(ST_LT_LIBRARIES),$(basename $(notdir $(ltlibrary))))
 ST_LT_LIBRARIES_L := $(foreach ltlibrary, $(ST_LT_LIBRARIES_),-l$(ltlibrary:lib%=%))
 
@@ -59,15 +60,18 @@ LT_LDFLAGS_MASTERING += -Wl,--cref
 LT_LDFLAGS_MASTERING += -Wl,--gc-sections
 LT_LDFLAGS_MASTERING += -o $(ST_ELF)
 
+ST_PART_TABLE := $(LT_TARGET_BIN_DIR)/LTPartitionTable.bin
+IMAGE_BUILDER := $(LT_TARGET_DIR_BUILDTOOLS)/bin/rib
+
 ############################################################################################################
 # Build the Vendor SDK
-$(ST_SDK):
-	$(MAKE) -C $(ST_VENDOR_SDK_ROOT)
+#$(ST_SDK):
+#	$(MAKE) -C $(ST_VENDOR_SDK_ROOT)
 
 ############################################################################################################
 # Link the image
 #
-$(ST_ELF): $(ST_SDK) $(ST_ELF_DEPENDENCIES)
+$(ST_ELF): $(ST_ELF_DEPENDENCIES) $(ST_PART_TABLE)
 	$(LT_QUIET_CMD)	@echo LINK $(ST_ELF)
 	$(LT_EXEC_CMD)  $(LT_CC) $(LT_LDFLAGS_MASTERING)
 	$(LT_QUIET_CMD) @echo GENERATE symbol list
@@ -82,7 +86,12 @@ $(ST_ELF): $(ST_SDK) $(ST_ELF_DEPENDENCIES)
 .PHONY: firmware_image
 firmware_image: $(ST_ELF)
 
+$(ST_PART_TABLE): $(LT_FLASH_CONFIG_JSON_FILE)
+	$(LT_QUIET_CMD) @echo Create partition table
+	$(LT_EXEC_CMD) $(IMAGE_BUILDER) -c $(LT_FLASH_CONFIG_JSON_FILE) -o $(ST_PART_TABLE) partition
+
+
 ###############################################################################
 #   LOG
 ###############################################################################
-#   19-Jan-21   tiberius    created
+#   19-Jan-21   tiberius       created

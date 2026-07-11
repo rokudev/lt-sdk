@@ -1297,11 +1297,13 @@ static bool
 LTSystemSettingsImpl_LibInit(void) {
     LTCore * pCore = LT_GetCore();
     s_pUtilityByteOps = lt_openlibrary(LTUtilityByteOps);
-    if (!s_pUtilityByteOps || !s_pUtilityByteOps) goto BAIL;
+    if (!s_pUtilityByteOps) {
+        LTLOG_YELLOWALERT("libinit", "failed to open LTUtilityByteOps");
+        goto BAIL;
+    }
     s_mutex = lt_createobject(LTMutex);
     if (!s_mutex) goto BAIL;
     s_hThread = pCore->CreateThread("Settings");
-    if (!s_hThread) goto BAIL;
     s_iThread = lt_gethandleinterface(ILTThread, s_hThread);
     if (!s_iThread) goto BAIL;
 
