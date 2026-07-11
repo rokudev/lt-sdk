@@ -120,6 +120,7 @@ alias   espwifi='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLATF
 alias   eyeclops='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLATFORM_ROOT=esp32 LT_PLATFORM=esp32-eyeclops LT_PRODUCT=eyeclops LT_BUILD_MODE=release && rehash'
 alias linuxshell='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLATFORM_ROOT=linux LT_PLATFORM=x86_minimal LT_PRODUCT=shell LT_BUILD_MODE=release && rehash'
 alias linuxwifi='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLATFORM_ROOT=linux LT_PLATFORM=x86_minimal_wifi LT_PRODUCT=shell-with-wifi LT_BUILD_MODE=release && rehash'
+alias stshell='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLATFORM_ROOT=st LT_PLATFORM=st-h755-nucleo-144-cm7 LT_PRODUCT=shell LT_BUILD_MODE=release && rehash'
 
 # quick aliases to run picocom on /dev/ttyUSB0
 alias pcom='picocom -b 115200 --imap=lfcrlf --omap=delbs --lower-dtr --lower-rts /dev/ttyUSB0'
@@ -133,8 +134,8 @@ echo
 echo "  ADDED ALIASES: build, bin, obj, stats"
 echo "               - quick cd into the build, bin, obj, and stats directories of the current build"
 echo
-echo "  ADDED ALIASES: espdhrystone, espshell, espwifi, linuxshell, linuxwifi"
-echo "               - quick set environment variables for building esp and linux builds of example firmware"
+echo "  ADDED ALIASES: espdhrystone, espshell, espwifi, linuxshell, linuxwifi, stshell"
+echo "               - quick set environment variables for building esp, linux, and stm32 builds of example firmware"
 echo
 echo "  ADDED ALIASES: eyeclops"
 echo "               - quick set environment variables for building new ESP32-CAM application demo"

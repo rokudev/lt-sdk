@@ -1,0 +1,50 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+
+{                                        /* stmh755 flash configuration */
+  "platform": {
+    "name":           "stmh755",          /* Platform name                     */
+    "device":         "stmh755",          /* Target device (SoC)               */
+    "family":         "stmh755",          /* Target device family              */
+    "endian":         "little"           /* Target endian: "little" or "big"  */
+   },
+
+  "flash": {
+    "block_size":      131072,           /* Size of minimum eraseable flash unit (sector) in bytes              */
+    "num_blocks":          16,           /* Number of blocks in flash                                           */
+    "table_version":        0,           /* Partition table version number                                      */
+    "write_quantum":       32,           /* Encryption write alignment requirement                              */
+    "default_partition": "fw0"           /* Default partition name to program (typically a firmware partition)  */
+   },
+
+  "partitions": {                        /* Partition table */
+      "fw0": {
+           "offs":   0,                     /*  Variables:                                                                             */
+           "size":   4,                     /*   "offs" the block number offset (counting from 0) where partition starts               */
+           "type": "fw",                    /*   "size" is the size of the partition given in blocks.                                  */
+           "file": "firmware.elf"           /*   "type" the type of the partition, see below for valid values                          */
+      },                                    /*   "file" (optional) the name of the source file used when building a full flash image.  */
+      "part": {                             /*                                                                                         */
+           "offs":   4,                     /*  Partition types (valid values for the "type" variable):                                */
+           "size":   1,                     /*    part     - LT partition table (size is one sector)                                   */
+           "type": "part",                  /*    boot     - bootloader                                                                */
+           "file": "LTPartitionTable.bin"   /*    ltat     - LT authentication token                                                   */
+      },                                    /*    otainfo  - OTA update information (size = 1 sector per firmware partition)           */
+      "part_backup": {                      /*    fw       - firmware                                                                  */
+           "offs":   5,                     /*    fw_mfg   - manufacturing firmware                                                    */
+           "size":   1,                     /*    settings - settings partition                                                        */
+           "type": "part",                  /*    <custom> - a custom parition (any other name)                                        */
+           "file": "LTPartitionTable.bin"
+      },
+      "settings": {
+           "offs":   6,
+           "size":   2,                     /* Uses two sectors for ping-pong. */
+           "type": "settings"
+      }
+  }
+}
