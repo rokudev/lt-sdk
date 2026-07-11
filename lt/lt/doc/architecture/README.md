@@ -8,6 +8,6 @@ them to like constructs found in Linux and FreeRTOS.
 
 1. <a href="LTCore.md">The LTCore Library architecture</a>
 2. <a href="LTCrypto.md">The LT Crypto system architecture</a>
-3. <a href="LTSystemSettinggs.md">The LTSystemSettings Library architecture</a>
+3. <a href="LTSystemSettings.md">The LTSystemSettings Library architecture</a>
 4. <a href="LTSystemTimeZone.md">The LT Clock Time and Time Zone architecture</a>
 5. <a href="LTThread.md">The LTThread architecture</a>
