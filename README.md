@@ -46,6 +46,10 @@ To perform first-time initialization of all flash partitions (build first):
 ```
 % LT_FLASH=all make FlashFirmware
 ```
+For a complete list of FlashFirmware options:
+```
+% make help FlashFirmware
+```
 
 ### Building for Linux
 ```
@@ -75,11 +79,26 @@ Currently LT is operational on the CM7 core of the stm32-h755-nucleo-144 board.
 % make quiet
 ```
 
-**To flash:**
+**To flash using STM32CubeProgrammer:**
 
 Flash using the STM32CubeProgrammer tool:
 1. Flash the file *targets/lt-firmware-example.shell/st.st-h755-nucleo-144-cm7/release/bin/firmware.elf* to flash sector 0.
 2. one time only - Flash the file *targets/lt-firmware-example.shell/st.st-h755-nucleo-144-cm7/release/bin/LTPartitionTable.bin* to flash sector 4 and to flash sector 5.
+
+**To flash using 'make FlashFirmware':**
+1. Install the STM32 Cube command line tools (stm32cubeclt)
+To flash:
+```
+% make FlashFirmware
+```
+To perform first-time initialization of all flash partitions (build first):
+```
+% LT_FLASH=all make FlashFirmware
+```
+For a complete list of FlashFirmware options:
+```
+% make help FlashFirmware
+```
 
 ### Sample ESP32 Development Boards
 For reference only, and not an endorsement, some example ESP32 development boards are:
