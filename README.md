@@ -87,6 +87,7 @@ Flash using the STM32CubeProgrammer tool:
 
 **To flash using 'make FlashFirmware':**
 1. Install the STM32 Cube command line tools (stm32cubeclt)
+
 To flash:
 ```
 % make FlashFirmware
