@@ -404,7 +404,7 @@ bool LTKMonitorWait(void * pMonitor, s64 nTimeoutNanoseconds);
 /********************
  * Memory Allocator */
 
-#define LTK_MAX_HEAP_REGIONS 4
+#define LTK_MAX_HEAP_REGIONS 8
     /**< Maximum number of heap regions tracked in the slot table.  Returned by
      *   LTKHeapAddRegionEx() as a sentinel when the table is full. */
 

@@ -23,8 +23,21 @@ __attribute__((weak)) void bootloader_clock_configure(void)
     // and will be done with the bootloader much earlier than UART FIFO is empty.
     esp_rom_uart_tx_wait_idle(0);
 
+#if CONFIG_IDF_TARGET_ESP32S3
+    /* Take the esp32s3 straight to its full rate. Keep other clocks unmodified.
+     *
+     * Reaching 240 MHz on this part means opening the LDO's six slaves in step
+     * with the frequency and moving the RTC and digital bias by a per-part PVT
+     * calibration, which rtc_clk_cpu_freq_to_pll_mhz() below does correctly. That
+     * code is linked here and not into the BSP, so the switch is made here rather
+     * than in Esp32_ClockInitialize(), which on this chip only reads the result
+     * back. The esp32 arm still leaves the CPU at 80 MHz for its own BSP to raise.
+     */
+    int cpu_freq_mhz = CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ;
+#else
     /* Set CPU to 80MHz. Keep other clocks unmodified. */
     int cpu_freq_mhz = 80;
+#endif
 
 #if CONFIG_IDF_TARGET_ESP32
     /* On ESP32 rev 0, switching to 80/160 MHz if clock was previously set to

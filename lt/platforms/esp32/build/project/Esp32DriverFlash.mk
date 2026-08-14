@@ -12,7 +12,7 @@
 ESP32_PLATFORM              := esp32
 
 # source dir and files
-LT_PROJECT_SOURCE_DIR       := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/flash
+LT_PROJECT_SOURCE_DIR       := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/flash/esp32
 LT_PROJECT_SOURCE_FILES     := Esp32DriverFlash.c
 LT_PROJECT_SOURCE_FILES     += Esp32FlashDeviceUnit.c
 LT_PROJECT_SOURCE_FILES     += Esp32SPIFlash.c
@@ -28,3 +28,5 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #   LOG
 ###############################################################################
 #   18-May-22   vitellius   created
+#   13-Aug-26   claudius    moved down into driver/flash/esp32, alongside the
+#                           esp32s3 driver sharing the platform root

@@ -1,0 +1,160 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+//
+// s3 flash configuration
+//
+// ESP32-S3 with 32MB of quad (QIO) SPI NOR flash. Developed against the
+// Waveshare ESP32-S3-Touch-AMOLED-2.06 (ESP32-S3R8 plus an external GigaDevice
+// part, JEDEC C8 40 19 = 32MB, and 8MB of octal PSRAM); the PSRAM does not
+// affect anything here.
+//
+// This layout is NOT a copy of the wroom32 one. Two things differ:
+//
+//   1. The bootloader sits at byte 0. The ESP32 ROM loads the second stage
+//      bootloader from 0x1000, but the S3 (and every later part) loads it from
+//      0x0, so "boot" takes block 0 and the LT authentication token that lived
+//      there on the ESP32 moves up behind it.
+//
+//   2. The device is 32MB rather than 4MB, so the firmware partitions are
+//      larger and the tail partitions sit at the end of the larger device.
+//
+// Offsets that are NOT free to move:
+//
+//   part        block 0x11 (byte 0x11000)  kLTBootPrimaryPartitionTableOffset
+//   part_backup block 0x12 (byte 0x12000)  kLTBootBackupPartitionTableOffset
+//
+// Both are compiled into the bootloader (ltbootloader/esp32s3/LTBootDriver.c) and
+// into Esp32s3DriverFlash (driver/flash/esp32s3/Esp32s3FlashDeviceUnit.c), so the
+// whole preamble below block 0x11 has to fit in the 17 blocks ahead of them.
+// Everything else is discovered at runtime through the partition table and may
+// be moved.
+//
+{
+  platform: {
+    // Platform name
+    name: "s3",
+
+    // Target device (SoC)
+    device: "ESP32-S3",
+
+    // Target device family
+    family: "esp32",
+
+    // Target endian: "little" or "big"
+    endian: "little"
+  },
+  flash: {
+    // Size of minimum eraseable flash unit (sector) in bytes
+    block_size: 4096,
+
+    // Number of blocks in flash (0x2000 blocks * 4096 bytes = 32MB)
+    num_blocks: 8192,
+
+    // Partition table version number
+    table_version: 0,
+
+    // Encryption write alignment requirement
+    write_quantum: 32,
+
+    // Default partition name to flash (typically a firmware partition)
+    default_partition: "fw0"
+  },
+  // Partition table
+  partitions: {
+    // The S3 ROM loads the second stage bootloader from byte 0, not 0x1000.
+    boot : {
+      offs: 0x0,
+      size: 0xc,
+      type: "boot",
+      file: "LTBootloader.bin",
+    },
+    // Displaced from block 0 by the bootloader. Located by type at runtime.
+    ltat : {
+      offs: 0xc,
+      size: 0x1,
+      type: "ltat",
+    },
+    // Blocks 0xd - 0x10 are deliberately left free, as on the ESP32.
+    part : {
+      offs: 0x11,
+      size: 0x1,
+      type: "part",
+      file: "LTPartitionTable.bin",
+    },
+    part_backup : {
+      offs: 0x12,
+      size: 0x1,
+      type: "part",
+      file: "LTPartitionTable.bin",
+    },
+    ota : {
+      offs: 0x13,
+      size: 0x2,
+      type: "otainfo",
+    },
+    settings : {
+      offs: 0x17,
+      size: 0x6,
+      type: "settings",
+    },
+    // 4MB per firmware slot, against 1.75MB on the 4MB wroom32 layout.
+    fw0 : {
+      offs: 0x20,
+      size: 0x400,
+      type: "fw",
+      file: "LTFirmwareImage.bin",
+    },
+    fw1 : {
+      offs: 0x420,
+      size: 0x400,
+      type: "fw",
+    },
+    // Blocks 0x820 - 0x1fbf (about 23.6MB) are unallocated and available for a
+    // future data or storage partition.
+    crashdump : {
+      offs: 0x1fc0,
+      size: 0x20,
+      type: "misc",
+    },
+    log : {
+      offs: 0x1fe0,
+      size: 0xc,
+      type: "log",
+    },
+    migration : {
+      offs: 0x1fec,
+      size: 0xf,
+      type: "misc",
+    },
+    crypto : {
+      offs: 0x1ffb,
+      size: 0x4,
+      type: "settings",
+    },
+    prov : {
+      offs: 0x1fff,
+      size: 0x1,
+      type: "misc",
+    }
+  }
+}
+// Reserved partition types:
+//   part     - LT partition table (size is one sector)
+//   boot     - bootloader
+//   ltat     - LT authentication token
+//   otainfo  - OTA update information (size in sectors equal to number of firmware partitions)
+//   fw       - firmware
+//   fw_mfg   - manufacturing firmware
+//   settings - settings partition
+//   misc     - an explicitly miscellaneous partition, identified by name rather than type.
+// Custom partition types (any other name)
+//   <custom> - none of the above, a miscellaneous partition
+//
+//  Partition offset ("offs") is the starting location of the partition (in blocks).
+//  Partition "size" is also given in blocks.
+//  Partition "file" is the optional source filename used for building a full flash image.

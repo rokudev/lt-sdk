@@ -91,8 +91,19 @@ bool Esp32GPIO_ConfigPin(u8 nPin,
                          Esp32GPIO_PullType pull,
                          Esp32GPIO_Function func);
 void Esp32GPIO_ConfigOutputType(u8 nPin, Esp32GPIO_OutputType outputType);
+/*
+ * Narrow read-modify-write accessors for the two IO_MUX pad fields that
+ * Esp32GPIO_ConfigPin() would otherwise overwrite wholesale.  These exist for
+ * pads that are driven by a peripheral rather than by the GPIO block - the
+ * flash and PSRAM pads, for one - where the rest of ConfigPin's work (output
+ * enable, pull configuration, defaulting the drive strength to 2) is either
+ * wrong or already done by the peripheral.
+ */
+void Esp32GPIO_ConfigPinFunction(u8 nPin, Esp32GPIO_Function func);
+void Esp32GPIO_ConfigPinDriveStrength(u8 nPin, u8 nDriveStrength);
 void Esp32GPIO_ConfigMatrixPin(u8 nPin, u8 nSignal, Esp32GPIO_Direction direction, bool bInv);
 void Esp32GPIO_ConfigPinHold(u8 nPin, bool bPinHold);
+void Esp32GPIO_ClearAllPinHolds(void);
 bool Esp32GPIO_AttachISR(u8 nPin, Esp32GPIO_Trigger trigger, Esp32_IRQCallback *pISR, void *pClientData);
 void Esp32GPIO_DetachISR(u8 nPin);
 bool Esp32GPIO_ReadPin(u8 nPin);

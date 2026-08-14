@@ -13,6 +13,8 @@ function usage {
     echo "  --dar                   disable auto-reboot after program";
     echo "  --smash                 write boot, prov, and part partitions";
     echo "  --nostub                do not load/use stub flasher image program";
+    echo "  --usbjtag               force the native USB (USB-Serial/JTAG) reset sequence";
+    echo "  --nousbjtag             force the classic DTR/RTS auto-reset sequence";
     echo "  --signed                use signed firmware image";
     echo "  -h, --help              give this help text";
 }
@@ -27,6 +29,7 @@ release_dir=""
 smash="false"
 signed="false"
 nostub="false"
+usbjtag=""
 
 function parse_args {
     script=$0
@@ -43,6 +46,8 @@ function parse_args {
             program )                     mode="program";          ;;
             --smash )                     smash="true";            ;;
             --nostub )                    nostub="true";           ;;
+            --usbjtag )                   usbjtag="usbjtag";       ;;
+            --nousbjtag )                 usbjtag="nousbjtag";     ;;
             --signed )                    signed="true";           ;;
             -h | --help )                 usage;                   exit;; # quit and show usage
             * )                           args+=("$1")             # if no match, add it to the positional args
@@ -146,14 +151,30 @@ elif [[ "$dar" == "true" ]]; then
     END_PROG_ARG="--dar"
 fi
 
-NOSTUB_ARG=""
+# rit takes a single -x, so collect every platform-specific option into one
+# comma-separated list. Passing them as separate -x flags silently drops all but
+# the last.
+PLATFORM_ARGS=""
+function add_platform_arg {
+    PLATFORM_ARGS="${PLATFORM_ARGS:+$PLATFORM_ARGS,}$1"
+}
+
 if [[ "$nostub" == "true" ]]; then
-    NOSTUB_ARG="-x nostub"
+    add_platform_arg nostub
 fi
 
-ENCRYPT_ARG=""
 if [[ "$extra" == "encrypt" ]]; then
-    ENCRYPT_ARG="-x encrypt"
+    add_platform_arg encrypt
+fi
+
+# Left unset, rit picks the reset sequence from the serial device name.
+if [[ -n "$usbjtag" ]]; then
+    add_platform_arg "$usbjtag"
+fi
+
+EXTRA_ARG=""
+if [[ -n "$PLATFORM_ARGS" ]]; then
+    EXTRA_ARG="-x $PLATFORM_ARGS"
 fi
 
 FIRMWARE_IMAGE="$release_dir/LTFirmwareImage.bin"
@@ -164,10 +185,10 @@ fi
 search_path="$LT_PLATFORM_BUILD_PLATFORM_VARIANT_DIR:$LT_PLATFORM_ROOT/build/image:."
 
 if [[ "$smash" == "true" ]]; then
-    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $BEG_PROG_ARG $NOSTUB_ARG $ENCRYPT_ARG -a boot -f $release_dir/LTBootloader.bin program
-    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $NOSTUB_ARG $ENCRYPT_ARG -a prov -f $release_dir/LTDeviceIdentity.bin program
-    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $NOSTUB_ARG $ENCRYPT_ARG -a part -f $release_dir/LTPartitionTable.bin program
-    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $NOSTUB_ARG $ENCRYPT_ARG -a settings erase
+    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $BEG_PROG_ARG $EXTRA_ARG -a boot -f $release_dir/LTBootloader.bin program
+    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $EXTRA_ARG -a prov -f $release_dir/LTDeviceIdentity.bin program
+    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $EXTRA_ARG -a part -f $release_dir/LTPartitionTable.bin program
+    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $EXTRA_ARG -a settings erase
 fi
-run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $NOSTUB_ARG $ENCRYPT_ARG -a ota erase
-run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $END_PROG_ARG $NOSTUB_ARG $ENCRYPT_ARG -a fw0  -f $FIRMWARE_IMAGE program
+run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $EXTRA_ARG -a ota erase
+run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $END_PROG_ARG $EXTRA_ARG -a fw0  -f $FIRMWARE_IMAGE program

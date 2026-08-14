@@ -10,7 +10,7 @@
 ################################################################################
 
 # source dir and files
-LT_PROJECT_SOURCE_DIR       := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/watchdog
+LT_PROJECT_SOURCE_DIR       := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/watchdog/esp32
 LT_PROJECT_SOURCE_FILES     := Esp32DriverWatchdogImpl.c
 
 LT_PUBLIC_INCLUDE_FLAGS     += -I$(LT_PLATFORM_PUBLIC_INCLUDE_DIR)/esp32
@@ -22,3 +22,5 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #   LOG
 ###############################################################################
 #   15-Jul-22   vitellius   created
+#   13-Aug-26   claudius    moved down into driver/watchdog/esp32, alongside the
+#                           esp32s3 driver sharing the platform root

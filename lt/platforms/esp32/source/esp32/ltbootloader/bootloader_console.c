@@ -22,6 +22,7 @@
 #include "esp32c3/rom/uart.h"
 #elif CONFIG_IDF_TARGET_ESP32S3
 #include "esp32s3/rom/uart.h"
+#include "hal/usb_serial_jtag_ll.h"
 #elif CONFIG_IDF_TARGET_ESP32H2
 #include "esp32h2/rom/ets_sys.h"
 #include "esp32h2/rom/uart.h"
@@ -113,9 +114,55 @@ void bootloader_console_init(void)
 #endif //CONFIG_ESP_CONSOLE_USB_CDC
 
 #ifdef CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+/*
+ * Discard whatever the host has sent us.
+ *
+ * The OUT endpoint does not drain itself.  Bytes from the host sit in the RX
+ * FIFO until software reads them, and while they sit there the endpoint NAKs
+ * every further OUT packet - so it is the *host's* write that never completes,
+ * not ours.  The bootloader wants none of this input, but it cannot afford to
+ * leave it either: a terminal that writes anything, or that merely drains the
+ * port while opening it, blocks indefinitely.  On Linux that wedges the process
+ * inside tty_wait_until_sent() while it holds the port's exclusive lock, which
+ * takes the console away from every later attempt too, so one stray keystroke
+ * costs you the log until you go and kill the process.
+ *
+ * Reading the FIFO empty is what re-arms the endpoint; clearing the packet-
+ * received status afterwards keeps us consistent with the driver LT will use in
+ * the application, and is harmless with the interrupt masked as it is here.
+ */
+static void bootloader_console_drain_rx(void)
+{
+    uint8_t discard;
+    while (usb_serial_jtag_ll_read_rxfifo(&discard, 1) != 0) { }
+    usb_serial_jtag_ll_clr_intsts_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
+}
+
+/*
+ * Draining per character is enough because the bootloader talks continuously and
+ * never reads the console, and it costs one register read when the FIFO is
+ * empty.  The gap it leaves: a host write during a silent stretch still stalls
+ * until the next character goes out.  Nothing in the bootloader is silent for
+ * long, so that has not been worth a timer.
+ */
+static void bootloader_console_write_char_usb_serial_jtag(char c)
+{
+    esp_rom_uart_putc(c);
+    bootloader_console_drain_rx();
+}
+
 void bootloader_console_init(void)
 {
     UartDevice *uart = GetUartDevice();
     uart->buff_uart_no = ESP_ROM_USB_SERIAL_DEVICE_NUM;
+
+    /* esp_rom_uart_putc resolves to ROM's ets_write_char_uart, which is already
+     * what channel 1 holds by default.  Installing the wrapper therefore changes
+     * nothing about how output reaches the host - it only adds the drain. */
+    esp_rom_install_channel_putc(1, bootloader_console_write_char_usb_serial_jtag);
+
+    /* The ROM printed its own banner before we got here, so the host may already
+     * have answered. */
+    bootloader_console_drain_rx();
 }
 #endif //CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG

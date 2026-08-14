@@ -279,7 +279,7 @@ static const FlashDeviceInterface * OpenDevice(Arguments * pArgs) {
             // Negative return value is -errno
             switch (-nRtn) {
             case EBUSY:
-                printf("Initialization error, serial port already open!\n");
+                printf("Initialization error, %s already open!\n", pArgs->pDeviceName ? pArgs->pDeviceName : "serial port");
                 break;
             case ETIMEDOUT:
                 printf("Timeout error, is device in programming mode?\n");
@@ -291,7 +291,7 @@ static const FlashDeviceInterface * OpenDevice(Arguments * pArgs) {
                 printf("Invalid argument or response, is device in programming mode?\n");
                 break;
             default:
-                printf("Initialization error, %s!\n", strerror(-nRtn));
+                printf("Initialization error: %s, %s.\n", pArgs->pDeviceName ? pArgs->pDeviceName : "serial port", strerror(-nRtn));
                 break;
             }
             pInterface = NULL;

@@ -370,6 +370,22 @@ SECTIONS
     _ext_ram_bss_end = ABSOLUTE(.);
   } > extern_ram_seg
 
+  /* Whatever is left of the external RAM window once the two gatherers above
+     have had their say - in practice the whole 4MB, since both are empty.  This
+     is the PSRAM heap region.
+
+     Note that these symbols describe the *window*, not the part.  Nothing here
+     knows whether a PSRAM die is fitted or how big it is; Esp32_PSRAM.c probes
+     for that at startup and clamps the region it registers to the smaller of
+     the detected size and this window.  On a board with no PSRAM it registers
+     nothing at all, and these symbols simply go unused. */
+  .heap4 (NOLOAD) :
+  {
+     _heap4_start = ABSOLUTE(.);
+     . = ORIGIN(extern_ram_seg) + LENGTH(extern_ram_seg);
+     _heap4_end = ABSOLUTE(.);
+  } > extern_ram_seg
+
   /* Shared RAM */
   .dram0.bss (NOLOAD) :
   {
@@ -583,3 +599,6 @@ ASSERT(((_heap2_end - ORIGIN(dram_app2_seg)) <= LENGTH(dram_app2_seg)),
 
 ASSERT(((_heap3_end - ORIGIN(dram_app3_seg)) <= LENGTH(dram_app3_seg)),
           "LT heap3 segment does not fit.")
+
+ASSERT(((_heap4_end - ORIGIN(extern_ram_seg)) <= LENGTH(extern_ram_seg)),
+          "LT heap4 segment does not fit.")

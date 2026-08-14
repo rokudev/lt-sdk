@@ -24,6 +24,7 @@ enum {
     kFlashSectorSize               = 4096,
     kFlashMaxWriteSize             = 4096,
     kFlashMaxReadSize              = 1024,
+    kMemoryMaxWriteSize            = 0x1800,
     kDataHeaderSize                = 16,
 
     kBaudRateInitial               = 115200,
@@ -33,10 +34,20 @@ enum {
     kResponseSizeROM               = 12,
     kResponseSizeFlasher           = 10,
 
+    // SPIFlashVerifyMD5 carries its digest inside the response frame, ahead of
+    // the status bytes, so its response is this much longer than the others.
+    kResponseSizeMD5Extra          = 16,
+    kResponseSizeMax               = kResponseSizeROM + kResponseSizeMD5Extra,
+
+    // Location of the chip magic word. This one address is common to every
+    // ESP32-family part; all other registers below are chip-specific.
     kRegisterChipID                = 0x40001000,
-    kRegisterAPBControlDate        = 0x3ff6607c,
-    kRegisterEFuseReadBase         = 0x3ff5a000,
-    kRegisterEFuseReadAESBase      = 0x3ff5a038,
+
+    // Original ESP32 (Xtensa LX6) only. These addresses are unmapped on the
+    // S3 and later, where a read would fault the ROM download loader.
+    kRegisterESP32APBControlDate   = 0x3ff6607c,
+    kRegisterESP32EFuseReadBase    = 0x3ff5a000,
+    kRegisterESP32EFuseReadAESBase = 0x3ff5a038,
 
     kDefaultSerialTimeoutMS        = 100,   // 100 ms
     kMinEraseSerialTimeoutMS       = 5000,  // 5s (minimum)
@@ -45,8 +56,13 @@ enum {
     kMemorySerialTimeoutMS         = 500,   // 500 ms
 };
 
-#define EFUSE_READ_REG(n)       (kRegisterEFuseReadBase + (sizeof(u32)*(n)))
-#define EFUSE_READ_AES_REG(n)   (kRegisterEFuseReadAESBase + (sizeof(u32)*(n)))
+// RTC_CNTL_SWD_AUTO_FEED_EN, too wide for an enum constant
+#define kRtcSwdAutoFeedEnable   0x80000000u
+
+#define countof(x)              (sizeof(x) / sizeof((x)[0]))
+
+#define EFUSE_READ_REG(n)       (kRegisterESP32EFuseReadBase + (sizeof(u32)*(n)))
+#define EFUSE_READ_AES_REG(n)   (kRegisterESP32EFuseReadAESBase + (sizeof(u32)*(n)))
 
 // ESP32 uses RFC1055 (SLIP) for serial communications
 typedef u8 SLIPCharCode;
@@ -63,6 +79,7 @@ enum CommandID {
     kCommandID_Sync                = 0x08,  // Initial sync with SoC
 
     kCommandID_ReadReg             = 0x0a,  // Read a register
+    kCommandID_WriteReg            = 0x09,  // Write a register
     kCommandID_MemoryBegin         = 0x05,  // Configure memory write
     kCommandID_MemoryData          = 0x07,  // Write memory
     kCommandID_MemoryEnd           = 0x06,  // Reboot into new program
@@ -73,9 +90,11 @@ enum CommandID {
     kCommandID_SPIFlashSetParams   = 0x0b,  // Set SPI params
     kCommandID_SPIFlashBegin       = 0x02,  // Erase flash sectors and configure subsequent write
     kCommandID_SPIFlashData        = 0x03,  // Write up to one flash sector  (per command)
+    kCommandID_SPIFlashEnd         = 0x04,  // Leave flash write mode
     kCommandID_SPIFlashAutoEncData = 0xd4,  // Encrypt/Write up to one flash sector (per command)
 
     kCommandID_SPIFlashRead        = 0xd2,  // Read flash
+    kCommandID_SPIFlashVerifyMD5   = 0x13,  // MD5 digest of a flash region
 };
 
 // Serial protocol header
@@ -94,37 +113,90 @@ typedef u32 static_assert_CommandHeader[(sizeof(CommandHeader) == 8) ? 0 : -1];
 // Supported ESP32 ChipIDs
 typedef u32 ChipID;
 enum ChipID {
-    kChipID_esp32       = 0x00f01d83
+    kChipID_esp32       = 0x00f01d83,
+    kChipID_esp32s3     = 0x00000009,
+};
+
+//
+// Per-chip register locations and serial protocol quirks. Anything that differs
+// between ESP32-family parts belongs here rather than in the flow above, so that
+// adding a part is a table entry plus a flasher stub.
+//
+typedef struct ChipInfo {
+    ChipID       nChipID;
+    const char * pName;                    // Also selects the stub in LTFlasher.json
+    bool         bEFuseRevision;           // Has the ESP32 eFuse revision/auto-encrypt layout
+    bool         bRomFlashBeginEncryptArg; // ROM SPIFlashBegin takes a trailing 'encrypted' word
+    // RTC watchdog registers, zero on parts with no native USB peripheral
+    u32          nRegRtcWdtWProtect;
+    u32          nRegRtcWdtConfig0;
+    u32          nRtcWdtWriteKey;
+    u32          nRegRtcSwdWProtect;
+    u32          nRegRtcSwdConf;
+    u32          nRtcSwdWriteKey;
+} ChipInfo;
+
+static const ChipInfo s_chipInfo[] = {
+    {   // Original ESP32 (Xtensa LX6). Reached through an external USB-to-UART
+        // bridge, so there is no native-USB watchdog quirk to work around.
+        .nChipID                  = kChipID_esp32,
+        .pName                    = "esp32",
+        .bEFuseRevision           = true,
+        .bRomFlashBeginEncryptArg = false,
+    },
+    {   // ESP32-S3 (Xtensa LX7)
+        .nChipID                  = kChipID_esp32s3,
+        .pName                    = "esp32s3",
+        .bEFuseRevision           = false,
+        .bRomFlashBeginEncryptArg = true,
+        .nRegRtcWdtWProtect       = 0x600080b0,
+        .nRegRtcWdtConfig0        = 0x60008098,
+        .nRtcWdtWriteKey          = 0x50d83aa1,
+        .nRegRtcSwdWProtect       = 0x600080b8,
+        .nRegRtcSwdConf           = 0x600080b4,
+        .nRtcSwdWriteKey          = 0x8f1d312a,
+    },
 };
 
 static int Reboot(void);
 
-static ChipID s_nChipID;
-static u8     s_nChipRevision;
-static bool   s_bAutoEncrypt   = false;
-static bool   s_flasherRunning = false;
-static u8     s_response[kResponseSizeROM];
+static ChipID          s_nChipID;
+static const ChipInfo *s_pChipInfo      = NULL;
+static u8              s_nChipRevision;
+static bool            s_bAutoEncrypt   = false;
+static bool            s_bNostub        = false;
+static bool            s_bNativeUSB     = false;
+static int             s_nForceNativeUSB = -1;  // -1: auto-detect, 0: off, 1: on
+static bool            s_flasherRunning = false;
+static u8              s_response[kResponseSizeMax];
 
 // Send an entire SLIP packet
+//
+// The frame is encoded into one buffer and written in a single call rather than
+// a character at a time. On a native USB port every write becomes its own USB
+// transaction, so sending byte by byte turns a six byte acknowledgement into six
+// round trips and a stub upload into thousands.
+enum { kSlipSendBufferSize = 2 * (kDataHeaderSize + kMemoryMaxWriteSize) + 2 };
+static u8 s_slipSendBuffer[kSlipSendBufferSize];
+
 static int SlipSend(u8 * pBufferToSend, u32 nLength) {
-    int nRtn = SerialSendChar(kSLIPCharCode_End);
-    if (nRtn < 0) return nRtn;
+    if ((2 * nLength) + 2 > sizeof(s_slipSendBuffer)) return -EMSGSIZE;
+    u32 nOut = 0;
+    s_slipSendBuffer[nOut++] = kSLIPCharCode_End;
     for (u32 nIdx = 0; nIdx < nLength; nIdx++) {
         u8 nCh = pBufferToSend[nIdx];
         if (nCh == kSLIPCharCode_End) {
-            nRtn = SerialSendChar(kSLIPCharCode_Escape);
-            if (nRtn < 0) return nRtn;
-            nRtn = SerialSendChar(kSLIPCharCode_EscapeEnd);
+            s_slipSendBuffer[nOut++] = kSLIPCharCode_Escape;
+            s_slipSendBuffer[nOut++] = kSLIPCharCode_EscapeEnd;
         } else if (nCh == kSLIPCharCode_Escape) {
-            nRtn = SerialSendChar(kSLIPCharCode_Escape);
-            if (nRtn < 0) return nRtn;
-            nRtn = SerialSendChar(kSLIPCharCode_EscapeEscape);
-        } else nRtn = SerialSendChar(nCh);
-        if (nRtn < 0) return nRtn;
+            s_slipSendBuffer[nOut++] = kSLIPCharCode_Escape;
+            s_slipSendBuffer[nOut++] = kSLIPCharCode_EscapeEscape;
+        } else {
+            s_slipSendBuffer[nOut++] = nCh;
+        }
     }
-    nRtn = SerialSendChar(kSLIPCharCode_End);
-    if (nRtn < 0) return nRtn;
-    return 0;
+    s_slipSendBuffer[nOut++] = kSLIPCharCode_End;
+    return SerialSend(s_slipSendBuffer, (int)nOut);
 }
 
 // Receive an entire SLIP packet
@@ -158,15 +230,13 @@ static int SlipRecv(u8 * pRecvBuffer, u16 nMaxLength) {
     return (int)nNumChars;
 }
 
-// Returns name for _supported_ ESP32 ChipIDs
-static const char * GetChipNameFromID(u32 nChipID) {
-    switch (nChipID) {
-    case kChipID_esp32:
-        return "esp32";
-    default:
-        // Invalid or non-supported Chip-ID...
-        return NULL;
+// Returns the descriptor for _supported_ ESP32 ChipIDs
+static const ChipInfo * GetChipInfoFromID(u32 nChipID) {
+    for (u32 nIdx = 0; nIdx < countof(s_chipInfo); nIdx++) {
+        if (s_chipInfo[nIdx].nChipID == nChipID) return &s_chipInfo[nIdx];
     }
+    // Invalid or non-supported Chip-ID...
+    return NULL;
 }
 
 // Serial protocol errors
@@ -187,7 +257,7 @@ static void PrintError(u16 nRtnCode) {
     }
 }
 
-// Single byte XOR checksum 
+// Single byte XOR checksum
 static u8 CalcChecksum(u8 * pInputBuffer, u16 nLength) {
     u8 nTmp = 0xef;
     for (u32 nIdx = 0; nIdx < nLength; nIdx++) {
@@ -197,9 +267,12 @@ static u8 CalcChecksum(u8 * pInputBuffer, u16 nLength) {
 }
 
 // Send command and receive response
+//
+// nExtraResponseSize is the size of any in-frame payload the command answers
+// with ahead of its status bytes; it is zero for everything but the MD5 digest.
 static int
-RunCommand(CommandID nCommandID, u8 * pCommandPayload,
-              u16 nCommandPayloadSize, u8 nChecksum) {
+RunCommandWithResponse(CommandID nCommandID, u8 * pCommandPayload,
+              u16 nCommandPayloadSize, u8 nChecksum, u16 nExtraResponseSize) {
 
     u32 nNumBytesToSend = sizeof(CommandHeader) + nCommandPayloadSize;
     u8 commandBuffer[nNumBytesToSend];
@@ -222,6 +295,7 @@ RunCommand(CommandID nCommandID, u8 * pCommandPayload,
 
     // Response size depends if running flasher or ROM code
     u16 nExpectedResponseSize = s_flasherRunning ? kResponseSizeFlasher : kResponseSizeROM;
+    nExpectedResponseSize += nExtraResponseSize;
 
     // Receive Response
     nRtn = SlipRecv(s_response, nExpectedResponseSize);
@@ -244,6 +318,13 @@ RunCommand(CommandID nCommandID, u8 * pCommandPayload,
     // Response operation must match command
     if (s_response[1] != nCommandID) return -EINVAL;
     return nRtn;
+}
+
+static int
+RunCommand(CommandID nCommandID, u8 * pCommandPayload,
+              u16 nCommandPayloadSize, u8 nChecksum) {
+    return RunCommandWithResponse(nCommandID, pCommandPayload, nCommandPayloadSize,
+                                  nChecksum, 0);
 }
 
 // Sync with ROM firmware
@@ -286,26 +367,64 @@ static int ReadRegister(u32 nAddress, u32 * pValue) {
     return 0;
 }
 
+// Write register using ROM firmware
+static int WriteRegister(u32 nAddress, u32 nValue) {
+    u32 writePayload[4];
+    ImageHostToDeviceU32(writePayload, nAddress);
+    ImageHostToDeviceU32(writePayload + 1, nValue);
+    ImageHostToDeviceU32(writePayload + 2, 0xffffffff);  // Write mask
+    ImageHostToDeviceU32(writePayload + 3, 0);           // Delay in microseconds
+    return RunCommand(kCommandID_WriteReg, (u8 *)writePayload, sizeof(writePayload), 0);
+}
+
+//
+// When the SoC is reached through its own USB peripheral the ROM leaves the RTC
+// watchdog and the super watchdog running, and either one will reset the board
+// part-way through a flash operation. Disable the RTC watchdog outright and put
+// the super watchdog into auto-feed. Both sit behind write-protect keys.
+//
+static int DisableWatchdogs(void) {
+    if (s_pChipInfo->nRegRtcWdtWProtect == 0) return 0;
+
+    // Disable the RTC watchdog
+    int nRtn = WriteRegister(s_pChipInfo->nRegRtcWdtWProtect, s_pChipInfo->nRtcWdtWriteKey);
+    if (nRtn < 0) return nRtn;
+    nRtn = WriteRegister(s_pChipInfo->nRegRtcWdtConfig0, 0);
+    if (nRtn < 0) return nRtn;
+    nRtn = WriteRegister(s_pChipInfo->nRegRtcWdtWProtect, 0);
+    if (nRtn < 0) return nRtn;
+
+    // Automatically feed the super watchdog
+    nRtn = WriteRegister(s_pChipInfo->nRegRtcSwdWProtect, s_pChipInfo->nRtcSwdWriteKey);
+    if (nRtn < 0) return nRtn;
+    u32 nConf;
+    nRtn = ReadRegister(s_pChipInfo->nRegRtcSwdConf, &nConf);
+    if (nRtn < 0) return nRtn;
+    nRtn = WriteRegister(s_pChipInfo->nRegRtcSwdConf, nConf | kRtcSwdAutoFeedEnable);
+    if (nRtn < 0) return nRtn;
+    return WriteRegister(s_pChipInfo->nRegRtcSwdWProtect, 0);
+}
+
 // Start memory write using ROM firmware
-static int MemoryBegin(u32 nAddress, u32 nSize) {
+static int MemoryBegin(u32 nAddress, u32 nSize, u32 nNumBlocks) {
     u32 beginPayload[4];
-    ImageHostToDeviceU32(beginPayload, nSize);         // Data Size
-    ImageHostToDeviceU32(beginPayload + 1, 1);         // Num blocks
-    ImageHostToDeviceU32(beginPayload + 2, 0x1800);    // Dummy block size (6144)
-    ImageHostToDeviceU32(beginPayload + 3, nAddress);  // Address to write
+    ImageHostToDeviceU32(beginPayload, nSize);                    // Data Size
+    ImageHostToDeviceU32(beginPayload + 1, nNumBlocks);           // Num blocks
+    ImageHostToDeviceU32(beginPayload + 2, kMemoryMaxWriteSize);  // Block size
+    ImageHostToDeviceU32(beginPayload + 3, nAddress);             // Address to write
     return RunCommand(kCommandID_MemoryBegin, (u8 *)beginPayload, sizeof(beginPayload), 0);
 }
 
-// Write memory using ROM firmware
-static int MemoryWrite(u8 * pData, u32 nSize) {
-    u8 writePayload[kDataHeaderSize + nSize];
+// Write one block of memory using ROM firmware
+static int MemoryWrite(u8 * pData, u32 nSize, u32 nBlockNo) {
+    u8 writePayload[kDataHeaderSize + kMemoryMaxWriteSize];
     ImageHostToDeviceU32((u32 *)(writePayload), nSize);
-    ImageHostToDeviceU32((u32 *)(writePayload + 4), 0);
+    ImageHostToDeviceU32((u32 *)(writePayload + 4), nBlockNo);
     ImageHostToDeviceU32((u32 *)(writePayload + 8), 0);
     ImageHostToDeviceU32((u32 *)(writePayload + 12), 0);
     memcpy(writePayload + kDataHeaderSize, pData, nSize);
     u8 nChecksum = CalcChecksum(pData, nSize);
-    return RunCommand(kCommandID_MemoryData, writePayload, sizeof(writePayload), nChecksum);
+    return RunCommand(kCommandID_MemoryData, writePayload, kDataHeaderSize + nSize, nChecksum);
 }
 
 // Reboot into flasher from ROM firmware
@@ -364,7 +483,8 @@ static int InitSPIFlash(void) {
 }
 
 static int EraseFlash(Area * pArea, Image * pImage) {
-    u32 beginPayload[4];
+    u32 beginPayload[5];
+    u32 nPayloadSize = 4 * sizeof(u32);
     u32 nSectors;
     if (pImage) {
         ImageHostToDeviceU32(beginPayload, pImage->nSize);
@@ -377,6 +497,14 @@ static int EraseFlash(Area * pArea, Image * pImage) {
     ImageHostToDeviceU32(beginPayload + 2, kFlashSectorSize);
     ImageHostToDeviceU32(beginPayload + 3, pArea->nOffset);
 
+    // The S3 and later ROM loaders take a trailing flag that selects encrypted
+    // flash mode; the flasher stub does not. Encrypted writes always go through
+    // the stub (see Esp32Program), so the flag is always clear here.
+    if (s_pChipInfo->bRomFlashBeginEncryptArg && !s_flasherRunning) {
+        ImageHostToDeviceU32(beginPayload + 4, 0);
+        nPayloadSize = sizeof(beginPayload);
+    }
+
     // Calculate and set timeout for erase operation
     u32 nSerialTimeoutMS = nSectors * kEraseSerialTimeoutPerSectorMS;
     if (nSerialTimeoutMS < kMinEraseSerialTimeoutMS) nSerialTimeoutMS = kMinEraseSerialTimeoutMS;
@@ -384,23 +512,145 @@ static int EraseFlash(Area * pArea, Image * pImage) {
     if (nRtn < 0) return nRtn;
 
     // Erase
-    nRtn = RunCommand(kCommandID_SPIFlashBegin, (u8 *)beginPayload, sizeof(beginPayload), 0);
+    nRtn = RunCommand(kCommandID_SPIFlashBegin, (u8 *)beginPayload, nPayloadSize, 0);
     if (nRtn < 0) return nRtn;
 
     // Reset timeout
     return SerialSetTimeout(kDefaultSerialTimeoutMS);
 }
 
+//
+// Close out a flash write that went through the flasher stub.
+//
+// The stub answers each SPIFlashData command as soon as it has taken the block,
+// not once the block has reached the flash: its handle_flash_data() waits for
+// the part to go idle before the *next* write, so when the response to the last
+// block arrives that block's page programs are still running. Reboot() then
+// drops EN a few hundred microseconds later and the tail of the image is left
+// unwritten -- a varying couple of hundred bytes of 0xff, which the LT
+// bootloader reports as "Checksum failed. Calculated 0x.. read 0xff" while rit
+// itself prints 100% and [OK]. That is the whole reason LT_NOSTUB=1 looked
+// mandatory on this platform; the ROM download loader programs synchronously
+// and so needs none of this.
+//
+// SPIFlashEnd leaves flash mode and hands back the error the stub deferred: a
+// failed SPI operation sets fs.last_error and is reported here and nowhere
+// else. SPIFlashVerifyMD5 is the barrier -- the stub's read path waits for the
+// flash to go idle before it reads a byte -- so once the digest comes back the
+// image is committed. The digest is not compared, rit has no MD5 of its own,
+// but a read that fails still surfaces as a command error.
+//
+static int FinishFlashWrite(Area * pArea, Image * pImage) {
+    if (!s_flasherRunning) return 0;
+
+    u32 nEndPayload = ImageHostToDeviceU32(NULL, 1);  // Non-zero: do not reboot
+    int nRtn = RunCommand(kCommandID_SPIFlashEnd, (u8 *)&nEndPayload, sizeof(nEndPayload), 0);
+    if (nRtn < 0) return nRtn;
+
+    // Hashing the last block written is enough. The wait for idle happens
+    // before the stub reads its first byte, so the barrier does not get any
+    // stronger by covering more, while hashing a whole image would need a
+    // size-dependent timeout -- in large flash mode the stub reads through the
+    // ROM OPI driver sixteen bytes per command, which is slow enough to trip
+    // kFlashSerialTimeoutMS well before a megabyte is digested.
+    u32 nBarrierSize = kFlashMaxWriteSize;
+    if (pImage->nSize < nBarrierSize) nBarrierSize = pImage->nSize;
+
+    u32 md5Payload[4];
+    ImageHostToDeviceU32(md5Payload, pArea->nOffset + pImage->nSize - nBarrierSize);
+    ImageHostToDeviceU32(md5Payload + 1, nBarrierSize);
+    ImageHostToDeviceU32(md5Payload + 2, 0);
+    ImageHostToDeviceU32(md5Payload + 3, 0);
+    return RunCommandWithResponse(kCommandID_SPIFlashVerifyMD5, (u8 *)md5Payload,
+                                  sizeof(md5Payload), 0, kResponseSizeMD5Extra);
+}
+
+//
+// Classic auto-reset: DTR and RTS drive GPIO0 and EN through a transistor pair
+// alongside the USB-to-UART bridge (ESP32 devkits, ESP32-CAM, ...).
+//
+static void ResetIntoDownloadModeClassic(void) {
+    SerialSetDTR(false);   // IO0 = HIGH
+    SerialSetRTS(true);    // EN  = LOW, chip in reset
+    usleep(100000);
+    SerialSetDTR(true);    // IO0 = LOW
+    SerialSetRTS(false);   // EN  = HIGH, chip out of reset
+    usleep(50000);
+    SerialSetDTR(false);   // IO0 = HIGH, done
+}
+
+//
+// Reset sequence for a SoC reached through its own USB-Serial/JTAG peripheral.
+// There is no external reset circuit here: the peripheral interprets the CDC
+// control-line state itself, and only latches the combination when the
+// transition passes through (1,1). Going through (0,0), as the classic sequence
+// does, drops the USB link instead of entering download mode.
+//
+// RTS is asserted twice on purpose -- Windows only propagates DTR when RTS is
+// set, so the second write is what carries the new DTR state.
+//
+static void ResetIntoDownloadModeUSBJTAG(void) {
+    SerialSetRTS(false);
+    SerialSetDTR(false);   // Idle
+    usleep(100000);
+    SerialSetDTR(true);    // Set IO0
+    SerialSetRTS(false);
+    usleep(100000);
+    SerialSetRTS(true);    // Reset, inverted order to pass through (1,1)
+    SerialSetDTR(false);
+    SerialSetRTS(true);
+    usleep(100000);
+    SerialSetDTR(false);
+    SerialSetRTS(false);   // Chip out of reset
+}
+
+// Probe the ESP32 eFuses for the chip revision and ROM auto-encryption state
+static int ReadESP32ChipRevision(bool * pbAutoEncryptAvailable) {
+    u32 nTemp;
+    s_nChipRevision = 0;
+    int nRtn = ReadRegister(EFUSE_READ_REG(3), &nTemp);
+    if (nRtn < 0) return nRtn;
+    if ((nTemp >> 15) & 0x1) {
+        s_nChipRevision = 1;
+        nRtn = ReadRegister(EFUSE_READ_REG(5), &nTemp);
+        if (nRtn < 0) return nRtn;
+        if ((nTemp >> 20) & 0x1) {
+            s_nChipRevision = 2;
+            nRtn = ReadRegister(kRegisterESP32APBControlDate, &nTemp);
+            if (nRtn < 0) return nRtn;
+            if ((nTemp >> 31) & 0x1) {
+                s_nChipRevision = 3;
+            }
+        }
+    }
+    printf("ESP32 chip detected: %s V%u\n", s_pChipInfo->pName, s_nChipRevision);
+
+    if (s_nChipRevision == 3) {
+        nRtn = ReadRegister(EFUSE_READ_REG(0), &nTemp);
+        if (nRtn < 0) return nRtn;
+        if ((nTemp >> 16) & 0x1) {
+            *pbAutoEncryptAvailable = true;
+            printf("Note: Auto-encryption available (flash AES key read protect set)\n");
+        } else {
+            for (u32 nIx = 0; nIx < 8; nIx++) {
+                nRtn = ReadRegister(EFUSE_READ_AES_REG(nIx), &nTemp);
+                if (nRtn < 0) return nRtn;
+                if (nTemp) {
+                    *pbAutoEncryptAvailable = true;
+                    printf("Note: Auto-encryption available (flash AES key is non-zero)\n");
+                    break;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 static int TargetInit(bool bAutoProgram) {
     // Place in download mode (if auto programming enabled)
     if (bAutoProgram) {
-        SerialSetDTR(false);
-        SerialSetRTS(true);
-        usleep(100000);
-        SerialSetDTR(true);
-        SerialSetRTS(false);
-        usleep(50000);
-        SerialSetDTR(false);
+        if (s_bNativeUSB) ResetIntoDownloadModeUSBJTAG();
+        else              ResetIntoDownloadModeClassic();
     }
 
     // Sync with SoC ROM code
@@ -410,51 +660,31 @@ static int TargetInit(bool bAutoProgram) {
     // Read and verify the ChipID
     nRtn = ReadRegister(kRegisterChipID, &s_nChipID);
     if (nRtn < 0) return nRtn;
-    const char * pChipName = GetChipNameFromID(s_nChipID);
-    if (pChipName == NULL) {
+    s_pChipInfo = GetChipInfoFromID(s_nChipID);
+    if (s_pChipInfo == NULL) {
         printf("ESP32 chip ID 0x%08x not supported\n", s_nChipID);
         return -1;
     }
 
-    // Determine ESP32 chip revision and ROM auto-encryption state
-    u32 nTemp;
-    s_nChipRevision = 0;
-    nRtn = ReadRegister(EFUSE_READ_REG(3), &nTemp);
-    if (nRtn < 0) return nRtn;
-    if ((nTemp >> 15) & 0x1) {
-        s_nChipRevision = 1;
-        nRtn = ReadRegister(EFUSE_READ_REG(5), &nTemp);
+    // Silence the watchdogs before they can reset the board mid-operation. The
+    // stub does this for itself, so skip it if the stub is already resident.
+    if (s_bNativeUSB && !s_flasherRunning) {
+        nRtn = DisableWatchdogs();
         if (nRtn < 0) return nRtn;
-        if ((nTemp >> 20) & 0x1) {
-            s_nChipRevision = 2;
-            nRtn = ReadRegister(kRegisterAPBControlDate, &nTemp);
-            if (nRtn < 0) return nRtn;
-            if ((nTemp >> 31) & 0x1) {
-                s_nChipRevision = 3;
-            }
-        }
     }
-    printf("ESP32 chip detected: %s V%u\n", pChipName, s_nChipRevision);
 
+    // Determine chip revision and ROM auto-encryption state. The eFuse layout
+    // below is specific to the original ESP32; on later parts the revision is
+    // unused (it only selects a serial speed) so it is not worth probing.
     bool bAutoEncryptAvailable = false;
-    if (s_nChipRevision == 3) {
-        nRtn = ReadRegister(EFUSE_READ_REG(0), &nTemp);
+    if (s_pChipInfo->bEFuseRevision) {
+        nRtn = ReadESP32ChipRevision(&bAutoEncryptAvailable);
         if (nRtn < 0) return nRtn;
-        if ((nTemp >> 16) & 0x1) {
-            bAutoEncryptAvailable = true;
-            printf("Note: Auto-encryption available (flash AES key read protect set)\n");
-        } else {
-            for (u32 nIx = 0; nIx < 8; nIx++) {
-                nRtn = ReadRegister(EFUSE_READ_AES_REG(nIx), &nTemp);
-                if (nRtn < 0) return nRtn;
-                if (nTemp) {
-                    bAutoEncryptAvailable = true;
-                    printf("Note: Auto-encryption available (flash AES key is non-zero)\n");
-                    break;
-                }
-            }
-        }
+    } else {
+        s_nChipRevision = 0;
+        printf("ESP32 chip detected: %s\n", s_pChipInfo->pName);
     }
+
     // Cancel requested auto-encrypt if not available
     if (s_bAutoEncrypt && !bAutoEncryptAvailable) {
         s_bAutoEncrypt = false;
@@ -482,9 +712,11 @@ static int TargetInit(bool bAutoProgram) {
 //
 static int Esp32LoadAndRunFlasher(void) {
     if (s_flasherRunning) return 0;
+    if (s_bNostub) return -1;
 
     Image flasherImage;
-    if (ImageGetFlasherImage(&flasherImage, GetChipNameFromID(s_nChipID)) < 0) {
+    if (ImageGetFlasherImage(&flasherImage, s_pChipInfo->pName) < 0) {
+        printf("No flasher image available for %s\n", s_pChipInfo->pName);
         return -1;
     }
     if (flasherImage.nSize < 12) {
@@ -510,8 +742,11 @@ static int Esp32LoadAndRunFlasher(void) {
             printf("Truncated flasher payload or invalid size\n");
             return -1;
         }
-        // Write memory
-        int nRtn = MemoryBegin(nAddress, nSize);
+        // Write memory, a block at a time. Stub sections are small, but not always
+        // small enough to fit a single block: the ESP32-S3 text section is 5244 bytes
+        // against a 6144 byte block, and later parts are larger still.
+        u32 nNumBlocks = (nSize + kMemoryMaxWriteSize - 1) / kMemoryMaxWriteSize;
+        int nRtn = MemoryBegin(nAddress, nSize, nNumBlocks);
         if (nRtn < 0) {
             printf("Memory start failed\n");
             return nRtn;
@@ -519,10 +754,15 @@ static int Esp32LoadAndRunFlasher(void) {
         // Lengthen timeout for memory write operation
         nRtn = SerialSetTimeout(kMemorySerialTimeoutMS);
         if (nRtn < 0) return nRtn;
-        nRtn = MemoryWrite(pIn, nSize);
-        if (nRtn < 0) {
-            printf("Memory write failed\n");
-            return nRtn;
+        for (u32 nBlockNo = 0; nBlockNo < nNumBlocks; nBlockNo++) {
+            u32 nOffset    = nBlockNo * kMemoryMaxWriteSize;
+            u32 nBlockSize = nSize - nOffset;
+            if (nBlockSize > kMemoryMaxWriteSize) nBlockSize = kMemoryMaxWriteSize;
+            nRtn = MemoryWrite(pIn + nOffset, nBlockSize, nBlockNo);
+            if (nRtn < 0) {
+                printf("Memory write failed\n");
+                return nRtn;
+            }
         }
         nRtn = SerialSetTimeout(kDefaultSerialTimeoutMS);
         if (nRtn < 0) return nRtn;
@@ -549,12 +789,21 @@ static int Esp32Erase(Area * pArea) {
 }
 
 static int Esp32GoToHighSpeed(void) {
+    // A native USB connection is not a UART: the baud rate is a fiction on both
+    // ends, and asking the ROM to change it only risks losing sync.
+    if (s_bNativeUSB) return 0;
+
     // Go to high speed (if supported)
-    if (s_flasherRunning && s_nChipRevision >= 2) {
+    if (s_flasherRunning && (!s_pChipInfo->bEFuseRevision || s_nChipRevision >= 2)) {
         return ChangeSpeed(kBaudRateFastFlasher);
     } else {
         return ChangeSpeed(kBaudRateFastROM);
     }
+}
+
+static int Esp32ReturnToInitialSpeed(void) {
+    if (s_bNativeUSB) return 0;
+    return ChangeSpeed(kBaudRateInitial);
 }
 
 static int Esp32Program(Area * pArea, Image * pImage) {
@@ -625,11 +874,15 @@ static int Esp32Program(Area * pArea, Image * pImage) {
     }
     printf("\n");
 
+    // Commit the last block before anything can reset the chip
+    nRtn = FinishFlashWrite(pArea, pImage);
+    if (nRtn < 0) return nRtn;
+
     // Return to initial timeout and speed
     nRtn = SerialSetTimeout(kDefaultSerialTimeoutMS);
     if (nRtn < 0) return nRtn;
 
-    return ChangeSpeed(kBaudRateInitial);
+    return Esp32ReturnToInitialSpeed();
 }
 
 static int Esp32Read(Area * pArea, Image * pImage) {
@@ -654,7 +907,7 @@ static int Esp32Read(Area * pArea, Image * pImage) {
     ImageHostToDeviceU32(readPayload, pArea->nOffset);         // Offset
     ImageHostToDeviceU32(readPayload + 1, pArea->nMaxSize);    // Length in bytes
     ImageHostToDeviceU32(readPayload + 2, kFlashMaxReadSize);  // Block size
-    ImageHostToDeviceU32(readPayload + 3, 64);                 // ???
+    ImageHostToDeviceU32(readPayload + 3, 64);                 // Max packets in flight
     nRtn = RunCommand(kCommandID_SPIFlashRead, (u8 *)readPayload, sizeof(readPayload), 0);
     if (nRtn < 0) return nRtn;
 
@@ -696,20 +949,50 @@ static int Esp32Read(Area * pArea, Image * pImage) {
     nRtn = SerialSetTimeout(kDefaultSerialTimeoutMS);
     if (nRtn < 0) return nRtn;
 
-    return ChangeSpeed(kBaudRateInitial);
+    return Esp32ReturnToInitialSpeed();
 }
 
-static int Open(const char * pDeviceName, bool bAutoProgram, const char * pPlatformArgs) {
-    if (pPlatformArgs && pPlatformArgs[0] != '\0') {
-        if (strcmp(pPlatformArgs, "encrypt") == 0) {
+//
+// Platform-specific arguments, given to rit as a comma-separated list, e.g.
+// "-x nostub,usbjtag":
+//
+//   encrypt    program through the ROM auto-encryption path
+//   nostub     do not load or use the flasher stub image
+//   usbjtag    force the native USB (USB-Serial/JTAG) reset and flash sequence
+//   nousbjtag  force the classic DTR/RTS auto-reset sequence
+//
+static int ParsePlatformArgs(const char * pPlatformArgs) {
+    while (pPlatformArgs && *pPlatformArgs != '\0') {
+        const char * pComma = strchr(pPlatformArgs, ',');
+        size_t nLength = pComma ? (size_t)(pComma - pPlatformArgs) : strlen(pPlatformArgs);
+        if (nLength == 7 && strncmp(pPlatformArgs, "encrypt", nLength) == 0) {
             s_bAutoEncrypt = true;
+        } else if (nLength == 6 && strncmp(pPlatformArgs, "nostub", nLength) == 0) {
+            s_bNostub = true;
+        } else if (nLength == 7 && strncmp(pPlatformArgs, "usbjtag", nLength) == 0) {
+            s_nForceNativeUSB = 1;
+        } else if (nLength == 9 && strncmp(pPlatformArgs, "nousbjtag", nLength) == 0) {
+            s_nForceNativeUSB = 0;
         } else {
             printf("Invalid platform-specific arguments\n");
             return -1;
         }
+        pPlatformArgs = pComma ? (pComma + 1) : (pPlatformArgs + nLength);
     }
-    int nRtn = SerialOpen(pDeviceName, kBaudRateInitial, kDefaultSerialTimeoutMS);
+    return 0;
+}
+
+static int Open(const char * pDeviceName, bool bAutoProgram, const char * pPlatformArgs) {
+    int nRtn = ParsePlatformArgs(pPlatformArgs);
     if (nRtn < 0) return nRtn;
+
+    nRtn = SerialOpen(pDeviceName, kBaudRateInitial, kDefaultSerialTimeoutMS);
+    if (nRtn < 0) return nRtn;
+
+    s_bNativeUSB = (s_nForceNativeUSB >= 0) ? (s_nForceNativeUSB != 0) : SerialIsNativeUSB();
+    if (s_bNativeUSB) {
+        printf("Using native USB (USB-Serial/JTAG) reset sequence, fixed serial speed\n");
+    }
     return TargetInit(bAutoProgram);
 }
 

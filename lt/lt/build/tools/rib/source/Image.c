@@ -798,12 +798,12 @@ static int SetSearchPath(char * pPaths) {
             int size = sizeof(s_searchPaths);
             int len = pPlatformBuildVariantDir ? lt_snprintf(s_searchPaths, size, "%s", pPlatformBuildVariantDir)
                                                : lt_snprintf(s_searchPaths, size, "%s/build/platform/%s", pPlatformRoot, pPlatform);
-            printf("@@@ pPlatformBuildVariantDir = %s\n", pPlatformBuildVariantDir ? pPlatformBuildVariantDir : "<NULL>");
+            // printf("@@@ pPlatformBuildVariantDir = %s\n", pPlatformBuildVariantDir ? pPlatformBuildVariantDir : "<NULL>");
             if (len < 0 || len >= size) nRtn = -1;
             if (nRtn == 0) {
                 if (nRtn == 0) {
                     /* Check required search path */
-                    printf("@@@ s_searchPaths = %s\n", s_searchPaths);
+                    // printf("@@@ s_searchPaths = %s\n", s_searchPaths);
                     nRtn = StatPaths(s_searchPaths);
                 }
                 size -= len;

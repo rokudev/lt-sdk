@@ -132,24 +132,55 @@ static esp_err_t s_calculate_image_public_key_digests(uint32_t flash_offset, uin
     return ret;
 }
 
+/* The purposes that mark an efuse key block as holding a secure boot key digest.
+   The esp32 reserves one block for the job; the esp32s3 takes up to three of its
+   six general key blocks, and which ones is not fixed. */
+static const esp_efuse_purpose_t s_secure_boot_key_purpose[SECURE_BOOT_NUM_BLOCKS] = {
+#ifdef CONFIG_IDF_TARGET_ESP32
+    ESP_EFUSE_KEY_PURPOSE_SECURE_BOOT_V2,
+#else
+    ESP_EFUSE_KEY_PURPOSE_SECURE_BOOT_DIGEST0,
+    ESP_EFUSE_KEY_PURPOSE_SECURE_BOOT_DIGEST1,
+    ESP_EFUSE_KEY_PURPOSE_SECURE_BOOT_DIGEST2,
+#endif // CONFIG_IDF_TARGET_ESP32
+};
+
+/* Report whether this part has been given a secure boot key digest, and, if
+   blocks is not NULL, which block each digest sits in - SECURE_BOOT_NUM_BLOCKS
+   entries, EFUSE_BLK_KEY_MAX for the ones that are absent.
+
+   A digest is recognised by the purpose of the block holding it rather than by
+   the block's number, which is the only formulation that holds on both parts:
+   the esp32's secure boot block answers to its purpose too, while nothing pins
+   the esp32s3's digests to particular blocks. */
+static bool HasSecureBootKeyDigest(esp_efuse_block_t *blocks)
+{
+    esp_efuse_block_t discard[SECURE_BOOT_NUM_BLOCKS];
+    if (blocks == NULL) {
+        blocks = discard;
+    }
+
+    bool has_secure_boot_digest = false;
+    for (unsigned i = 0; i < SECURE_BOOT_NUM_BLOCKS; i++) {
+        blocks[i] = EFUSE_BLK_KEY_MAX;
+        bool tmp_has_key = esp_efuse_find_purpose(s_secure_boot_key_purpose[i], &blocks[i]);
+        if (tmp_has_key) { // For ESP32: esp_efuse_find_purpose() always returns True, need to check whether the key block is used or not.
+            tmp_has_key &= !esp_efuse_key_block_unused(blocks[i]);
+        }
+        has_secure_boot_digest |= tmp_has_key;
+    }
+    return has_secure_boot_digest;
+}
+
 static esp_err_t check_and_generate_secure_boot_keys(const esp_image_metadata_t *image_data)
 {
     esp_err_t ret;
 #ifdef CONFIG_IDF_TARGET_ESP32
-    esp_efuse_purpose_t secure_boot_key_purpose[SECURE_BOOT_NUM_BLOCKS] = {
-        ESP_EFUSE_KEY_PURPOSE_SECURE_BOOT_V2,
-    };
     esp_efuse_coding_scheme_t coding_scheme = esp_efuse_get_coding_scheme(EFUSE_BLK_SECURE_BOOT);
     if (coding_scheme != EFUSE_CODING_SCHEME_NONE) {
         ESP_LOGE(TAG, "No coding schemes are supported in secure boot v2.(Detected scheme: 0x%x)", coding_scheme);
         return ESP_ERR_NOT_SUPPORTED;
     }
-#else
-    esp_efuse_purpose_t secure_boot_key_purpose[SECURE_BOOT_NUM_BLOCKS] = {
-        ESP_EFUSE_KEY_PURPOSE_SECURE_BOOT_DIGEST0,
-        ESP_EFUSE_KEY_PURPOSE_SECURE_BOOT_DIGEST1,
-        ESP_EFUSE_KEY_PURPOSE_SECURE_BOOT_DIGEST2,
-    };
 #endif // CONFIG_IDF_TARGET_ESP32
 
     /* Verify the bootloader */
@@ -160,17 +191,8 @@ static esp_err_t check_and_generate_secure_boot_keys(const esp_image_metadata_t 
         return ret;
     }
 
-    /* Initialize all efuse block entries to invalid (max) value */
-    esp_efuse_block_t blocks[SECURE_BOOT_NUM_BLOCKS] = {[0 ... SECURE_BOOT_NUM_BLOCKS-1] = EFUSE_BLK_KEY_MAX};
-    /* Check if secure boot digests are present */
-    bool has_secure_boot_digest = false;
-    for (unsigned i = 0; i < SECURE_BOOT_NUM_BLOCKS; i++) {
-        bool tmp_has_key = esp_efuse_find_purpose(secure_boot_key_purpose[i], &blocks[i]);
-        if (tmp_has_key) { // For ESP32: esp_efuse_find_purpose() always returns True, need to check whether the key block is used or not.
-            tmp_has_key &= !esp_efuse_key_block_unused(blocks[i]);
-        }
-        has_secure_boot_digest |= tmp_has_key;
-    }
+    esp_efuse_block_t blocks[SECURE_BOOT_NUM_BLOCKS];
+    bool has_secure_boot_digest = HasSecureBootKeyDigest(blocks);
 
     esp_image_sig_public_key_digests_t boot_key_digests = {0};
     esp_image_sig_public_key_digests_t app_key_digests = {0};
@@ -191,7 +213,7 @@ static esp_err_t check_and_generate_secure_boot_keys(const esp_image_metadata_t 
         ESP_LOGI(TAG, "%d signature block(s) found appended to the bootloader.", boot_key_digests.num_digests);
 
         ESP_LOGI(TAG, "Burning public key hash to eFuse");
-        ret = esp_efuse_write_keys(secure_boot_key_purpose, boot_key_digests.key_digests, boot_key_digests.num_digests);
+        ret = esp_efuse_write_keys(s_secure_boot_key_purpose, boot_key_digests.key_digests, boot_key_digests.num_digests);
         if (ret != ESP_OK) {
             if (ret == ESP_ERR_NOT_ENOUGH_UNUSED_KEY_BLOCKS) {
                 ESP_LOGE(TAG, "Bootloader signatures(%d) more than available key slots.", boot_key_digests.num_digests);
@@ -276,7 +298,7 @@ esp_err_t esp_secure_boot_v2_permanently_enable(const esp_image_metadata_t *imag
     err = check_and_generate_secure_boot_keys(image_data);
     if (err != ESP_OK) {
         esp_efuse_batch_write_cancel();
-        if (err == ESP_FAIL && esp_efuse_key_block_unused(EFUSE_BLK2)) {
+        if (err == ESP_FAIL && !HasSecureBootKeyDigest(NULL)) {
             /* no keys found, but we need to be sure it's the only way to end up with ESP_FAIL here, and it's safe to proceed with a normal boot */
             ESP_LOGI(TAG, "Secure boot key writing canceled - key is not available");
             return ESP_OK;

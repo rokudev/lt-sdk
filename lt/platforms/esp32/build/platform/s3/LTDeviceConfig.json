@@ -1,0 +1,20 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+//
+// Minimal device set for the s3 variant, mirroring the "minimal" variant.
+// The drivers are the S3 specific ones; the esp32 versions are pinned to the
+// esp32 register set and headers and cannot serve this chip.
+//
+{
+  "config":{
+    "device":[ { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32s3DriverFlash" } ] },
+               { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32s3DriverWatchdog" } ] }
+             ]
+           },
+    "memory":{ "regions":[ { "name": "psram", "region": 4 } ] }
+}

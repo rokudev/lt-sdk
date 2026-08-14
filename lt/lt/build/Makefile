@@ -2185,13 +2185,18 @@ $(foreach lt_project, $(LT_OS_ALL_KNOWN_PROJECTS), rebuild-$(lt_project)):
 # rebuild-<lt_platform_projects>
 # rebuild-<lt_platform_projects>
 # rebuild-<lt_platform_projects>, e.g. make rebuild-HalfordDriverFlash, make rebuild-HalfordDriverPins
+# LT_TARGET_RULE_DEFS has to be passed here just as the plain build rules above pass it.
+# Every project reached by this rule is a driver, mastering or bootloader project, and
+# all three of those classes take $(LT_PLATFORM_PROJECT_ONLY_DEFS), so the one value
+# covers the lot.  Without it a rebuild- compiles with a different include path than a
+# plain make of the same project, which shows up as a header that cannot be found.
 $(foreach lt_project, $(LT_PLATFORM_ALL_KNOWN_PROJECTS), rebuild-$(lt_project)):
 	$(LT_ARROWLINE)
 	@echo $(LT_ARROW_SEPARATOR) Rebuilding $(subst rebuild-,,$@)
 	@if [ -f $(LT_PLATFORM_BUILD_PLATFORM_VARIANT_DIR)/$(subst rebuild-,,$@).mk ]; then \
-		LT_PROJECT_BUILD_SHARED_LIB=yes LT_PROJECT_BUILD_STATIC_LIB=no LT_PROJECT_BUILD_EXECUTABLE=no LT_PROJECT_ARTIFACT= LT_PROJECT_SOURCE_DIR_BASE=$(LT_PLATFORM_PRIVATE_SOURCE_DIR) LT_PUBLIC_INCLUDE_FLAGS="$(LT_CFLAGS_PLATFORM_INCLUDE)" LT_PROJECT=$(subst rebuild-,,$@) $(MAKE) --no-print-directory -f $(LT_PLATFORM_BUILD_PLATFORM_VARIANT_DIR)/$(subst rebuild-,,$@).mk clean all; \
+		LT_PROJECT_BUILD_SHARED_LIB=yes LT_PROJECT_BUILD_STATIC_LIB=no LT_PROJECT_BUILD_EXECUTABLE=no LT_PROJECT_ARTIFACT= LT_PROJECT_SOURCE_DIR_BASE=$(LT_PLATFORM_PRIVATE_SOURCE_DIR) LT_PUBLIC_INCLUDE_FLAGS="$(LT_CFLAGS_PLATFORM_INCLUDE)" LT_TARGET_RULE_DEFS="$(LT_PLATFORM_PROJECT_ONLY_DEFS)" LT_PROJECT=$(subst rebuild-,,$@) $(MAKE) --no-print-directory -f $(LT_PLATFORM_BUILD_PLATFORM_VARIANT_DIR)/$(subst rebuild-,,$@).mk clean all; \
 	else \
-		LT_PROJECT_BUILD_SHARED_LIB=yes LT_PROJECT_BUILD_STATIC_LIB=no LT_PROJECT_BUILD_EXECUTABLE=no LT_PROJECT_ARTIFACT= LT_PROJECT_SOURCE_DIR_BASE=$(LT_PLATFORM_PRIVATE_SOURCE_DIR) LT_PUBLIC_INCLUDE_FLAGS="$(LT_CFLAGS_PLATFORM_INCLUDE)" LT_PROJECT=$(subst rebuild-,,$@) $(MAKE) --no-print-directory -f $(LT_PLATFORM_BUILD_PROJECT_DIR)/$(subst rebuild-,,$@).mk clean all; \
+		LT_PROJECT_BUILD_SHARED_LIB=yes LT_PROJECT_BUILD_STATIC_LIB=no LT_PROJECT_BUILD_EXECUTABLE=no LT_PROJECT_ARTIFACT= LT_PROJECT_SOURCE_DIR_BASE=$(LT_PLATFORM_PRIVATE_SOURCE_DIR) LT_PUBLIC_INCLUDE_FLAGS="$(LT_CFLAGS_PLATFORM_INCLUDE)" LT_TARGET_RULE_DEFS="$(LT_PLATFORM_PROJECT_ONLY_DEFS)" LT_PROJECT=$(subst rebuild-,,$@) $(MAKE) --no-print-directory -f $(LT_PLATFORM_BUILD_PROJECT_DIR)/$(subst rebuild-,,$@).mk clean all; \
 	fi
 
 # rebuild-<lt_product_projects>

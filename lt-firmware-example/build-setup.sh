@@ -121,10 +121,12 @@ alias   eyeclops='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLAT
 alias linuxshell='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLATFORM_ROOT=linux LT_PLATFORM=x86_minimal LT_PRODUCT=shell LT_BUILD_MODE=release && rehash'
 alias linuxwifi='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLATFORM_ROOT=linux LT_PLATFORM=x86_minimal_wifi LT_PRODUCT=shell-with-wifi LT_BUILD_MODE=release && rehash'
 alias stshell='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLATFORM_ROOT=st LT_PLATFORM=st-h755-nucleo-144-cm7 LT_PRODUCT=shell LT_BUILD_MODE=release && rehash'
+alias s3shell='ltunset && export LT_BUILD_DIR=${LT_BUILD_DIR_EXAMPLE} LT_PLATFORM_ROOT=esp32 LT_PLATFORM=s3 LT_PRODUCT=shell LT_BUILD_MODE=release && rehash'
 
 # quick aliases to run picocom on /dev/ttyUSB0 and /dev/ttyACM0
 alias pcom='picocom -b 115200 --imap=lfcrlf --omap=delbs --lower-dtr --lower-rts /dev/ttyUSB0'
 alias stcom='picocom -b 115200 --imap=lfcrlf --omap=delbs /dev/ttyACM0'
+alias s3com='picocom -b 115200 --imap=lfcrlf --omap=delbs /dev/ttyACM0'
 
 # run the alias "espshell" to set the example shell esp build by default
 espshell
@@ -135,12 +137,12 @@ echo
 echo "  ADDED ALIASES: build, bin, obj, stats"
 echo "               - quick cd into the build, bin, obj, and stats directories of the current build"
 echo
-echo "  ADDED ALIASES: espdhrystone, espshell, espwifi, linuxshell, linuxwifi, stshell"
-echo "               - quick set environment variables for building esp, linux, and stm32 builds of example firmware"
+echo "  ADDED ALIASES: s3shell, espdhrystone, espshell, espwifi, linuxshell, linuxwifi, stshell"
+echo "               - quick set environment variables for building esp32, esp32-s3, linux, and stm32 builds of example firmware"
 echo
 echo "  ADDED ALIASES: eyeclops"
 echo "               - quick set environment variables for building new ESP32-CAM application demo"
 echo
-echo "  ADDED ALIASES: pcom, stcom"
-echo "               - run picocom on ttyUSB0 (for ESP32) and on ttyACM0 (for STMicro)"
+echo "  ADDED ALIASES: pcom, stcom, s3com"
+echo "               - run picocom on ttyUSB0 (for ESP32) and on ttyACM0 (for STMicro and ESP32s3)"
 echo "================"

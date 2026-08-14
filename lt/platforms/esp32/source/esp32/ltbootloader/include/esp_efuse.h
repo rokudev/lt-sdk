@@ -14,6 +14,10 @@
 #include "soc/soc_caps.h"
 #include "sdkconfig.h"
 
+/* Upstream reaches the per-chip esp_efuse.h - which is what defines
+   esp_efuse_block_t, esp_efuse_purpose_t and esp_efuse_coding_scheme_t - through
+   an #include_next off the component include path.  This tree flattens the
+   component layout, so the chip header is named explicitly instead. */
 #if CONFIG_IDF_TARGET_ESP32
 #include "esp32/esp_efuse.h"
 #include "esp32/rom/secure_boot.h"
@@ -22,6 +26,7 @@
 #elif CONFIG_IDF_TARGET_ESP32C3
 #include "esp32c3/rom/secure_boot.h"
 #elif CONFIG_IDF_TARGET_ESP32S3
+#include "esp32s3/esp_efuse.h"
 #include "esp32s3/rom/secure_boot.h"
 #elif CONFIG_IDF_TARGET_ESP32H2
 #include "esp32h2/rom/secure_boot.h"

@@ -57,6 +57,17 @@ u32 Esp32_ClockInitialize(void);
 /* returns CPU clock in MHz */
 u32 Esp32_ClockGetMHz(void);
 
+/*
+ * Gate the clock to the second CPU, which LT does not yet bring up.  Called
+ * once, from Esp32_LTChipStart, before anything else has run on this core.  The
+ * register this lives in is one of the ones the esp32s3 moved out of DPORT, so
+ * the two chips keep their own copies of this.
+ */
+LT_INLINE void
+Esp32_ClockDisableAppCpu(void) {
+    ESP32_REG(DPORT_CPU1_CTRL_B) &= ~ESP32_REG_MASK(DPORT_CPU1, CLKGATE_EN);
+}
+
 /* Enable peripheral clock */
 LT_INLINE void
 Esp32_ClockEnablePeripheralClock(Esp32_ClockPeripheralClock clock) {

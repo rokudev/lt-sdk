@@ -98,7 +98,11 @@ typedef struct {
 } LTKStackFrame;
 
 enum {
+#ifdef LT_DEBUG
+    kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + LTK_ARCH_XTENSA_BSA_SIZE + 64 + 16,
+#else
     kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + LTK_ARCH_XTENSA_BSA_SIZE + 64,
+#endif
     /* Xtensa adds 32 bytes to the stack per function call when sliding register window is used.
        add the overhead of 8 function calls to the base default */
     kLTK_DefaultThreadStackSize = 512 + 8 * 32     /* 768 bytes */

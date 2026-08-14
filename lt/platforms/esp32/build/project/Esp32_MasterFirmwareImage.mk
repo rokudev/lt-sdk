@@ -43,6 +43,7 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #
 ESP32_MASTERING_PATH     := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/mastering
 ESP32_CONFIG_PATH        := $(ESP32_MASTERING_PATH)/config
+ESP32_CHIP_CONFIG_PATH   := $(ESP32_CONFIG_PATH)/$(SOC_PLATFORM_NAME)
 ESP32_LD_SCRIPT_PATH     := $(ESP32_MASTERING_PATH)/ld/$(SOC_PLATFORM_NAME)
 ESP32_LD_ROM_SCRIPT_PATH := $(ESP32_LD_SCRIPT_PATH)/rom
 ESP32_LIB_PATH           := $(ESP32_MASTERING_PATH)/lib/$(SOC_PLATFORM_NAME)
@@ -60,6 +61,12 @@ endif
 #####################################################################################################
 # esp32 image configuration:
 #
+# ESP32_IMAGE_FLASH_SIZE is stamped into the image header for the ROM loader to
+# sanity check the part it is running on against.  A board property rather than a
+# chip one, so a variant with a larger device says so in its own Makefile.config -
+# which is read well before this file, and therefore wins over the default here.
+ESP32_IMAGE_FLASH_SIZE ?= 4MB
+
 ESP32_ELF_BASENAME := $(LT_PROJECT_OBJ_DIR)/LTFirmwareImage
 ESP32_ELF          := $(ESP32_ELF_BASENAME).elf
 ESP32_ELF_STRIPPED := $(ESP32_ELF_BASENAME).stripped.elf
@@ -71,6 +78,14 @@ ESP32_ADDR2LINE    := $(LT_PROJECT_OBJ_DIR)/addr2line
 
 ESP32_IMAGE        := $(LT_PROJECT_OBJ_DIR)/LTFirmwareImage.bin
 ESP32_SBKEY_PEM    := secure_boot_key_application.pem
+
+# Where rib looks for the partition payloads named by LTFlashConfig.json.  The bin
+# directory leads, so anything this build produced wins over anything checked in.
+# The per chip config directory is only listed when it exists, because rib stats
+# every element of the path and treats a missing one as fatal.
+ESP32_IMAGE_SEARCH_PATH := $(LT_TARGET_BIN_DIR)
+ESP32_IMAGE_SEARCH_PATH := $(ESP32_IMAGE_SEARCH_PATH)$(if $(wildcard $(ESP32_CHIP_CONFIG_PATH)),:$(ESP32_CHIP_CONFIG_PATH))
+ESP32_IMAGE_SEARCH_PATH := $(ESP32_IMAGE_SEARCH_PATH):$(ESP32_CONFIG_PATH):$(LT_TARGET_BIN_DIR)
 
 ESP32_IMAGE_LIBRARIES := $(shell \
 	  LT_PLATFORM_ROOT=$(LT_PLATFORM_ROOT) LT_PLATFORM=$(LT_PLATFORM) \
@@ -97,19 +112,23 @@ ESP32_LD_ARG += -T sections.ld
 # Peripheral linker scripts
 ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).peripherals.ld
 
-# ROM linker scripts
-ESP32_LD_ARG += -L $(ESP32_LD_ROM_SCRIPT_PATH)
-ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).rom.ld
-ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).rom.api.ld
-ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).rom.eco3.ld
-ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).rom.libgcc.ld
-ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).rom.newlib-data.ld
-ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).rom.syscalls.ld
-ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).rom.newlib-funcs.ld
-ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).rom.newlib-time.ld
+# ROM linker scripts.  Which scripts a ROM offers is not just a matter of name -
+# substituting $(SOC_PLATFORM_NAME) into one part's list would not work for the
+# other - so there is one list per chip.
+ifeq ($(SOC_PLATFORM_NAME),esp32s3)
+  # The esp32s3 has neither eco3, syscalls nor redefined, and offers a single
+  # newlib.ld plus newlib-nano.ld where the esp32 splits newlib three ways.
+  ESP32_LD_ROM_SCRIPTS := rom.ld rom.api.ld rom.libgcc.ld rom.newlib.ld \
+                          rom.newlib-nano.ld rom.newlib-time.ld rom.version.ld
+else
+  # rom.redefined.ld supplies ets_timers, needed by wpa_supplicant (WiFi component).
+  ESP32_LD_ROM_SCRIPTS := rom.ld rom.api.ld rom.eco3.ld rom.libgcc.ld            \
+                          rom.newlib-data.ld rom.syscalls.ld rom.newlib-funcs.ld \
+                          rom.newlib-time.ld rom.redefined.ld
+endif
 
-# ets_timers, needed for wpa_supplicant(WiFi component)
-ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).rom.redefined.ld
+ESP32_LD_ARG += -L $(ESP32_LD_ROM_SCRIPT_PATH)
+ESP32_LD_ARG += $(foreach ldscript,$(ESP32_LD_ROM_SCRIPTS),-T $(SOC_PLATFORM_NAME).$(ldscript))
 
 # For ROM patch
 ESP32_LD_ARG += -Wl,-wrap,longjmp
@@ -141,20 +160,67 @@ ESP32_LD_ARG += -Wl,--whole-archive
 ESP32_LD_ARG += $(ESP32_IMAGE_LIBRARIES_L)
 ESP32_LD_ARG += -Wl,--no-whole-archive
 
-# WiFi
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/libnet80211.a
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/libcore.a
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/libpp.a
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/libsmartconfig.a
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/libespnow.a
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/libphy.a
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/librtc.a
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/libwpa_supplicant.a
-# BT coexist
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/libcoexist.a
+# Prebuilt Espressif WiFi, PHY and BT blobs.
+#
+# Whether the image links them at all is the platform variant's call, made through
+# LT_PLATFORM_HAS_WIRELESS_BLOBS in its Makefile.config.  That is not the same
+# question as whether the chip has a radio: nothing in LT reaches these blobs
+# except Esp32DriverWiFi and Esp32DriverBleController, so a variant that has
+# neither driver has nothing to link them for, and dragging in a megabyte of
+# unreferenced archives to be garbage collected only slows the link down.
+ifeq (yes,$(LT_PLATFORM_HAS_WIRELESS_BLOBS))
+
+    # The blob set is per chip in membership as well as in content: the esp32 has the
+    # BT baseband in ROM and so wants no libbtbb.a, and the esp32s3 has its RTC
+    # support in ROM and so wants no librtc.a.
+    ifeq ($(SOC_PLATFORM_NAME),esp32s3)
+        ESP32_WIFI_LIBS := libnet80211.a libcore.a libpp.a libsmartconfig.a libespnow.a \
+                           libphy.a libwpa_supplicant.a
+        ESP32_BT_LIBS   := libbtdm_app.a libbtbb.a
+    else
+        ESP32_WIFI_LIBS := libnet80211.a libcore.a libpp.a libsmartconfig.a libespnow.a \
+                           libphy.a librtc.a libwpa_supplicant.a
+        ESP32_BT_LIBS   := libbtdm_app.a
+    endif
+
+    # libwpa_supplicant.a is not an Espressif binary drop - IDF ships wpa_supplicant as
+    # source and this one was built by Roku, so a fresh vendoring drop does not supply
+    # it.  Check for it rather than let the link fail with a wall of undefined symbols.
+    ESP32_MISSING_LIBS := $(strip $(foreach ltlib,$(ESP32_WIFI_LIBS) $(ESP32_BT_LIBS) libcoexist.a, \
+                                      $(if $(wildcard $(ESP32_LIB_PATH)/$(ltlib)),,$(ltlib))))
+    ifneq (,$(ESP32_MISSING_LIBS))
+        $(error Missing prebuilt blob(s) in $(ESP32_LIB_PATH): $(ESP32_MISSING_LIBS))
+    endif
+
+    # WiFi
+    ESP32_LD_ARG += $(foreach ltlib,$(ESP32_WIFI_LIBS),$(ESP32_LIB_PATH)/$(ltlib))
+    # BT coexist
+    ESP32_LD_ARG += $(ESP32_LIB_PATH)/libcoexist.a
+
+else ifneq (no,$(LT_PLATFORM_HAS_WIRELESS_BLOBS))
+    $(error $(LT_PLATFORM_BUILD_PLATFORM_VARIANT_DIR)/Makefile.config FAILED to properly \
+            specify yes or no for the variable LT_PLATFORM_HAS_WIRELESS_BLOBS)
+else
+    # A radio driver in the image with no blobs behind it links to a wall of
+    # undefined symbols in libnet80211 and libpp, which says nothing about the
+    # actual mistake.  Name it here instead.
+    ESP32_RADIO_LIBRARIES := $(filter %DriverWiFi.a %DriverBleController.a,$(notdir $(ESP32_IMAGE_LIBRARIES)))
+    ifneq (,$(ESP32_RADIO_LIBRARIES))
+        $(error $(ESP32_RADIO_LIBRARIES) is in the image, but LT_PLATFORM_HAS_WIRELESS_BLOBS \
+                is no for LT_PLATFORM=$(LT_PLATFORM) so the Espressif blobs it calls into are \
+                not linked - either drop the driver from LTDeviceConfig.json or populate \
+                $(ESP32_LIB_PATH) and turn the flag on)
+    endif
+endif
+
+# Not part of the blob set above: -nodefaultlibs means the compiler's own support
+# routines have to be asked for by name, whether or not there is a radio.
 ESP32_LD_ARG += -lgcc
-# BT
-ESP32_LD_ARG += $(ESP32_LIB_PATH)/libbtdm_app.a
+
+ifeq (yes,$(LT_PLATFORM_HAS_WIRELESS_BLOBS))
+    # BT.  After -lgcc, as it was when this was one unconditional block.
+    ESP32_LD_ARG += $(foreach ltlib,$(ESP32_BT_LIBS),$(ESP32_LIB_PATH)/$(ltlib))
+endif
 
 ############################################################################################################
 # Tools used in the generation of images:
@@ -214,15 +280,15 @@ $(ESP32_BIN_ADDR2LINE): $(ESP32_ADDR2LINE)
 # Build the firmware images:
 #
 .PHONY: FirmwareImages
-FirmwareImages: $(ESP32_FIRMWARE_IMAGE) $(ESP32_PART_TABLE)
+FirmwareImages: $(ESP32_FIRMWARE_IMAGE) $(ESP32_PART_TABLE) $(ESP32_BOOTLOADER_IMAGE)
 	$(LT_QUIET_CMD) @echo Build manufacturing image
-	$(LT_EXEC_CMD) $(IMAGE_BUILDER) -c $(LT_FLASH_CONFIG_JSON_FILE) -p $(LT_TARGET_BIN_DIR):$(ESP32_CONFIG_PATH):$(LT_TARGET_BIN_DIR) -o $(ESP32_FIRMWARE_MFG_IMAGE) build
+	$(LT_EXEC_CMD) $(IMAGE_BUILDER) -c $(LT_FLASH_CONFIG_JSON_FILE) -p $(ESP32_IMAGE_SEARCH_PATH) -o $(ESP32_FIRMWARE_MFG_IMAGE) build
 	$(LT_QUIET_CMD) @echo Build firmware update image
 	$(LT_EXEC_CMD) $(IMAGE_BUILDER) -c $(LT_FLASH_CONFIG_JSON_FILE) -f $(ESP32_FIRMWARE_IMAGE) -o $(ESP32_FIRMWARE_UPDATE_IMAGE) -k $(ESP32_RFEK) -v $(LT_SOFTWARE_VERSION) update
 
 $(ESP32_FIRMWARE_IMAGE): $(ESP32_ELF)
 	$(LT_QUIET_CMD) @echo Convert ELF to bin
-	$(LT_EXEC_CMD) $(ESP_PYTHON) $(ESP_ESPTOOL_PY) --chip $(SOC_PLATFORM_NAME) elf2image --flash_mode dio --flash_freq 80m --flash_size 4MB --elf-sha256-offset 0xb0 -o $(ESP32_FIRMWARE_IMAGE).tmp $(ESP32_ELF)
+	$(LT_EXEC_CMD) $(ESP_PYTHON) $(ESP_ESPTOOL_PY) --chip $(SOC_PLATFORM_NAME) elf2image --flash_mode dio --flash_freq 80m --flash_size $(ESP32_IMAGE_FLASH_SIZE) --elf-sha256-offset 0xb0 -o $(ESP32_FIRMWARE_IMAGE).tmp $(ESP32_ELF)
 ifeq (REMOTE, $(LT_CRYPTO_KEY_DIR))
 	$(LT_QUIET_CMD) @echo Signing image using remote server
   ifeq (, $(LT_PLATFORM_ID))
@@ -246,6 +312,38 @@ $(LT_TARGET_BIN_DIR)/%.bin: $(ESP32_CONFIG_PATH)/%.bin
 	$(LT_EXEC_CMD) mkdir -p $(dir $@)
 	$(LT_EXEC_CMD) cp -p $^ $@
 
+############################################################################################################
+# Where the bootloader in the image comes from.
+#
+# Not from this project: the bootloader is a build of its own, `make bootloaders`,
+# because it is signed and released on a cadence of its own, so what the mastering
+# step wants from it is a binary rather than a link.  A released one checked in
+# beside the other image inputs is copied in; otherwise it has to be built.
+#
+# The prebuilt is keyed by chip - config/$(SOC_PLATFORM_NAME)/LTBootloader.bin - and
+# not merely by name, so that the pattern rule above, which copies anything named
+# *.bin out of config/, cannot supply a bootloader by accident: putting the wrong
+# part's second stage in an image gives a device that does not come back, and the
+# two parts do not even load the second stage from the same flash offset, byte
+# 0x1000 against byte 0.  A chip with none checked in gets the explicit rule below
+# instead, which asks for `make bootloaders` by name.  An explicit rule beats the
+# pattern rule above, so this settles it either way.
+ifneq (,$(wildcard $(ESP32_CHIP_CONFIG_PATH)/LTBootloader.bin))
+
+$(ESP32_BOOTLOADER_IMAGE): $(ESP32_CHIP_CONFIG_PATH)/LTBootloader.bin
+	$(LT_EXEC_CMD) mkdir -p $(dir $@)
+	$(LT_EXEC_CMD) cp -p $< $@
+
+else
+
+# No prerequisites, so make runs this only when the file is genuinely absent - a
+# bootloader already left in the bin directory by `make bootloaders` is taken as is.
+$(ESP32_BOOTLOADER_IMAGE):
+	@echo "$@ is missing, and no released $(SOC_PLATFORM_NAME) bootloader is checked in at $(ESP32_CHIP_CONFIG_PATH)/LTBootloader.bin - run 'make bootloaders' to build one" >&2
+	@false
+
+endif
+
 $(LT_TARGET_BIN_DIR)/config/$(notdir $(LT_FLASHER_JSON_FILE)): $(LT_FLASHER_JSON_FILE)
 	$(LT_EXEC_CMD) mkdir -p $(dir $@)
 	$(LT_EXEC_CMD) cp -p $^ $@
@@ -262,3 +360,9 @@ $(ESP32_FLASH_ALL): $(LT_PLATFORM_ROOT)/build/image/esp32_flash_all.sh
 #   LOG
 ###############################################################################
 #   22-Mar-22   tiberius    Created
+#   29-Jul-26   claudius    made the radio blobs and the prebuilt bootloader
+#                           conditional so a no-radio image can master
+#   04-Aug-26   claudius    moved the esp32s3 out to the esp32s3 platform root
+#   13-Aug-26   claudius    took the esp32s3 back in - the ROM linker scripts and
+#                           the radio blob set now key off $(SOC_PLATFORM_NAME),
+#                           and the mastered flash size off $(ESP32_IMAGE_FLASH_SIZE)

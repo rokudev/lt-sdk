@@ -87,6 +87,7 @@ static bool ConsoleThreadInitProc(void) {
             ltstring_destroy(pValue);
         }
     }
+
     /* After the boot command is executed, register the character handler with LTCore: */
     s_pCore->SetConsoleCharactersReceivedProc(OnCharactersReceived, OnBreakReceived, pShell);
     return true;

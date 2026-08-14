@@ -8,9 +8,9 @@
 {
   "config":{
        "net":{ "transport":[ ] },
-    "device":[     { "lib": "LTDeviceConfig" },
-                   { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32DriverFlash" } ] },
-                   { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32DriverWatchdog" } ] }
+    "device":[ { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32DriverFlash" } ] },
+               { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32DriverWatchdog" } ] }
              ]
-           }
+           },
+    "memory":{ "regions":[ { "name": "psram", "region": 5 } ] }
 }

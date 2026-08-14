@@ -258,6 +258,39 @@ void Esp32GPIO_ConfigOutputType(u8 nPin, Esp32GPIO_OutputType outputType) {
 }
 
 /******************************************************************************
+ * sets just the IO_MUX function select for a pin, leaving the pull, input
+ * enable and drive strength fields as they are
+ ****************************************************************************/
+void Esp32GPIO_ConfigPinFunction(u8 nPin, Esp32GPIO_Function func) {
+    if (nPin >= kEsp32GPIO_NumPins || kIOMuxPinRegOffsets[nPin] == _NOP) {
+        return;
+    }
+
+    volatile u32 *pReg = &ESP32_GPIO_IO_MUX_REG(kIOMuxPinRegOffsets[nPin]);
+    u32 nIOMuxVal = *pReg;
+    nIOMuxVal &= ~ESP32_REG_MASK(GPIO_IO_MUX, MCU_SEL);
+    nIOMuxVal |= (func << ESP32_REG_SHIFT(GPIO_IO_MUX, MCU_SEL)) & ESP32_REG_MASK(GPIO_IO_MUX, MCU_SEL);
+    *pReg = nIOMuxVal;
+}
+
+/******************************************************************************
+ * sets just the IO_MUX drive strength for a pin.  0..3 select roughly 5, 10,
+ * 20 and 40mA at 3.3V; the reset default is 2.
+ ****************************************************************************/
+void Esp32GPIO_ConfigPinDriveStrength(u8 nPin, u8 nDriveStrength) {
+    if (nPin >= kEsp32GPIO_NumPins || kIOMuxPinRegOffsets[nPin] == _NOP) {
+        return;
+    }
+
+    volatile u32 *pReg = &ESP32_GPIO_IO_MUX_REG(kIOMuxPinRegOffsets[nPin]);
+    u32 nIOMuxVal = *pReg;
+    nIOMuxVal &= ~ESP32_REG_MASK(GPIO_IO_MUX, FUN_DRV);
+    nIOMuxVal |= (nDriveStrength << ESP32_REG_SHIFT(GPIO_IO_MUX, FUN_DRV)) &
+                 ESP32_REG_MASK(GPIO_IO_MUX, FUN_DRV);
+    *pReg = nIOMuxVal;
+}
+
+/******************************************************************************
  * Configures the given pin to hold the current value  or clears that functionality.
  * At reboot, the register RTCIO_DIG_PAD_HOLD ris cleared in Esp32_LTChipStart.
  ****************************************************************************/
@@ -270,6 +303,15 @@ void Esp32GPIO_ConfigPinHold(u8 nPin, bool bPinHold) {
     else {
         ESP32_REG(RTCIO_DIG_PAD_HOLD) &= ~kPinHoldBitMask[nPin];
     }
+}
+
+/******************************************************************************
+ * Releases every held pad.  Not all resets clear this register, so
+ * Esp32_LTChipStart calls this on the way up to keep a pad configuration from a
+ * previous boot from being held into this one.
+ ****************************************************************************/
+void Esp32GPIO_ClearAllPinHolds(void) {
+    ESP32_REG(RTCIO_DIG_PAD_HOLD) = 0;
 }
 
 /******************************************************************************

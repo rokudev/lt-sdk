@@ -17,5 +17,8 @@
           },
  "extra-libs":[ "LTThirdPartyLWIP",
                 "Esp32_LTOSAdapter"
-              ]
+              ],
+
+    "memory":{ "regions":[ { "name": "psram", "region": 5 } ] }
+
 }

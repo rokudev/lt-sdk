@@ -101,6 +101,34 @@ typedef struct LTCoreBSP_LTHeapConfig {
     LTCoreBSP_HeapRegion   * pRegions;    /**< Pointer to array of heap region definitions */
 } LTCoreBSP_LTHeapConfig;
 
+/*  TODO: there is no BSP facing way to contribute a heap region after startup.
+ *
+ *  The table above is read once, out of the LTCoreBSP returned by
+ *  LTCoreBSP_Initialize, and that is the only chance a BSP gets to say what RAM
+ *  exists.  Some RAM is not safe to hand over that early, and it is lost.
+ *
+ *  The esp32s3 dram_stack_seg is the example worth having in mind.  It is 16KB
+ *  at 0x3FCE7700 holding the ROM PRO CPU stack, and LT runs on that stack from
+ *  call_start_cpu0 through the whole of startup - Esp32_LTChipStart.c never
+ *  switches away from it - which includes the LTCoreBSP_Initialize call that
+ *  publishes this table.  The moment the scheduler starts and the first LTThread
+ *  is running on its own stack, those 16KB are dead and would be perfectly good
+ *  heap.  Because there is no way to say so after the fact, the segment is
+ *  declared in mastering/ld/esp32s3/memory.ld and then deliberately left empty,
+ *  which is 16KB of a 416KB part given up to a missing API.  It is not the only
+ *  case of its kind: any BSP with a bootloader or ROM scratch area that outlives
+ *  LTCoreBSP_Initialize has the same problem.
+ *
+ *  The kernel side of this already exists and needs nothing new -
+ *  LTKHeapAddRegionEx (lt/source/lt/core/LTKernel.h, implemented in
+ *  lt/source/lt/ltk/LTKAllocator.c) adds a region at runtime and returns its
+ *  slot.  What is missing is a public counterpart a BSP can reach, plus a
+ *  defined point in startup at which it is legal to call it.  Note that the slot
+ *  it returns has to line up with the 1-based LTMemoryRegion numbering described
+ *  above, so a late-added region necessarily lands after every region in this
+ *  table - which is the constraint that makes /memory/regions in
+ *  LTDeviceConfig.json still resolvable. */
+
 /*___________________________________________________________________________________________
   Callback function types for LTCoreBSP functions that have a callback function parameter */
 typedef bool (LTCoreBSP_LibraryEnumProc)(const char * pLTLibraryName, void * pClientData); /**< Enumeration callback type for LTCoreBSP_LibraryEnumerate */

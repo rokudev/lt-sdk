@@ -31,6 +31,7 @@ _/ LTShellCommands #defines */
 #define LTSHELLCOMMAND_USAGE_STTY           "usage: stty [{crlf|echo} [on|off] ]\n"
 #define LTSHELLCOMMAND_USAGE_HISTORY        "usage: history [on|off]\n"
 #define LTSHELLCOMMAND_USAGE_MEMSTAT        "usage: memstat [settag <tag> | heapinfo [tag] ]\n"
+#define LTSHELLCOMMAND_USAGE_MEMTEST        "usage: memtest [regionNumber | regionName ] [blockSize]\n"
 #define LTSHELLCOMMAND_USAGE_PS             "usage: ps [<id | name> [prio [0..30] | terminate | heapinfo | wdog-set <fidelityMS> [no-term] | wdog-clear] ]\n"
 #define LTSHELLCOMMAND_USAGE_SLEEP          "usage: sleep <seconds>\n"
 #define LTSHELLCOMMAND_USAGE_WATCHDOG       "usage: watchdog [enable|disable|reset|crash|settimeout <seconds>]\n"
@@ -47,6 +48,7 @@ static int ShellCommand_Version(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_Echo(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_History(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_Memstat(LTShell hShell, int argc, const char ** argv);
+static int ShellCommand_Memtest(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_Rawstat(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_PS(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_LTList(LTShell hShell, int argc, const char ** argv);
@@ -77,6 +79,7 @@ _/ LTShellCommands help function forward declarations */
 static void ShellHelp_Stty(LTShell hShell, int argc, const char ** argv);
 static void ShellHelp_History(LTShell hShell, int argc, const char ** argv);
 static void ShellHelp_Memstat(LTShell hShell, int argc, const char ** argv);
+static void ShellHelp_Memtest(LTShell hShell, int argc, const char ** argv);
 static void ShellHelp_PS(LTShell hShell, int argc, const char ** argv);
 static void ShellHelp_Watchdog(LTShell hShell, int argc, const char ** argv);
 static void ShellHelp_Log(LTShell hShell, int argc, const char ** argv);
@@ -96,6 +99,7 @@ static const LTSystemShell_CommandDesc s_shellInbuiltCommandDescs[] = {
     { "echo",           ShellCommand_Echo,              "echos text",                                               NULL               },
     { "history",        ShellCommand_History,           "displays, enables or disables command history",            ShellHelp_History  },
     { "memstat",        ShellCommand_Memstat,           "displays memory statistics",                               ShellHelp_Memstat  },
+    { "memtest",        ShellCommand_Memtest,           "test memory performance",                                  ShellHelp_Memtest  },
     { "rawstat",        ShellCommand_Rawstat,           "displays raw unformatted memory statistics",               NULL               },
     { "ps",             ShellCommand_PS,                "reports and controls running threads",                     ShellHelp_PS       },
     { "ltlist",         ShellCommand_LTList,            "lists open and available LT Libraries",                    NULL               },
@@ -717,6 +721,144 @@ ShellCommand_Memstat(LTShell hShell, int argc, const char ** argv) {
 
 usage:
     iShell->PutString(hShell, LTSHELLCOMMAND_USAGE_MEMSTAT);
+    return 0;
+}
+
+static void Memtest_Report_Results(ILTShell * iShell, LTShell hShell, const char * testName, u32 blockSizeK, s64 blockTime, LTTime tDiff) {
+    char timeBuff[24];
+    s64 kPerSecond = blockTime / LTTime_GetNanoseconds(tDiff);
+    LT_GetCore()->FormatCanonicalTimeString(tDiff, timeBuff, sizeof(timeBuff), false);
+    iShell->Print(hShell, "memtest: %-20s ", testName);
+    iShell->Print(hShell, "%luk * 2 blocks in %ss or %lldk/second.\n", LT_Pu32(blockSizeK), timeBuff, LT_Ps64(kPerSecond));
+}
+#define MEMTEST_REPORT_RESULTS(test) Memtest_Report_Results(iShell, hShell, #test, blockSizeK, blockTime, LTTime_Subtract(t2, t1))
+
+static int
+ShellCommand_Memtest(LTShell hShell, int argc, const char ** argv) {
+    LTCore * pCore = LT_GetCore();
+    ILTShell * iShell = lt_gethandleinterface(ILTShell, hShell);
+    if (argc > 3) goto usage;
+    u32 blockSizeK = 4;
+    if (argc > 2) {
+        blockSizeK = lt_strtou32(argv[2], NULL, 10);
+        if (blockSizeK < 1 || blockSizeK > 8192) goto usage;
+    }
+    LTMemoryRegion region = (LTMemoryRegion)0;
+    if (argc > 1) {
+        region = (LTMemoryRegion)lt_strtou32(argv[1], NULL, 10);
+        if (region == (LTMemoryRegion)0)  {
+            /* if it wasn't actually "0", treat the argument as a name. */
+            if (0 != lt_strcmp(argv[1], "0")) {
+                region = pCore->GetNamedMemoryRegion(argv[1]);
+            }
+        }
+    }
+
+    if (argc == 1) {
+        iShell->Print(hShell, "memtest: %-20s %luk * 2 blocks using lt_malloc()\n", "testing", LT_Pu32(blockSizeK));
+    }
+    else {
+        iShell->Print(hShell, "memtest: %-20s %luk * 2 blocks from region %s (%lu)\n", "testing", LT_Pu32(blockSizeK), (argc > 1) ? argv[1] : "0", LT_Pu32(region));
+    }
+
+    u32 numBytes = (blockSizeK << 10);
+    u32 numWords = (numBytes >> 2); /* 32 bit words, sorry Linus */
+
+    LTTime t1, t2;
+    register u32 i;
+    u32 *block1, *block2 = NULL;
+    s64 blockTime = ((s64)blockSizeK * LT_CONSTS64(1000000000)) << 1; /* 2 blocks * nanoseconds per second */
+    char timeBuff[24];
+    if (argc == 1) {
+        t1 = pCore->GetKernelTime();
+        block1 = (u32 *)lt_malloc(numBytes);
+        block2 = (u32 *)lt_malloc(numBytes);
+        t2 = pCore->GetKernelTime();
+    }
+    else {
+        t1 = pCore->GetKernelTime();
+        block1 = (u32 *)lt_malloc_from_region(region, numBytes);
+        block2 = (u32 *)lt_malloc_from_region(region, numBytes);
+        t2 = pCore->GetKernelTime();
+    }
+    if (!block1 || !block2) {
+        iShell->Print(hShell, "memtest: failed to allocate %luk for block %d\n", LT_Pu32(blockSizeK), block1 ? 2 : 1);
+        goto bailure;
+    }
+    pCore->FormatCanonicalTimeString(LTTime_Subtract(t2, t1), timeBuff, sizeof(timeBuff), false);
+    iShell->Print(hShell, "memtest: %-20s %luk * 2 blocks in %ss.\n", "allocated", LT_Pu32(blockSizeK), timeBuff);
+
+    // memset test
+    t1 = pCore->GetKernelTime();
+        lt_memset(block1, 0x69, numBytes);
+        lt_memset(block2, 0x96, numBytes);
+    t2 = pCore->GetKernelTime();
+    MEMTEST_REPORT_RESULTS(memset);
+
+    // memset word verify test
+    t1 = pCore->GetKernelTime();
+        for (i = 0; i < numWords; i++)  if (block1[i] != 0x69696969) break;
+        if (i != numWords) { iShell->Print(hShell, "memtest: block 1 memset results failed to word verify\n"); goto bailure; }
+        for (i = 0; i < numWords; i++)  if (block2[i] != 0x96969696) break;
+        if (i != numWords) { iShell->Print(hShell, "memtest: block 2 memset results failed to word verify\n"); goto bailure; }
+    t2 = pCore->GetKernelTime();
+    MEMTEST_REPORT_RESULTS(memset word verify);
+
+    // memset byte verify test
+    t1 = pCore->GetKernelTime();
+        for (i = 0; i < numBytes; i++)  if (*(((u8 *)block1) +i) != 0x69) break;
+        if (i != numBytes) { iShell->Print(hShell, "memtest: block 1 memset results failed to byte verify\n"); goto bailure; }
+        for (i = 0; i < numBytes; i++)  if (*(((u8 *)block2) +i) != 0x96) break;
+        if (i != numBytes) { iShell->Print(hShell, "memtest: block 2 memset results failed to byte verify\n"); goto bailure; }
+    t2 = pCore->GetKernelTime();
+    MEMTEST_REPORT_RESULTS(memset byte verify);
+
+    // memcpy test
+    t1 = pCore->GetKernelTime();
+    lt_memcpy(block2, block1, numBytes);
+    t2 = pCore->GetKernelTime();
+    MEMTEST_REPORT_RESULTS(memcpy);
+
+    // memcmp test
+    t1 = pCore->GetKernelTime();
+    if (0 != lt_memcmp(block1, block2, numBytes)) { iShell->Print(hShell, "memtest: block 1 failed to memcmp with block2\n"); goto bailure; }
+    t2 = pCore->GetKernelTime();
+    MEMTEST_REPORT_RESULTS(memcmp);
+
+    // word write forward
+    t1 = pCore->GetKernelTime();
+        for (i = 0; i < numWords; i++) block1[i] = block2[i] = i;
+    t2 = pCore->GetKernelTime();
+    MEMTEST_REPORT_RESULTS(word write forward);
+
+    // word write back
+    t1 = pCore->GetKernelTime();
+        i = numWords; while (i--) block1[i] = block2[i] = i;
+    t2 = pCore->GetKernelTime();
+    MEMTEST_REPORT_RESULTS(word write back);
+
+    // byte write forward
+    t1 = pCore->GetKernelTime();
+       for (i = 0; i < numBytes; i++) *(((u8 *)block1) + i) = *(((u8 *)block2) + i) = (u8)i;
+    t2 = pCore->GetKernelTime();
+    MEMTEST_REPORT_RESULTS(byte write forward);
+
+    // byte write back
+    t1 = pCore->GetKernelTime();
+       i = numBytes;  while (i--) *(((u8 *)block1) + i) = *(((u8 *)block2) + i) = (u8)i;
+    t2 = pCore->GetKernelTime();
+    MEMTEST_REPORT_RESULTS(byte write back);
+
+    lt_free(block2);
+    lt_free(block1);
+    return 0;
+
+bailure:
+    if (block2) lt_free(block2);
+    if (block1) lt_free(block1);
+    return -1;
+usage:
+    iShell->PutString(hShell, LTSHELLCOMMAND_USAGE_MEMTEST);
     return 0;
 }
 
@@ -1958,6 +2100,18 @@ ShellHelp_Memstat(LTShell hShell, int argc, const char ** argv) {
     iShell->PutString(hShell, "  memstat settag <tag>        - sets tag character for subsequent heap allocations\n");
     iShell->PutString(hShell, "  memstat heapinfo            - shows info for all allocated heap blocks (if enabled)\n");
     iShell->PutString(hShell, "  memstat heapinfo <tag>      - shows info for allocated heap blocks tagged with <tag> (if enabled)\n");
+}
+
+static void
+ShellHelp_Memtest(LTShell hShell, int argc, const char ** argv) {
+    LT_UNUSED(argc); LT_UNUSED(argv);
+    ILTShell * iShell = lt_gethandleinterface(ILTShell, hShell);
+    iShell->PutString(hShell, LTSHELLCOMMAND_USAGE_MEMTEST);
+    iShell->PutString(hShell, "  memtest                      - tests performance on two 4k blocks obtained with lt_malloc\n");
+    iShell->PutString(hShell, "  memtest regionNum            - tests performance on two 4k blocks obtained with lt_malloc_from_region(region_num)\n");
+    iShell->PutString(hShell, "  memtest regionName           - tests performance on two 4k blocks obtained with lt_malloc_from_region() on named region\n");
+    iShell->PutString(hShell, "  memtest regionNum blockSize  - tests using blocks of blockSize Kib (in [1..8192]), e.g. memtest 0 32 for 32k blocks from region 0\n");
+    iShell->PutString(hShell, "  memtest regionName blockSize - tests using blocks of blockSize Kib (in [1..8192]), e.g. memtest psram 1024 for 1Mib blocks from psram region\n");
 }
 
 static void

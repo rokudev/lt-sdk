@@ -124,7 +124,7 @@ void LTKAdvanceTickCount(u32 nTicks) {
  * Interrupts */
 void LTKSetInterruptVector(u32 nInterrupt, LTCore_InterruptHandler * pInterruptHandler,
                                LTCore_InterruptPriority priority) {
-    if (nInterrupt > LTK_ARCH_XTENSA_MAX_INTERRUPTS) return;
+    if (nInterrupt >= LTK_ARCH_XTENSA_MAX_INTERRUPTS) return;
     if (priority > kLTCore_InterruptPriorityHighest) return;
     /*                   Interrupt mapping
      *
@@ -140,9 +140,35 @@ void LTKSetInterruptVector(u32 nInterrupt, LTCore_InterruptHandler * pInterruptH
     u8 nPriorityVal = priority - 1;
     if (priority == 0) nPriorityVal = 0;
     if (priority > XCHAL_EXCM_LEVEL) nPriorityVal = XCHAL_EXCM_LEVEL - 1;
+    /*
+     * Unmask the line in INTENABLE as well as recording the handler.
+     *
+     * There is nowhere else it could happen: registering a vector is the only
+     * interrupt call the BSP interface offers, so a line this function leaves
+     * masked is a line nothing will ever enable.  Until now the only bit ever
+     * set in INTENABLE was the kernel timer's, and peripherals were serviced
+     * only as a side effect of it - _LTKDispatcher() polls INTERRUPT, which
+     * reports a pending line whether or not INTENABLE lets it raise an
+     * exception, so every registered handler ran at tick granularity from
+     * inside the tick.  That works, after a fashion, and it is why the esp32
+     * UART console appears fine: 128 bytes of FIFO absorb a tick's worth of
+     * typing.  It is not something to depend on - it makes interrupt latency a
+     * function of the tick rate, it does nothing at all before the timer starts,
+     * and a 64 byte USB endpoint that NAKs its host until software empties it
+     * has no margin to spend that way.
+     *
+     * A NULL handler deregisters, which is how the DVP driver releases I2S0.
+     * Leaving the bit set there would arm a call through a NULL pointer.
+     */
     u32 nMask = DisableInterruptsNested();
     s_pInterruptHandlers[nInterrupt] = pInterruptHandler;
-    s_nInterruptMask[nPriorityVal] |= (1 << nInterrupt);
+    if (pInterruptHandler) {
+        s_nInterruptMask[nPriorityVal] |= (1u << nInterrupt);
+        LTK_WRITE_SR(INTENABLE, LTK_READ_SR(INTENABLE) | (1u << nInterrupt));
+    } else {
+        LTK_WRITE_SR(INTENABLE, LTK_READ_SR(INTENABLE) & ~(1u << nInterrupt));
+        for (u32 i = 0; i < XCHAL_EXCM_LEVEL; i++) s_nInterruptMask[i] &= ~(1u << nInterrupt);
+    }
     EnableInterruptsNested(nMask);
 }
 

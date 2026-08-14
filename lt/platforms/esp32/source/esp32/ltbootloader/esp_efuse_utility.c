@@ -375,6 +375,10 @@ static uint32_t set_cnt_in_reg(int bit_start_in_reg, int bit_count_used_in_reg, 
 // check range of bits for any coding scheme.
 static bool check_range_of_bits(esp_efuse_block_t blk, int offset_in_bits, int size_bits)
 {
+    /* ESP_EFUSE_FIELD_CORRESPONDS_CODING_SCHEME() is a per-chip macro, and on
+       parts with a single coding scheme - the esp32s3 among them - it expands to
+       nothing and leaves blk unused. */
+    (void)blk;
     int max_num_bit = offset_in_bits + size_bits;
     if (max_num_bit > 256) {
         return false;

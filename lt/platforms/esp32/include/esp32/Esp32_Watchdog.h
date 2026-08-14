@@ -44,10 +44,23 @@ LT_INLINE bool Esp32IsEnabledRTCWatchdog(void) {
     return (ESP32_REG(RTC_CNTL_WDT_CONFIG0) & ESP32_REG_MASK(RTC_CNTL, WDT_ENABLED));
 }
 
+/*
+ * Silence every watchdog this chip has, for the start of day.  Here that is the
+ * RTC watchdog and nothing else: the esp32 has no super watchdog, and its start
+ * of day has never needed the timer group watchdogs touched.  The esp32s3's copy
+ * of this does considerably more.  It exists on both chips so that the shared
+ * Esp32_LTChipStart.c can ask for "all of them" without knowing which chip it is
+ * being built for.
+ */
+LT_INLINE void Esp32DisableAllWatchdogs(void) {
+    Esp32DisableRTCWatchdog();
+}
+
 #endif // #define PLATFORMS_ESP32_INCLUDE_ESP32_WATCHDOG_H
 
 /*******************************************************************************
  *  LOG
  *******************************************************************************
  *  28-Jun-22   tiberius    created
+ *  03-Aug-26   claudius    added Esp32DisableAllWatchdogs
  */

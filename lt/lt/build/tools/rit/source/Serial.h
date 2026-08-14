@@ -28,6 +28,7 @@ void SerialClose(void);
 int  SerialSetSpeed(u32 nBaudRate);
 int  SerialSetTimeout(u32 nTimeoutMilliseconds);
 void SerialFlush(void);
+bool SerialIsNativeUSB(void);
 
 int  SerialSetDTR(bool bLevel);
 int  SerialSetRTS(bool bLevel);

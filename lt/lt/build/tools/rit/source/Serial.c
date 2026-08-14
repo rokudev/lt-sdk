@@ -16,6 +16,7 @@
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/time.h>
 #include <termios.h>
 
 #include "lt/LTTypes.h"
@@ -30,13 +31,31 @@ static int  s_nSerialFD = -1;
 
 static struct timeval s_timeout;
 
+// Receive buffer. Callers pull bytes one or two at a time (SLIP framing is
+// parsed a character at a time), but a select()/read() syscall pair per byte
+// cannot keep up with a target that streams over native USB rather than a
+// UART: the tty input buffer overruns and bytes are lost mid-packet. Draining
+// the port in large reads and serving callers from here decouples the two.
+enum { kRecvBufferSize = 16384 };
+static u8  s_recvBuffer[kRecvBufferSize];
+static u32 s_nRecvHead;   // Next byte to hand out
+static u32 s_nRecvTail;   // End of valid data
+
+static void SerialDiscardBufferedInput(void) {
+    s_nRecvHead = 0;
+    s_nRecvTail = 0;
+}
+
 int SerialOpen(const char * pDeviceName, u32 nBaudRate, u32 nTimeoutMilliseconds) {
     if (!s_bSerialInit && pDeviceName) {
         errno = 0;
-        s_nSerialFD = open(pDeviceName, O_RDWR);
+        // O_NOCTTY: a programmer has no business acquiring the port as its
+        // controlling terminal, which it otherwise would when run from a shell
+        // that has none.
+        s_nSerialFD = open(pDeviceName, O_RDWR | O_NOCTTY);
         if (s_nSerialFD < 0) {
             int nRtn = -errno;
-            perror("open");
+            printf("open %s: %s.\n", pDeviceName ? pDeviceName : "serial port", strerror(-nRtn));
             return nRtn;
         }
         lt_strncpyTerm(s_deviceName, pDeviceName, sizeof(s_deviceName));
@@ -64,6 +83,15 @@ int SerialOpen(const char * pDeviceName, u32 nBaudRate, u32 nTimeoutMilliseconds
 
         termOpts.c_iflag &= ~(INLCR | IGNCR | ICRNL | IUCLC | IMAXBEL);
         termOpts.c_oflag &= ~OPOST;
+
+        // Every read is gated by select(), so read() itself must never wait.
+        // VMIN/VTIME share their slots with VEOF/VEOL and only take effect once
+        // ICANON is cleared above, so leaving them alone inherits whatever the
+        // canonical-mode defaults happened to be. Setting both to zero makes
+        // read() return immediately with whatever has arrived.
+        termOpts.c_cc[VMIN]  = 0;
+        termOpts.c_cc[VTIME] = 0;
+
         nRtn = tcsetattr(s_nSerialFD, TCSANOW, &termOpts);
         if (nRtn < 0) {
             nRtn = -errno;
@@ -74,6 +102,7 @@ int SerialOpen(const char * pDeviceName, u32 nBaudRate, u32 nTimeoutMilliseconds
         if (nRtn < 0) return nRtn;
 
         SerialSetTimeout(nTimeoutMilliseconds);
+        SerialDiscardBufferedInput();
         s_bSerialInit = true;
     }
     return 0;
@@ -82,6 +111,7 @@ int SerialOpen(const char * pDeviceName, u32 nBaudRate, u32 nTimeoutMilliseconds
 void SerialClose() {
     if (s_bSerialInit) {
         close(s_nSerialFD);
+        SerialDiscardBufferedInput();
         s_bSerialInit = false;
     }
 }
@@ -138,6 +168,7 @@ int SerialSetSpeed(u32 nBaudRate) {
     }
     usleep(50000);
     tcflush(s_nSerialFD, TCIOFLUSH);
+    SerialDiscardBufferedInput();
     return 0;
 }
 
@@ -157,6 +188,7 @@ int SerialSetSpeed(u32 nBaudRate) {
     }
     usleep(50000);
     tcflush(s_nSerialFD, TCIOFLUSH);
+    SerialDiscardBufferedInput();
     return 0;
 }
 
@@ -164,6 +196,25 @@ int SerialSetSpeed(u32 nBaudRate) {
 
 void SerialFlush(void) {
     tcflush(s_nSerialFD, TCIOFLUSH);
+    SerialDiscardBufferedInput();
+}
+
+//
+// Returns true when the port is a USB CDC-ACM device presented directly by the
+// target SoC (for example the ESP32-S3 USB-Serial/JTAG peripheral) rather than
+// by an external USB-to-UART bridge. The distinction matters because a native
+// USB port has no DTR/RTS reset circuit and ignores baud rate changes.
+//
+// USB-to-UART bridge drivers (ch34x, cp210x, ftdi, pl2303) all enumerate as
+// ttyUSB*/cu.usbserial*, whereas native USB CDC enumerates as ttyACM* on Linux
+// and cu.usbmodem*/tty.usbmodem* on macOS.
+//
+bool SerialIsNativeUSB(void) {
+    const char * pName = strrchr(s_deviceName, '/');
+    pName = pName ? (pName + 1) : s_deviceName;
+    return (strncmp(pName, "ttyACM",        6) == 0) ||
+           (strncmp(pName, "cu.usbmodem",  11) == 0) ||
+           (strncmp(pName, "tty.usbmodem", 12) == 0);
 }
 
 int SerialSetDTR(bool bLevel) {
@@ -192,11 +243,44 @@ int SerialSetRTS(bool bLevel) {
     return 0;
 }
 
+// Deadline for making no progress at all, refreshed every time a byte actually
+// arrives. select() can report a terminal readable and read() then return
+// nothing - most easily provoked by a second process (a terminal emulator left
+// attached to the port, say) racing us for the same bytes. Without this bound
+// that pairing spins here for as long as the other reader keeps the traffic
+// coming, which looks exactly like a hang.
+static void SetStallDeadline(struct timeval * pDeadline) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    timeradd(&now, &s_timeout, pDeadline);
+}
+
+static bool StallDeadlineExpired(const struct timeval * pDeadline) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    return timercmp(&now, pDeadline, >=);
+}
+
 int SerialRecv(u8 * pReadChars, int nNumCharsToRead) {
     int nRem = nNumCharsToRead;
     int nCnt = 0;
+    struct timeval stallDeadline;
+    SetStallDeadline(&stallDeadline);
     while (nRem > 0) {
-        static fd_set readFDs;
+        // Hand out anything already buffered before going back to the port.
+        if (s_nRecvHead < s_nRecvTail) {
+            u32 nAvailable = s_nRecvTail - s_nRecvHead;
+            u32 nTaken = ((u32)nRem < nAvailable) ? (u32)nRem : nAvailable;
+            memcpy(pReadChars + nCnt, s_recvBuffer + s_nRecvHead, nTaken);
+            s_nRecvHead += nTaken;
+            nCnt += (int)nTaken;
+            nRem -= (int)nTaken;
+            SetStallDeadline(&stallDeadline);
+            continue;
+        }
+        SerialDiscardBufferedInput();
+
+        fd_set readFDs;
         FD_ZERO(&readFDs);
         FD_SET(s_nSerialFD, &readFDs);
         struct timeval timeout = s_timeout;
@@ -214,24 +298,33 @@ int SerialRecv(u8 * pReadChars, int nNumCharsToRead) {
                 return nRtn;
             }
         }
-        nRtn = read(s_nSerialFD, pReadChars + nCnt, nRem);
+        // Take everything the port has, not just the bytes wanted right now.
+        nRtn = read(s_nSerialFD, s_recvBuffer, sizeof(s_recvBuffer));
         if (nRtn > 0) {
 #ifdef DEBUG_SERIAL_DATA
             for (int i = 0; i < nRtn; ++i) {
                 if ((i % 16) == 0) {
                     printf("%s: ", (i) ? "\nR" : "R");
                 }
-                printf("%02x ", pReadChars[i]);
+                printf("%02x ", s_recvBuffer[i]);
             }
             printf("\n");
 #endif // DEBUG_SERIAL_DATA
-            nCnt += nRtn;
-            nRem -= nRtn;
+            s_nRecvTail = (u32)nRtn;
+            SetStallDeadline(&stallDeadline);
         } else if (nRtn == 0) {
-            errno = ETIMEDOUT;
-            return -errno;
+            // Readable, but nothing to read. Keep waiting, but not forever.
+            if (StallDeadlineExpired(&stallDeadline)) {
+                errno = ETIMEDOUT;
+                return -errno;
+            }
+            continue;
         } else {
-            if (errno == EINTR) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (errno != EINTR && StallDeadlineExpired(&stallDeadline)) {
+                    errno = ETIMEDOUT;
+                    return -errno;
+                }
                 continue;
             } else {
                 nRtn = -errno;

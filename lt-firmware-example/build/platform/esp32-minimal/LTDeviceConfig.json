@@ -6,7 +6,11 @@
  * Copyright 2026, Roku, Inc.  All rights reserved.
  ******************************************************************************/
 {
- "config":{
-     "device":[ { "lib": "LTDeviceWatchdog",      "driver": [ { "lib": "Esp32DriverWatchdog"       } ] } ]
-     }
+  "config":{
+    "device":[ { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32DriverFlash" } ] },
+               { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32DriverWatchdog" } ] }
+             ]
+           },
+
+    "memory":{ "regions":[ { "name": "psram", "region": 5 } ] }
 }

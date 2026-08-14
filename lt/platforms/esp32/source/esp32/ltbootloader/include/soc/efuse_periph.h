@@ -14,3 +14,10 @@
 
 #pragma once
 #include "soc/efuse_reg.h"
+/* Upstream also pulls in the register-struct view of the block here.  Only the
+   esp32s3 side of this tree vendors it: the esp32 hal predates the struct headers
+   and reaches the block through the _REG macros above, so there is nothing to
+   include on that target. */
+#if CONFIG_IDF_TARGET_ESP32S3
+#include "soc/efuse_struct.h"
+#endif

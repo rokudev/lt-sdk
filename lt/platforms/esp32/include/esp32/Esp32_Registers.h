@@ -109,7 +109,28 @@ enum Esp32_RegisterDPORT {
     kEsp32_RegisterDPORT_CACHE_MMU_TABLE              = ESP32_REG_BASE(DPORT) + 0x10000,
     kEsp32_RegisterDPORT_CACHE_MMU_TABLE_INVALID_V    = 0x100,
     kEsp32_RegisterDPORT_PRO_CACHE_CTRL1              = ESP32_REG_BASE(DPORT) + 0x044,
+    kEsp32_RegisterDPORT_APP_CACHE_CTRL1              = ESP32_REG_BASE(DPORT) + 0x05c,
     kEsp32_RegisterDPORT_CACHE_CTRL1_CACHE_M          = 0x3F,
+
+    /* External SRAM (PSRAM) address decoding.  DRAM_HL and DRAM_SPLIT choose
+     * how the 4MB external window is carved up; both must be clear for the
+     * whole window to be visible.  The two MASK bits gate the DRAM1 and
+     * external-SRAM cache targets - clearing a mask bit enables that target.
+     * Note the HL bit sits at a different position on each CPU. */
+    kEsp32_RegisterDPORT_PRO_DRAM_HL_M                = (1 << 16),
+    kEsp32_RegisterDPORT_APP_DRAM_HL_M                = (1 << 14),
+    kEsp32_RegisterDPORT_DRAM_SPLIT_M                 = (1 << 11),
+    kEsp32_RegisterDPORT_CACHE_CTRL1_MASK_DRAM1_M     = (1 << 3),
+    kEsp32_RegisterDPORT_CACHE_CTRL1_MASK_OPSDRAM_M   = (1 << 5),
+    /* External SRAM MMU page size: 0 = 32KB pages, which is what
+     * cache_sram_mmu_set() assumes */
+    kEsp32_RegisterDPORT_CACHE_CTRL1_CMMU_SRAM_PAGE_MODE_S = 6,
+    kEsp32_RegisterDPORT_CACHE_CTRL1_CMMU_SRAM_PAGE_MODE_M = 0x07 << 6,
+
+    /* Routes the SPI1 pins to the shared flash/PSRAM pads while a user mode
+     * transaction is in flight */
+    kEsp32_RegisterDPORT_HOST_INF_SEL                 = ESP32_REG_BASE(DPORT) + 0x0bc,
+    kEsp32_RegisterDPORT_HOST_INF_SEL_PSRAM_M         = (1 << 14),
     kEsp32_RegisterDPORT_PRO_DCACHE_DBUG0             = ESP32_REG_BASE(DPORT) + 0x3F0,
     kEsp32_RegisterDPORT_DCACHE_DBUG0_STATE_M         = 0x00000FFF,
     kEsp32_RegisterDPORT_DCACHE_DBUG0_STATE_S         = 7,
@@ -169,6 +190,13 @@ enum Esp32_RegisterEFUSE {
     kEsp32_RegisterEFUSE_BLK0_RDATA0                  = ESP32_REG_BASE(EFUSE),
     kEsp32_RegisterEFUSE_FLASH_CRYPT_CNT_S            = 20,
     kEsp32_RegisterEFUSE_FLASH_CRYPT_CNT_M            = 0x0000007f,
+
+    /* Chip package identifier, spread over two fields of the same word: the
+     * low three bits at [11:9] and a fourth, later-added bit at [2]. */
+    kEsp32_RegisterEFUSE_BLK0_RDATA3                  = ESP32_REG_BASE(EFUSE) + 0x0c,
+    kEsp32_RegisterEFUSE_RD_CHIP_VER_PKG_S            = 9,
+    kEsp32_RegisterEFUSE_RD_CHIP_VER_PKG_M            = 0x07 << 9,
+    kEsp32_RegisterEFUSE_RD_CHIP_VER_PKG_4BIT_M       = (1 << 2),
 };
 
 /* Timer Group 0 */
@@ -307,6 +335,10 @@ enum Esp32_RegisterSPI {
     kEsp32_RegisterSPI_EXT2                           = 0xf8,
     kEsp32_RegisterSPI_EXT2_SPI_ST_M                  = 0x07,
 
+    /* SPI_EXT3_REG - undocumented; writing 1 releases the CS hold state the
+     * ROM leaves behind after a flash transaction */
+    kEsp32_RegisterSPI_EXT3                           = 0xfc,
+
     /* SPI_ADDR_REG */
     kEsp32_RegisterSPI_ADDR                           = 0x04,
 
@@ -327,6 +359,21 @@ enum Esp32_RegisterSPI {
     kEsp32_RegisterSPI_USER_DUMMY_M                   = 0x01 << 29,
     kEsp32_RegisterSPI_USER_ADDR_M                    = 0x01 << 30,
 
+    kEsp32_RegisterSPI_USER_CS_HOLD_M                 = 0x01 << 4,
+    kEsp32_RegisterSPI_USER_CS_SETUP_M                = 0x01 << 5,
+    kEsp32_RegisterSPI_USER_CK_OUT_EDGE_M             = 0x01 << 7,
+    kEsp32_RegisterSPI_USER_DOUTDIN_M                 = 0x01 << 0,
+    kEsp32_RegisterSPI_USER_COMMAND_M                 = 0x01u << 31,
+    /* holds CS asserted between transactions */
+    kEsp32_RegisterSPI_USER_PREP_HOLD_M               = 0x01 << 23,
+    /* number of data lines used for the write phase.  The four bits are
+     * contiguous, so FWRITE_DUAL_S doubles as the base of the field */
+    kEsp32_RegisterSPI_USER_FWRITE_DUAL_S             = 12,
+    kEsp32_RegisterSPI_USER_FWRITE_DUAL_M             = 0x01 << 12,
+    kEsp32_RegisterSPI_USER_FWRITE_QUAD_M             = 0x01 << 13,
+    kEsp32_RegisterSPI_USER_FWRITE_DIO_M              = 0x01 << 14,
+    kEsp32_RegisterSPI_USER_FWRITE_QIO_M              = 0x01 << 15,
+
     /* SPI_USER1_REG */
     kEsp32_RegisterSPI_USER1                          = 0x20,
     kEsp32_RegisterSPI_USER1_ADDR_BITLEN_S            = 26,
@@ -337,8 +384,75 @@ enum Esp32_RegisterSPI {
     /* SPI_USER2_REG */
     kEsp32_RegisterSPI_USER2                          = 0x24,
     kEsp32_RegisterSPI_USER2_COMMAND_BITLEN_S         = 28,
+    kEsp32_RegisterSPI_USER2_COMMAND_BITLEN_M         = 0x0f << 28,
     kEsp32_RegisterSPI_USER2_COMMAND_VALUE_S          = 0x00,
     kEsp32_RegisterSPI_USER2_COMMAND_VALUE_M          = 0xffff,
+
+    /* SPI_CTRL2_REG - CS setup/hold timing, in SPI clock cycles */
+    kEsp32_RegisterSPI_CTRL2                          = 0x14,
+    kEsp32_RegisterSPI_CTRL2_HOLD_TIME_S              = 4,
+    kEsp32_RegisterSPI_CTRL2_HOLD_TIME_M              = 0x0f << 4,
+    kEsp32_RegisterSPI_CTRL2_SETUP_TIME_S             = 0,
+    kEsp32_RegisterSPI_CTRL2_SETUP_TIME_M             = 0x0f,
+
+    /* SPI_CLOCK_REG */
+    kEsp32_RegisterSPI_CLOCK                          = 0x18,
+    kEsp32_RegisterSPI_CLOCK_CLK_EQU_SYSCLK_M         = 0x01 << 31,
+    kEsp32_RegisterSPI_CLOCK_CLKDIV_PRE_S             = 18,
+    kEsp32_RegisterSPI_CLOCK_CLKDIV_PRE_M             = 0x1fff << 18,
+    kEsp32_RegisterSPI_CLOCK_CLKCNT_N_S               = 12,
+    kEsp32_RegisterSPI_CLOCK_CLKCNT_N_M               = 0x3f << 12,
+    kEsp32_RegisterSPI_CLOCK_CLKCNT_H_S               = 6,
+    kEsp32_RegisterSPI_CLOCK_CLKCNT_H_M               = 0x3f << 6,
+    kEsp32_RegisterSPI_CLOCK_CLKCNT_L_S               = 0,
+    kEsp32_RegisterSPI_CLOCK_CLKCNT_L_M               = 0x3f,
+
+    /* SPI_MOSI_DLEN_REG */
+    kEsp32_RegisterSPI_MOSI_DLEN                      = 0x28,
+    kEsp32_RegisterSPI_MOSI_DLEN_DBITLEN_S            = 0x00,
+
+    /* SPI_SLV_WR_STATUS_REG - doubles as the address register in slave mode,
+     * which is how the ROM flash routines use it */
+    kEsp32_RegisterSPI_SLV_WR_STATUS                  = 0x30,
+
+    /* SPI_PIN_REG */
+    kEsp32_RegisterSPI_PIN                            = 0x34,
+    kEsp32_RegisterSPI_PIN_CS0_DIS_M                  = 0x01 << 0,
+    kEsp32_RegisterSPI_PIN_CS1_DIS_M                  = 0x01 << 1,
+    kEsp32_RegisterSPI_PIN_CK_IDLE_EDGE_M             = 0x01 << 29,
+
+    /* SPI_SLAVE_REG */
+    kEsp32_RegisterSPI_SLAVE                          = 0x38,
+    kEsp32_RegisterSPI_SLAVE_MODE_M                   = 0x01 << 30,
+    /* Transfer-done interrupt enable.  IDF writes this as SPI_TRANS_DONE << 5,
+     * SPI_TRANS_DONE being the bit 4 status flag; the enables sit five bits
+     * above their status counterparts. */
+    kEsp32_RegisterSPI_SLAVE_TRANS_INTEN_M            = 0x01 << 9,
+
+    /* SPI_CACHE_SCTRL_REG - cache-side control for the external SRAM (PSRAM)
+     * attached to SPI0/CS1.  Only meaningful on SPI0. */
+    kEsp32_RegisterSPI_CACHE_SCTRL                    = 0x54,
+    kEsp32_RegisterSPI_CACHE_SCTRL_USR_SRAM_DIO_M     = 0x01 << 1,
+    kEsp32_RegisterSPI_CACHE_SCTRL_USR_SRAM_QIO_M     = 0x01 << 2,
+    kEsp32_RegisterSPI_CACHE_SCTRL_USR_RD_SRAM_DUMMY_M = 0x01 << 4,
+    kEsp32_RegisterSPI_CACHE_SCTRL_SRAM_USR_RCMD_M    = 0x01 << 5,
+    kEsp32_RegisterSPI_CACHE_SCTRL_SRAM_USR_WCMD_M    = 0x01 << 28,
+    kEsp32_RegisterSPI_CACHE_SCTRL_SRAM_DUMMY_CYCLELEN_S = 14,
+    kEsp32_RegisterSPI_CACHE_SCTRL_SRAM_DUMMY_CYCLELEN_M = 0xff << 14,
+    kEsp32_RegisterSPI_CACHE_SCTRL_SRAM_ADDR_BITLEN_S = 22,
+    kEsp32_RegisterSPI_CACHE_SCTRL_SRAM_ADDR_BITLEN_M = 0x3f << 22,
+
+    /* SPI_SRAM_DRD_CMD_REG / SPI_SRAM_DWR_CMD_REG - the read and write opcodes
+     * the cache issues to the external SRAM */
+    kEsp32_RegisterSPI_SRAM_DRD_CMD                   = 0x5c,
+    kEsp32_RegisterSPI_SRAM_DWR_CMD                   = 0x60,
+    kEsp32_RegisterSPI_SRAM_CMD_BITLEN_S              = 28,
+    kEsp32_RegisterSPI_SRAM_CMD_BITLEN_M              = 0x0f << 28,
+    kEsp32_RegisterSPI_SRAM_CMD_VALUE_S               = 0,
+    kEsp32_RegisterSPI_SRAM_CMD_VALUE_M               = 0xffff,
+
+    /* SPI_DATE_REG - the two top bits gate the 80MHz cache clock path */
+    kEsp32_RegisterSPI_DATE                           = 0x3fc,
 };
 
 /*
@@ -515,6 +629,8 @@ enum Esp32_RegisterIO_MUX {
     kEsp32_RegisterGPIO_IO_MUX_FUN_WPU_M              = (1 << 8),
     kEsp32_RegisterGPIO_IO_MUX_FUN_WPD_M              = (1 << 7),
     kEsp32_RegisterGPIO_IO_MUX_FUN_DRV_S              = 10,
+    kEsp32_RegisterGPIO_IO_MUX_FUN_DRV_M              = 0x03 << 10,
+    kEsp32_RegisterGPIO_IO_MUX_MCU_SEL_M              = 0x07 << 12,
 };
 #define ESP32_GPIO_IO_MUX_REG(offset)             (*(volatile u32 *)(kEsp32_RegisterGPIO_IO_MUX_PIN_CTRL + offset))
 
