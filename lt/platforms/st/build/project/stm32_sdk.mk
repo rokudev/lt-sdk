@@ -29,6 +29,8 @@ LT_PROJECT_SOURCE_FILES += CM7/Core/Src/syscalls.c
 LT_PROJECT_SOURCE_FILES += CM7/Core/Startup/startup_stm32h755zitx.s
 LT_PROJECT_SOURCE_FILES += Drivers/BSP/STM32H7xx_Nucleo/stm32h7xx_nucleo.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal.c
+LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_adc.c
+LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_adc_ex.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_cortex.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_dma.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_dma_ex.c
@@ -59,3 +61,4 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #   LOG
 ###############################################################################
 #   10-Jul-2026	augustus    created
+#   12-Aug-2026	connor      added ADC HAL module (stm32h7xx_hal_adc, _adc_ex)
