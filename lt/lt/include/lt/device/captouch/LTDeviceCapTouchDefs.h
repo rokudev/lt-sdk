@@ -33,6 +33,13 @@ typedef enum LTDeviceCapTouch_Mode {
 } LTDeviceCapTouch_Mode;
     /**< LTDeviceCapTouch operating modes */
 
+typedef void (LTCapTouch_ResultProc)(bool success, s32 attemptCount, void *pClientData);
+    /**< common ResultProc type for captouch initialization result notification
+     * @param success - true if initialization succeeded, false if failed
+     * @param attemptCount - number of attempts required to initialize
+     * @param pClientData - client data pointer
+     */
+
 LT_EXTERN_C_END
 
 #endif /* #ifndef LT_INCLUDE_LT_DEVICE_CAPTOUCH_LTDEVICECAPTOUCHDEFS_H */

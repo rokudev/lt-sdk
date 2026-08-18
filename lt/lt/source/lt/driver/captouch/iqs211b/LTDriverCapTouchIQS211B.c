@@ -52,9 +52,12 @@ DEFINE_LTLOG_SECTION("lt.drv.captouch.iqs211b");
 #define AZOTEQ_REBOOT_PULSE_DURATION_MS 4
 
 /* Power-on timing */
-#define AZOTEQ_PWR_ON_TO_READY_TIME_NORMAL_MS  50
-#define AZOTEQ_PWR_ON_TO_READY_TIME_LPM_MS     30
-#define AZOTEQ_PWR_RST_PWR_OFF_TIME_MS         20
+// It takes ~30ms from Power on to the first ~10us pulse. 
+// The ~10us pulses are seperated by ~23ms.
+// This contains the three 2ms toggles. Adding an 7ms buffer from 30ms
+// so our I2C init starts in between two 2ms pulses.
+const LTTime AZOTEQ_PWR_ON_TO_READY_TIME_MS =   LTTimeInitializer_Milliseconds(37);
+const LTTime AZOTEQ_PWR_RST_PWR_OFF_TIME_MS =   LTTimeInitializer_Milliseconds(20);
 
 /* settings key */
 #define MOVEMENT_THRESHOLD_SETTINGS_KEY "ltlib/LTDriverCapTouchIQS211B/movementThreshold"
@@ -66,7 +69,6 @@ define_LTObjectLibrary(1, NULL, NULL);
 /*________________________________________
   LTDriverCapTouchIQS211B LTObject impl */
 typedef_LTObjectImpl(LTDriverCapTouch, LTDriverCapTouchIQS211B) {
-    LTTime                   pwrOnToReadyTime;
     LTTime                   lastInterruptTime;
     /* GPIO resources */
     LTDeviceGpio            *pGpio;
@@ -79,11 +81,14 @@ typedef_LTObjectImpl(LTDriverCapTouch, LTDriverCapTouchIQS211B) {
     ILTThread               *iThread;
     LTDriverCapTouch_MotionProc *pMotionProc;
     void                    *pMotionProcData;
+    LTDriverCapTouch_ResultProc *pResultProc;
+    void                    *pResultProcData;
 
     /* State */
     LTDeviceCapTouch_Mode    mode;
     LTDeviceCapTouch_Mode    desiredMode;
     s32                      resetAttemptsDone;
+    s32                      resultAttemptCount;  /* Attempt count for result callback */
     bool                     doNotResuscitate;
     u8                       movementThreshold;
 } LTOBJECT_API;
@@ -96,9 +101,78 @@ static LTDriverCapTouchIQS211B * s_capTouch;
  * Forward declarations
  ******************************************************************************/
 static void AzotecIRQHandler(void *pClientData);
-static void AzoteqI2CInit(LTDriverCapTouchIQS211B *capTouch);
+static void AzoteqRebootReinit(void *clientData);
 static void AzoteqI2CInitTimer(void *pClientData);
 static void AzoteqPower(LTDriverCapTouchIQS211B *capTouch, bool on);
+static void AzoteqResultCallbackSuccess(void *pClientData);
+static void AzoteqResultCallbackFailure(void *pClientData);
+
+/*******************************************************************************
+ * Function Call Sequence Diagram
+ ******************************************************************************/
+/*
+ *  INITIALIZATION
+ *  ==============
+ *  LTDriverCapTouchIQS211B_Initialize(mode, thread, motionProc, resultProc, data)
+ *      |
+ *      +---> Store pResultProc, pResultProcData
+ *      |
+ *      +---> AzoteqPower(capTouch, true)
+ *      |
+ *      +---> QueueTaskProc(AzoteqRebootReinit)
+ *            |
+ *            +---> AzoteqRebootReinit()
+ *                  |
+ *                  +---> Disable ISR, clear pending IRQ
+ *                  |
+ *                  +---> AzoteqPower(false)
+ *                  |
+ *                  +---> Sleep(20ms)  [AZOTEQ_PWR_RST_PWR_OFF_TIME_MS]
+ *                  |
+ *                  +---> AzoteqPower(true)
+ *                  |
+ *                  +---> Sleep(37ms)  [AZOTEQ_PWR_ON_TO_READY_TIME_MS]
+ *                  |
+ *                  +---> AzoteqI2CInit()
+ *                        |
+ *                        +---> I2C bit-bang write (GPIO-based)
+ *                        +---> Configure registers (0xC6-0xCE)
+ *                        +---> SetupCaptouchInterruptGPIO()
+ *
+ *
+ *  MOTION EVENT
+ *  ============
+ *  [IQS211B detects motion -> SCL pin goes low]
+ *      |
+ *      +---> AzotecIRQHandler()
+ *            |
+ *            +---> Check interrupt time delta:
+ *            |     - If < 5ms: reboot pulse -> QueueTaskProc(AzoteqRebootReinit)
+ *            |     - Else: touch event -> pMotionProc()
+ *
+ *
+ *  ERROR RECOVERY (SetTimer-based)
+ *  ===============================
+ *  AzoteqI2CHandleFailure()  [on I2C failure]
+ *      |
+ *      +---> if (resetAttemptsDone < MAX_REINIT_ATTEMPTS)
+ *      |     +---> AzoteqPower(true)
+ *      |     +---> SetTimer(20ms) -> AzoteqI2CInitTimer -> AzoteqRebootReinit
+ *      |
+ *      +---> else (attempts exhausted):
+ *            +---> Disable ISR, set GPIO to HighZ
+ *            +---> doNotResuscitate = true
+ *            +---> QueueTaskProc(AzoteqResultCallbackWrapper with success=false)
+ *                  |
+ *                  +---> AzoteqResultCallbackWrapper() [on notification thread]
+ *                        |
+ *                        +---> pResultProc(false, attemptCount, pResultProcData)
+ *                              |
+ *                              +---> RCUApp::OnCapTouchResult()
+ *                                    |
+ *                                    +---> Log result and DisableWakeupSource if failed
+ */
+
 
 /*******************************************************************************
  * I2C Bit-bang implementation
@@ -135,7 +209,7 @@ static void SclHigh(LTDriverCapTouchIQS211B *capTouch) {
 static bool SclHighWait(LTDriverCapTouchIQS211B *capTouch) {
     /* Wait for slave clock stretching with timeout */
     capTouch->pGpio->API->SetGpioModeFromIndex(capTouch->pGpio, capTouch->i2cSclPin, kLTDeviceGpio_ModeType_Input);
-    // ISSUE: performing a delay programmatically by decrementing a variable is processor dependent
+    // ISSUE: performing a delay programatically by decrementing a variable is processor dependent
     u32 timeout = 10000;
     while ((--timeout > 0) && (!capTouch->pGpio->API->GetInputValue(capTouch->pGpio, capTouch->i2cSclPin))) {
         /* Wait for slave to release SCL */
@@ -162,8 +236,9 @@ static void I2CSendBit(LTDriverCapTouchIQS211B *capTouch, bool bit) {
 // Uses clock stretching - waits for slave to release SCL
 static bool I2CReadBit(LTDriverCapTouchIQS211B *capTouch) {
     capTouch->pGpio->API->SetGpioModeFromIndex(capTouch->pGpio, capTouch->i2cSdaPin, kLTDeviceGpio_ModeType_Input);
-    SclHighWait(capTouch);
-    bool bit = SdaRead(capTouch);
+    SclHighWait(capTouch); // Wait for SCL to go high (clock stretching); SCL then returns low because the output register was pre-set to 0 by the preceding SclLow call
+    I2CDelay(); // Wait for the slave to set up the data bit (ACK/NACK) on SDA after SCL goes low
+    bool bit = SdaRead(capTouch); // Now read the bit value from SDA
     SclLow(capTouch);
     I2CDelay();
     capTouch->pGpio->API->SetGpioModeFromIndex(capTouch->pGpio, capTouch->i2cSdaPin, kLTDeviceGpio_ModeType_HighZ);
@@ -187,6 +262,7 @@ static void I2CRepeatedStart(LTDriverCapTouchIQS211B *capTouch) {
 static bool SetupCaptouchInterruptGPIO(LTDriverCapTouchIQS211B *capTouch) {
     if (capTouch->pGpio && (!capTouch->doNotResuscitate)) {
         capTouch->pGpio->API->SetGpioModeFromIndex(capTouch->pGpio, capTouch->i2cSclPin, kLTDeviceGpio_ModeType_Input);
+        capTouch->pGpio->API->ClearGPIOPendingIRQ(capTouch->pGpio, capTouch->i2cSclPin);
         capTouch->pGpio->API->SetISR(capTouch->pGpio, capTouch->i2cSclPin, &AzotecIRQHandler, kLTDeviceGPIO_TriggerType_FallingEdge, NULL);
         return true;
     }
@@ -197,27 +273,25 @@ static bool SetupCaptouchInterruptGPIO(LTDriverCapTouchIQS211B *capTouch) {
  * Handle I2C communication failure
  ******************************************************************************/
 static void AzoteqI2CHandleFailure(LTDriverCapTouchIQS211B *capTouch) {
+    if (capTouch->doNotResuscitate) {
+        return;  /* Already marked as non-resuscitable */
+    }
 
     if (capTouch->resetAttemptsDone < MAX_REINIT_ATTEMPTS) {
         capTouch->resetAttemptsDone++;
-        DLOG_YELLOW("i2c", "Attempt %ld/%d", LT_Ps32(capTouch->resetAttemptsDone), MAX_REINIT_ATTEMPTS);
+        LTLOG("i2c", "Attempt %ld/%d", LT_Ps32(capTouch->resetAttemptsDone), MAX_REINIT_ATTEMPTS);
 
-        AzoteqPower(capTouch, false);
-        capTouch->mode = kLTDeviceCapTouch_Mode_Unset;
-
-        capTouch->iThread->Sleep(LTTime_Milliseconds(AZOTEQ_PWR_RST_PWR_OFF_TIME_MS));
         AzoteqPower(capTouch, true);
 
-        capTouch->iThread->SetTimer(capTouch->hNotificationThread, capTouch->pwrOnToReadyTime, &AzoteqI2CInitTimer, NULL, capTouch);
+        capTouch->iThread->SetTimer(capTouch->hNotificationThread, AZOTEQ_PWR_RST_PWR_OFF_TIME_MS, &AzoteqI2CInitTimer, NULL, capTouch);
     } else {
         if (capTouch->pGpio) {
             /* Disable the ISR so it doesn't trigger callbacks during reset */
             capTouch->pGpio->API->SetISR(capTouch->pGpio, capTouch->i2cSclPin, NULL, kLTDeviceGPIO_TriggerType_FallingEdge, NULL);
             capTouch->pGpio->API->ClearGPIOPendingIRQ(capTouch->pGpio, capTouch->i2cSclPin);
             capTouch->pGpio->API->SetGpioModeFromIndex(capTouch->pGpio, capTouch->i2cSclPin, kLTDeviceGpio_ModeType_HighZ);
-            capTouch->pGpio->API->SetGpioPullFromIndex(capTouch->pGpio, capTouch->i2cSclPin, kLTDeviceGpio_PullType_PullUp);
         }
-        DLOG_RED("i2c.failed", "Attempts Maxed");
+        LTLOG_REDALERT("i2c.failed", "Attempts Maxed");
         // ISSUE: The LTLOG_SERVER below was RCU_LOG, but that can't happen
         //        is this product independent driver.  So RCUApp should register
         //        a log hook function with LTCore and catch logs with the kLTCore_LogFlags_LogToServer flag set
@@ -225,8 +299,35 @@ static void AzoteqI2CHandleFailure(LTDriverCapTouchIQS211B *capTouch) {
         // LTLOG_SERVER("i2c.failed", "");
 
         capTouch->doNotResuscitate = true;
+
+        // Save attempt count before resetting, for result callback
+        capTouch->resultAttemptCount = capTouch->resetAttemptsDone + 1;
+
+        // Queue result callback to notification thread (don't call directly - not safe from this context)
+        if (capTouch->pResultProc) {
+            capTouch->iThread->QueueTaskProc(capTouch->hNotificationThread, &AzoteqResultCallbackFailure, NULL, capTouch);
+        }
         capTouch->resetAttemptsDone = 0;
-        AzoteqPower(capTouch, false);
+
+        // Do not try to turn off Azoteq here, since this requires the Enable GPIO to stay high.
+        // When the chip goes to low power mode, the Enable GPIO will go low again and power up the Azoteq chip
+    }
+}
+
+/*******************************************************************************
+ * Result callback wrappers - called on notification thread
+ ******************************************************************************/
+static void AzoteqResultCallbackSuccess(void *pClientData) {
+    LTDriverCapTouchIQS211B *capTouch = (LTDriverCapTouchIQS211B *)pClientData;
+    if (capTouch->pResultProc) {
+        capTouch->pResultProc(true, capTouch->resultAttemptCount, capTouch->pResultProcData);
+    }
+}
+
+static void AzoteqResultCallbackFailure(void *pClientData) {
+    LTDriverCapTouchIQS211B *capTouch = (LTDriverCapTouchIQS211B *)pClientData;
+    if (capTouch->pResultProc) {
+        capTouch->pResultProc(false, capTouch->resultAttemptCount, capTouch->pResultProcData);
     }
 }
 
@@ -234,12 +335,10 @@ static void AzoteqI2CHandleFailure(LTDriverCapTouchIQS211B *capTouch) {
  * Initialize Azoteq via I2C
  ******************************************************************************/
 static void AzoteqI2CInitTimer(void *pClientData) {
-    AzoteqI2CInit((LTDriverCapTouchIQS211B *)pClientData);
+    AzoteqRebootReinit((LTDriverCapTouchIQS211B *)pClientData);
 }
 
 static void AzoteqI2CInit(LTDriverCapTouchIQS211B *capTouch) {
-   capTouch->iThread->KillTimer(capTouch->hNotificationThread, &AzoteqI2CInitTimer, capTouch);
-
    if (capTouch->mode == capTouch->desiredMode) {
         return;
    }
@@ -288,7 +387,6 @@ static void AzoteqI2CInit(LTDriverCapTouchIQS211B *capTouch) {
         i2cdatawrsrc[7] = TOUCH_THRESHOLD_VAL;
         i2cdatawrsrc[8] = capTouch->movementThreshold;
         i2cdatawrsrc[9] = AUTO_RESEED_LMT_VAL;
-        DLOG("mvmt", "%d", (int)capTouch->movementThreshold);
     } else if (capTouch->desiredMode == kLTDeviceCapTouch_Mode_LowPower) {
         i2cdatawrsrc[2] = 0x23;  /* Touch / Prox mode */
         i2cdatawrsrc[6] = 0xEE;  /* Very high prox threshold */
@@ -415,11 +513,21 @@ static void AzoteqI2CInit(LTDriverCapTouchIQS211B *capTouch) {
 
     if (success) {
         DLOG("i2c.init.ok", "C7=0x%x", readData);
-        capTouch->resetAttemptsDone = 0;
-        SetupCaptouchInterruptGPIO(capTouch);
+        capTouch->resetAttemptsDone++;
         capTouch->mode = capTouch->desiredMode;
+
+        // Save attempt count before resetting, for result callback
+        capTouch->resultAttemptCount = capTouch->resetAttemptsDone;
+
+        // Call result callback on success
+        if (capTouch->pResultProc) {
+            capTouch->iThread->QueueTaskProc(capTouch->hNotificationThread, &AzoteqResultCallbackSuccess, NULL, capTouch);
+        }
+        capTouch->resetAttemptsDone = 0;
+
+        SetupCaptouchInterruptGPIO(capTouch);
     } else {
-        DLOG_YELLOW("i2c.read.fail", "C7=0x%x expected=0x%x", readData, i2cdatawrsrc[2]);
+        LTLOG_YELLOWALERT("i2c.read.fail", "C7=0x%x expected=0x%x", readData, i2cdatawrsrc[2]);
         AzoteqI2CHandleFailure(capTouch);
     }
 }
@@ -429,37 +537,24 @@ static void AzoteqI2CInit(LTDriverCapTouchIQS211B *capTouch) {
  ******************************************************************************/
 static void AzoteqRebootReinit(void *clientData) {
     LTDriverCapTouchIQS211B *capTouch = (LTDriverCapTouchIQS211B *)clientData;
+    capTouch->iThread->KillTimer(capTouch->hNotificationThread, &AzoteqI2CInitTimer, capTouch);
+    if (capTouch->doNotResuscitate) {
+        return;
+    }
 
     if (capTouch->pGpio) {
         /* Disable the ISR so it doesn't trigger callbacks during reset */
         capTouch->pGpio->API->SetISR(capTouch->pGpio, capTouch->i2cSclPin, NULL, kLTDeviceGPIO_TriggerType_FallingEdge, NULL);
+        capTouch->pGpio->API->ClearGPIOPendingIRQ(capTouch->pGpio, capTouch->i2cSclPin);
         capTouch->pGpio->API->SetGpioModeFromIndex(capTouch->pGpio, capTouch->i2cSdaPin, kLTDeviceGpio_ModeType_Input);
     }
     AzoteqPower(capTouch, false);
     capTouch->mode = kLTDeviceCapTouch_Mode_Unset;
 
-    capTouch->iThread->Sleep(LTTime_Milliseconds(AZOTEQ_PWR_RST_PWR_OFF_TIME_MS));
+    capTouch->iThread->Sleep(AZOTEQ_PWR_RST_PWR_OFF_TIME_MS);
     AzoteqPower(capTouch, true);
-    capTouch->iThread->Sleep(capTouch->pwrOnToReadyTime);
+    capTouch->iThread->Sleep(AZOTEQ_PWR_ON_TO_READY_TIME_MS);
     AzoteqI2CInit(capTouch);
-}
-
-/*******************************************************************************
- * GPIO interrupt callback for touch events
- ******************************************************************************/
-static void AzotechCallI2CInitViaISRTaskProc(void *pClientData) {
-    LT_UNUSED(pClientData);
-    if (s_capTouch) {
-        LTTime powerOnReadyTime = LTTime_Add(s_capTouch->lastInterruptTime, s_capTouch->pwrOnToReadyTime);
-        LTTime kernelTime = LT_GetCore()->GetKernelTime();
-        if (LTTime_IsLessThan(kernelTime, powerOnReadyTime)) {
-            powerOnReadyTime = LTTime_Subtract(powerOnReadyTime, kernelTime);
-            s_capTouch->iThread->SetTimer(s_capTouch->hNotificationThread, powerOnReadyTime, &AzoteqI2CInitTimer, NULL, s_capTouch);
-        }
-        else {
-            AzoteqI2CInit(s_capTouch);
-        }
-    }
 }
 
 static void AzotecIRQHandler(void *pClientData) {
@@ -468,6 +563,12 @@ static void AzotecIRQHandler(void *pClientData) {
 
     /* Clear the interrupt flag */
     s_capTouch->pGpio->API->ClearGPIOPendingIRQ(s_capTouch->pGpio, s_capTouch->i2cSclPin);
+
+    // We have abandoned the Captouch at this point. This may be spurious signals.
+    if (s_capTouch->doNotResuscitate) {
+        DLOG_YELLOW("azoteq", "Interrupt detected but doNotResuscitate is set");
+        return;
+    }
 
     /* Time difference since last pulse to determine if this is a touch or reset event */
     LTTime currentInterruptTime = LT_GetCore()->GetKernelTime();
@@ -478,12 +579,12 @@ static void AzotecIRQHandler(void *pClientData) {
         DLOG_YELLOW("azoteq", "Unexpected reboot");
         /* Turn off the interrupts */
         s_capTouch->pGpio->API->SetISR(s_capTouch->pGpio, s_capTouch->i2cSclPin, NULL, kLTDeviceGPIO_TriggerType_FallingEdge, NULL);
-        /* Make sure Azoteq is powered on */
         s_capTouch->mode = kLTDeviceCapTouch_Mode_Unset;
-        AzoteqPower(s_capTouch, true);
-        /* Set a timer to reinitialize the Azoteq */
+        // /* Make sure Azoteq is powered on */
+        // AzoteqPower(s_capTouch, true);
+        // /* Set a timer to reinitialize the Azoteq */
         s_capTouch->lastInterruptTime = LT_GetCore()->GetKernelTime();
-        s_capTouch->iThread->QueueTaskProcIfRequired(s_capTouch->hNotificationThread, &AzotechCallI2CInitViaISRTaskProc, NULL, NULL);
+        s_capTouch->iThread->QueueTaskProcIfRequired(s_capTouch->hNotificationThread, &AzoteqRebootReinit, NULL, s_capTouch);
     } else {
         /* This is a touch event. Call the motion proc directly */
         if (s_capTouch->pMotionProc) s_capTouch->pMotionProc(s_capTouch->pMotionProcData);
@@ -517,7 +618,7 @@ static bool LTDriverCapTouchIQS211B_ConstructObject(LTDriverCapTouchIQS211B *cap
     /* Open GPIO device */
     capTouch->pGpio = lt_createdeviceobject(LTDeviceGpio);
     if (capTouch->pGpio == NULL) {
-        DLOG_RED("init", "gpio");
+        LTLOG_REDALERT("init", "gpio");
         return false;
     }
 
@@ -527,7 +628,7 @@ static bool LTDriverCapTouchIQS211B_ConstructObject(LTDriverCapTouchIQS211B *cap
     capTouch->captEnPin = capTouch->pGpio->API->GetNamedPinValueFromName(capTouch->pGpio, "capt_en");
 
     if (capTouch->i2cSclPin < 0 || capTouch->i2cSdaPin < 0 || capTouch->captEnPin < 0) {
-        DLOG_YELLOW("init.pins", "Missing GPIO pin configuration");
+        LTLOG_YELLOWALERT("init.pins", "Missing GPIO pin configuration");
         lt_destroyobject(capTouch->pGpio);
         return false;
     }
@@ -551,6 +652,7 @@ static bool LTDriverCapTouchIQS211B_ConstructObject(LTDriverCapTouchIQS211B *cap
             }
         }
         lt_closelibrary(settings);
+        LTLOG("mvmt", "%d", (int)capTouch->movementThreshold);
     }
 
     // lt_consolestomp("SCL=%d SDA=%d EN=%d\n", capTouch->i2cSclPin, capTouch->i2cSdaPin, capTouch->captEnPin);
@@ -575,15 +677,17 @@ static void LTDriverCapTouchIQS211B_DestructObject(LTDriverCapTouchIQS211B *capT
 
 /*_______________________________
   LTDriverCapTouch API functions */
-static bool LTDriverCapTouchIQS211B_Initialize(LTDriverCapTouchIQS211B *capTouch, LTDeviceCapTouch_Mode mode, LTThread hThread, LTDriverCapTouch_MotionProc *pMotionProc, void *pMotionProcData) {
+static bool LTDriverCapTouchIQS211B_Initialize(LTDriverCapTouchIQS211B *capTouch, LTDeviceCapTouch_Mode mode, LTThread hThread, LTDriverCapTouch_MotionProc *pMotionProc, void *pMotionProcData, LTDriverCapTouch_ResultProc *pResultProc, void *pResultProcData) {
 
+    if (capTouch->doNotResuscitate) return false;
     capTouch->desiredMode = mode;
     capTouch->resetAttemptsDone = 0;
+    capTouch->resultAttemptCount = 0;
     capTouch->hNotificationThread = hThread;
     capTouch->pMotionProc = pMotionProc;
     capTouch->pMotionProcData = pMotionProcData;
-
-    capTouch->pwrOnToReadyTime = LTTime_Milliseconds((mode == kLTDeviceCapTouch_Mode_LowPower) ? AZOTEQ_PWR_ON_TO_READY_TIME_LPM_MS : AZOTEQ_PWR_ON_TO_READY_TIME_NORMAL_MS);
+    capTouch->pResultProc = pResultProc;
+    capTouch->pResultProcData = pResultProcData;
 
     AzoteqPower(capTouch, true);
     capTouch->iThread->QueueTaskProc(capTouch->hNotificationThread, AzoteqRebootReinit, NULL, capTouch);
@@ -596,7 +700,14 @@ static LTDeviceCapTouch_Mode LTDriverCapTouchIQS211B_GetMode(LTDriverCapTouchIQS
 }
 
 static bool LTDriverCapTouchIQS211B_IsCapTouchTriggerActive(LTDriverCapTouchIQS211B *capTouch) {
-    if (capTouch->pGpio && (capTouch->i2cSclPin != -1)) {
+    /* Powering the chip off forces mode to Unset. While unpowered the I2C
+       pull-ups are dead so SCL reads low, which would otherwise look like a
+       permanently active touch trigger. */
+    if (capTouch->mode == kLTDeviceCapTouch_Mode_Unset) {
+        return false;
+    }
+
+    if (capTouch->pGpio && (capTouch->i2cSclPin != -1) && (!capTouch->doNotResuscitate)) {
         capTouch->pGpio->API->SetGpioModeFromIndex(capTouch->pGpio, capTouch->i2cSclPin, kLTDeviceGpio_ModeType_Input);
         return (capTouch->pGpio->API->GetInputValue(capTouch->pGpio, capTouch->i2cSclPin) == 0); // Active low
     }
@@ -604,6 +715,10 @@ static bool LTDriverCapTouchIQS211B_IsCapTouchTriggerActive(LTDriverCapTouchIQS2
 }
 
 static void LTDriverCapTouchIQS211B_Enable(LTDriverCapTouchIQS211B *capTouch, bool bEnable) {
+    if (bEnable && capTouch->doNotResuscitate) {
+        DLOG_YELLOW("do.not.resuscitate", NULL);
+        return;
+    }
     if (bEnable) {
         AzoteqPower(capTouch, true);
         if (capTouch->mode == kLTDeviceCapTouch_Mode_Unset && capTouch->desiredMode != kLTDeviceCapTouch_Mode_Unset) {
@@ -631,6 +746,10 @@ static bool LTDriverCapTouchIQS211B_ResetTest(LTDriverCapTouchIQS211B *capTouch)
     return (sdaState == 0);
 }
 
+static bool LTDriverCapTouchIQS211B_IsDoNotResuscitate(LTDriverCapTouchIQS211B *capTouch) {
+    return capTouch->doNotResuscitate;
+}
+
 /*_____________________________
   LTDriverCapTouch api binding */
 define_LTObjectImplPublic(LTDriverCapTouch, LTDriverCapTouchIQS211B,
@@ -638,7 +757,8 @@ define_LTObjectImplPublic(LTDriverCapTouch, LTDriverCapTouchIQS211B,
     Enable,
     IsCapTouchTriggerActive,
     GetMode,
-    ResetTest
+    ResetTest,
+    IsDoNotResuscitate
 );
 
 /*******************************************************************************
@@ -646,4 +766,5 @@ define_LTObjectImplPublic(LTDriverCapTouch, LTDriverCapTouchIQS211B,
  *******************************************************************************
  *  30-Jan-26   macrinus    created
  *  27-Mar-26   augustus    recreated as object based
+ *  02-Jun-26   macrinus    added SetFailureCallback and doNotResuscitate notification
  */

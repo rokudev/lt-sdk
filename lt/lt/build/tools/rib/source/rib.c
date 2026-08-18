@@ -104,7 +104,7 @@ static const struct optionsHelp {
     { "FILE",    "input file"                                       },
     { "FILE",    "output file"                                      },
     { "VER",     "version string"                                   },
-    { "ARGS",    "platform-specific arguments"                      },
+    { "ARGS",    "platform-specific arguments (rcu, kws)"           },
     { NULL,      "Give this help text"                              },
     { NULL,      "Give a short usage message"                       }
 };

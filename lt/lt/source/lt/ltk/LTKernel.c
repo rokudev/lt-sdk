@@ -118,7 +118,7 @@ static bool InitAndRunThread(LTKThread * pThread, s8 nPriority, void (*pEntry)(v
 void _LTKInitialize(const LTCoreBSP * pBSP, LTCoreBSP_LTCoreLogFunction *ltCoreLogFunction, void (*pIdleEntry)(void *)) {
     BSP_LTLOG_INITIALIZE(ltCoreLogFunction);
     // Initialize empty run queues
-    for (s8 nPriority = 0; nPriority < kLTKNumThreadPriorities; nPriority++)
+    for (s8 nPriority = 0; nPriority < (s8)kLTKNumThreadPriorities; nPriority++)
         LTKList_Init(&_LTK_runQueues[nPriority]);
     // Initialize idle thread (lowest priority)
     InitAndRunThread(&_LTK_idleThread, -1, pIdleEntry, 0, _LTK_idleThreadStack, sizeof(_LTK_idleThreadStack));

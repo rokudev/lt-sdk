@@ -991,7 +991,7 @@ static void JiltEngineImpl_SignalTestCompletion(JiltEngineImpl *engine, const ch
                                 testName, engine->tilt->API->GetTestName());
         return;
     }
-    engine->thread->API->KillTimer(engine->thread, DeferredTestTimeoutProc, NULL);
+    engine->thread->API->KillTimer(engine->thread, DeferredTestTimeoutProc, engine);
     engine->thread->API->QueueTaskProc(engine->thread, TiltEngineMainTaskProc, NULL, engine);
 }
 

@@ -112,7 +112,7 @@ static const char *kMessagePackKeySettings[]               = {"invalid", "bright
                                                                                     "boot_reason", "uptime"};
 static const char *kMessagePackKeyEndpoints[]              = {"pir", "floodlight", "system"};
 static const char *kDeviceBootReason[]                     = {"Hard_Reset", "Soft_Reset", "Watchdog_Reset", "Brown_Out", "Unknown"};
-static const char *kMessagePackKeyLogLevelValue[]          = {"ERROR", "WARNING", "DEBUG", "TRACE"};
+// static const char *kMessagePackKeyLogLevelValue[]          = {"ERROR", "WARNING", "DEBUG", "TRACE"};
 
 typedef struct ResponseContext {
     LTMessagePack_Obj *pMP;             /* The MessagePack being processed */

@@ -609,6 +609,15 @@ static bool Console_ThreadInitProc(void) {
         lt_closelibrary(settings);
     }
 
+    /* Register console thread with thread watchdog so a hang triggers HardBoot + crashdump */
+    {
+        LTDeviceWatchdog *wd = lt_openlibrary(LTDeviceWatchdog);
+        if (wd) {
+            wd->WatchThread(LTTime_Seconds(45), true);
+            lt_closelibrary(wd);
+        }
+    }
+
     /* Enter interactive mode */
     s_console->API->GoInteractive(s_console);
     return true;

@@ -479,13 +479,14 @@ enum ieee80211_eid_ext {
     WLAN_EID_EXT_HE_6GHZ_CAPA = 59
 };
 
-static void parse_ies(char *ie_string, LTLogRecordApInfo *record) {
+static bool parse_ies(char *ie_string, LTLogRecordApInfo *record) {
     // Get the binary IE from Hex data
     u8 *ie = NULL;
     u32 ie_len;
 
     const LT_SIZE ie_size = 1024;
-    if ((ie = lt_malloc(ie_size)) == NULL) return;
+    bool wps = false;
+    if ((ie = lt_malloc(ie_size)) == NULL) return false;
     lt_memset(ie, 0, ie_size);
 
     for (ie_len = 0 ; ie_len < ie_size ; ie_len++) {
@@ -493,6 +494,7 @@ static void parse_ies(char *ie_string, LTLogRecordApInfo *record) {
     }
 
     // Parse IE vector into tags/ext tags
+    // See also https://gitlab.eng.roku.com/rjorgensen/apinfo
     for (u32 n = 0 ; n + 1 < ie_len ; n += ie[n + 1] + 2) {
         u8 tag = ie[n];
         u8 datalen = ie[n + 1];
@@ -616,6 +618,7 @@ static void parse_ies(char *ie_string, LTLogRecordApInfo *record) {
         case WLAN_EID_VENDOR_SPECIFIC: if (datalen >= 4) { // Vendor Specific Data (221)
                 u32 oui = getBE32(data, datalen, 0);
                 if (oui == 0x0050f204) { // WPS: Manufacturer, Model Name, Model Number, RF Bands
+                    wps = true;
                     // Each WPS sub element starts with an type and a length encoded in LittleEndian
                     u16 vie_typ = 0;
                     u16 vie_len = 0;
@@ -723,6 +726,7 @@ static void parse_ies(char *ie_string, LTLogRecordApInfo *record) {
         } // END switch (tag)
     }
     lt_free(ie);
+    return wps;
 }
 
 static void recordApInfo(WiFiUnit *unit) {
@@ -1493,6 +1497,8 @@ static void DriverWiFiSupp_ScanCheck(LTDeviceUnit h_unit) {
         LTWiFi_ApInfo ap = {0};
         char cmd[20];
         char buf[50];
+        char ie[2048];
+        LTLogRecordApInfo apInfoIe = {0};
 
         lt_snprintf(cmd, sizeof(cmd), "BSS %u", i);
         const char *bss = request(h_unit, cmd);
@@ -1509,6 +1515,8 @@ static void DriverWiFiSupp_ScanCheck(LTDeviceUnit h_unit) {
 
         get_field_str(bss, "bssid", buf, sizeof(buf));
         pMacAddress->StringToMacAddress(buf, &ap.bssid);
+        get_field_str(bss, "ie", ie, sizeof(ie));
+        ap.wps = parse_ies(ie, &apInfoIe);
 
         // Don't add mesh nodes to list of "real" access points
         get_field_str(bss, "flags", buf, sizeof(buf));

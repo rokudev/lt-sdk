@@ -215,7 +215,7 @@ typedef_LTObject(LTDeviceGpio, 1) {
          * @returns void
          */
 
-    u32 (*GetWakeupGPIO)(LTDeviceGpio *gpio);
+    u64 (*GetWakeupGPIO)(LTDeviceGpio *gpio);
         /**<
          * @brief Get a bitfield indicating all the GPIOs that triggered the interrupt.
          *

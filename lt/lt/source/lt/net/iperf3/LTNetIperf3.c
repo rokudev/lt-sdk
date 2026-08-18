@@ -398,10 +398,10 @@ static void Iperf3_Client_ControlSocketDataReady(LTSocket hControlSocket, void *
             pClient->state = (IPerfState) what;
             char json[80];
             if (pClient->params.udp) {
-                lt_snprintf(json, sizeof(json), "{\"udp\": \"true\",\n\"time\": %d,\n\"len\": %d,\n\"parallel\": %d}",
+                lt_snprintf(json, sizeof(json), "{\"udp\": true,\n\"time\": %d,\n\"len\": %d,\n\"parallel\": %d}",
                         pClient->params.time, pClient->params.mss, pClient->params.streams);
             } else {
-                lt_snprintf(json, sizeof(json), "{\"tcp\": \"true\",\n\"time\": %d,\n\"parallel\": %d}",
+                lt_snprintf(json, sizeof(json), "{\"tcp\": true,\n\"time\": %d,\n\"parallel\": %d}",
                         pClient->params.time, pClient->params.streams);
             }
             nlen = LT_HTONL(lt_strlen(json));
@@ -886,6 +886,7 @@ static void Iperf3_Server_DataSocketEventProc(LTSocket hDataSocket, LTSocket_Eve
     }
 }
 
+
 static void
 Iperf3_Server_ControlSocketDataReady(LTSocket hControlSocket, void * pClientData) {
     IPerfServerInfo * pServer = (IPerfServerInfo *)pClientData;
@@ -907,7 +908,7 @@ Iperf3_Server_ControlSocketDataReady(LTSocket hControlSocket, void * pClientData
         pServer->state       = kIPerfState_PARAM_EXCHANGE;
         // Notify client that we are ready for its parameters
         iSocket->WriteSocket(hControlSocket, &pServer->state, 1);
-        break;
+        Iperf3_Server_ControlSocketDataReady(hControlSocket, pClientData); return;
     }
 
     case kIPerfState_PARAM_EXCHANGE: {
@@ -950,7 +951,7 @@ Iperf3_Server_ControlSocketDataReady(LTSocket hControlSocket, void * pClientData
 
             parser->API->GetValue(parser, param, "time", &value);
             if (value.type == kLTUtilityJsonParser_ValueType_Integer) {
-                LTLOG("srvr", "time: %lld", value.integer);
+                LTLOG("srvr", "time: %lld", LT_Ps64(value.integer));
                 S.iThread->SetTimer(pServer->common.hThread, LTTime_Seconds(value.integer + 2), LTNetIperf3Impl_KillServer, NULL, NULL);
             }
 
@@ -1067,10 +1068,10 @@ Iperf3_Server_ControlSocketDataReady(LTSocket hControlSocket, void * pClientData
                     offset += len;
                     pClient = pClient->next;
                 }
-                LTLOG("svr.udp.result.total", "duration: %llu sec, transfer: %llu Bytes, bitrate: %.2f Mbits/sec, lost: %llu / %llu", LTTime_GetSeconds(duration),
-                                                                                                                    totalReceivedBytes,
+                LTLOG("svr.udp.result.total", "duration: %lld sec, transfer: %llu Bytes, bitrate: %.2f Mbits/sec, lost: %llu / %llu", LT_Ps64(LTTime_GetSeconds(duration)),
+                                                                                                                    LT_Pu64(totalReceivedBytes),
                                                                                                                     GET_TPUT_REPORT(totalReceivedBytes, LTTime_GetSeconds(duration)),
-                                                                                                                    totalErrors, totalFrames
+                                                                                                                    LT_Pu64(totalErrors), LT_Pu64(totalFrames)
                                                                                                                     );
                 result_json = lt_malloc(RESULT_JSON_MAX_SIZE);
                 lt_memset(result_json, 0, RESULT_JSON_MAX_SIZE);
@@ -1081,8 +1082,8 @@ Iperf3_Server_ControlSocketDataReady(LTSocket hControlSocket, void * pClientData
                 for (ServerDataClient *pClient = pServer->pClient; pClient; pClient = pClient->next) {
                     totalReceivedBytes = pClient->clientStat.receivedBytes;
                 }
-                LTLOG("svr.tcp.result.total", "duration: %llu sec, transfer: %llu Bytes, bitrate: %.2f Mbits/sec", LTTime_GetSeconds(duration),
-                                                                                                                    totalReceivedBytes,
+                LTLOG("svr.tcp.result.total", "duration: %lld sec, transfer: %llu Bytes, bitrate: %.2f Mbits/sec", LT_Ps64(LTTime_GetSeconds(duration)),
+                                                                                                                    LT_Pu64(totalReceivedBytes),
                                                                                                                     GET_TPUT_REPORT(totalReceivedBytes, LTTime_GetSeconds(duration))
                                                                                                                     );
             }
@@ -1320,7 +1321,7 @@ void LTNetIperf3Impl_RunServer(LTNetIperf3_Parameters *p, LTNetIperf3_ReportCall
     s_server_info.common.callback = cb;
     s_server_info.common.callback_arg = cb_arg;
     s_server_info.common.hThread = S.pCore->CreateThread("Iperf3_Server");
-    S.iThread->SetStackSize(s_server_info.common.hThread, 2048);
+    S.iThread->SetStackSize(s_server_info.common.hThread, 8192); /* server JSON parse overflows 2048 */
     S.iThread->Start(s_server_info.common.hThread, NULL, NULL);
     S.iThread->QueueTaskProc(s_server_info.common.hThread, Iperf3_Server_RunServer, NULL, &s_server_info);
 }

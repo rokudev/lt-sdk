@@ -81,6 +81,13 @@ static bool LTDeviceSleepControlImpl_PreventSleep(void) {
     return false;
 }
 
+static bool LTDeviceSleepControlImpl_DisableWakeupSource(LTDeviceSleepControl_WakeupSources wakeupSource) {
+    if (s_pILTDriverLTDeviceSleepControl) {
+        return s_pILTDriverLTDeviceSleepControl->DisableWakeupSource(wakeupSource);
+    }
+    return false;
+}
+
 /*******************************************************************************
  * Library Standard Functions
  ******************************************************************************/
@@ -129,7 +136,8 @@ define_LTDEVICE_LIBRARY_ROOT_INTERFACE(LTDeviceSleepControl)
     .GetWakeReason               = &LTDeviceSleepControlImpl_GetWakeReason,
     .GetWakeTime                 = &LTDeviceSleepControlImpl_GetWakeTime,
     .AllowSleep                  = &LTDeviceSleepControlImpl_AllowSleep,
-    .PreventSleep                = &LTDeviceSleepControlImpl_PreventSleep
+    .PreventSleep                = &LTDeviceSleepControlImpl_PreventSleep,
+    .DisableWakeupSource         = &LTDeviceSleepControlImpl_DisableWakeupSource
 
 LTLIBRARY_DEFINITION;
 // clang-format on

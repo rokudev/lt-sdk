@@ -104,7 +104,7 @@ int BuilderCreateFullImage(char * pOFilename) {
     printf("Building Flash Image\n");
     if (ImageCreateBlank(&imageAll, pAreaAll->nMaxSize) < 0) return -1;
     unsigned nNumAreas = ImageGetNumAreas();
-    
+
     /* Allocate storage for area digests */
     u8 (*areaDigests)[kCryptoSHA2DigestLength] = malloc((nNumAreas - 1) * kCryptoSHA2DigestLength);
     if (!areaDigests) {
@@ -112,7 +112,7 @@ int BuilderCreateFullImage(char * pOFilename) {
         return -1;
     }
     unsigned nDigestCount = 0;
-    
+
     for (unsigned nArea = 1; nArea < nNumAreas; nArea++) {
         Area * pArea = ImageGetArea(nArea);
         assert(pArea);
@@ -139,11 +139,11 @@ int BuilderCreateFullImage(char * pOFilename) {
         printf("    [%08X] bytes, [%08X] free (%2.1f%%)\n", image.nSize, pArea->nMaxSize - image.nSize, pctFree);
         /* Copy image into all */
         lt_memcpy(imageAll.pData + pArea->nOffset, image.pData, image.nSize);
-        
+
         /* Store digest for later writing */
         lt_memcpy(areaDigests[nDigestCount], image.digest, kCryptoSHA2DigestLength);
         nDigestCount++;
-        
+
         ImageFree(&image);
         printf("    Done\n");
     }
@@ -160,7 +160,7 @@ int BuilderCreateFullImage(char * pOFilename) {
         ImageFree(&imageAll);
         return -1;
     }
-    
+
     /* Extract filename from full path */
     char *pFilename = strrchr(pOFilename, '/');
     if (pFilename == NULL) {
@@ -168,14 +168,14 @@ int BuilderCreateFullImage(char * pOFilename) {
     } else {
         pFilename++; /* Skip the '/' character */
     }
-    
+
     /* Write summary digest first */
     if (WriteSHA2DigestToFile(pOFilename, pFilename, imageAll.digest) < 0) {
         free(areaDigests);
         ImageFree(&imageAll);
         return -1;
     }
-    
+
     /* Now write individual area digests */
     unsigned nDigestIdx = 0;
     for (unsigned nArea = 1; nArea < nNumAreas; nArea++) {
@@ -183,7 +183,7 @@ int BuilderCreateFullImage(char * pOFilename) {
         assert(pArea);
         /* Skip images without input files */
         if (pArea->filename[0] == '\0') continue;
-        
+
         if (WriteSHA2DigestToFile(pOFilename, pArea->name, areaDigests[nDigestIdx]) < 0) {
             free(areaDigests);
             ImageFree(&imageAll);
@@ -191,7 +191,7 @@ int BuilderCreateFullImage(char * pOFilename) {
         }
         nDigestIdx++;
     }
-    
+
     free(areaDigests);
     ImageFree(&imageAll);
     /* Finalize digest file */
@@ -271,11 +271,11 @@ int BuilderCreateUpdateImage(char       *pOFilename,
         if (ImageCreateFromFile(&imageFirmware, pIFilename) < 0) break;
 
         if (pPlatformArgs && pPlatformArgs[0] != '\0') {
-            if (strcmp(pPlatformArgs, "rcu") == 0) {
+            if (strcmp(pPlatformArgs, "rcu") == 0 || strcmp(pPlatformArgs, "kws") == 0) {
                 typedef struct __attribute__((packed)) {
                     u32  magic_number;              /* "OTA", last byte is protocol version number */
                     u32  payload_size;              /* total length of payload portion */
-                    char logical_partition_name[4]; /* e.g.:  "fw" or "rdat" */
+                    char logical_partition_name[4]; /* e.g.:  "fw" or "kws" */
                     char version[14];               /* e.g.:  "rtn.3000" */
                     char platform_id;               /* TBD */
                     char security_version;          /* 0 - unsecured, 1 - DVT2, 2 - MP */
@@ -292,7 +292,9 @@ int BuilderCreateUpdateImage(char       *pOFilename,
                 OTAHeader *header    = (OTAHeader *)imageUpdate.pData;
                 header->magic_number = kRCU_Magic_OTA;
                 header->payload_size = imageFirmware.nSize;
-                lt_strncpyTerm(header->logical_partition_name, "fw", sizeof(header->logical_partition_name));
+                lt_strncpyTerm(header->logical_partition_name,
+                               strcmp(pPlatformArgs, "kws") == 0 ? "kws" : "fw",
+                               sizeof(header->logical_partition_name));
                 lt_strncpyTerm(header->version, pVersion, sizeof(header->version));
                 lt_memcpy(header->sha256_digest, imageFirmware.digest, kCryptoSHA2DigestLength);
                 lt_memcpy(imageUpdate.pData + sizeof(OTAHeader), imageFirmware.pData, imageFirmware.nSize);

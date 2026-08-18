@@ -161,6 +161,7 @@ static const char *DEV_ApSecurityStrings[kLTWiFi_ApSecurity_Max] = { LTWiFi_Secu
 #define SETTINGS_KEY_PASS     SETTINGS_PREFIX "pass"
 #define SETTINGS_KEY_BSSID    SETTINGS_PREFIX "bssid"
 #define SETTINGS_KEY_SECURITY SETTINGS_PREFIX "security"
+#define SETTINGS_KEY_CHANNEL  SETTINGS_PREFIX "channel"
 #define SETTINGS_KEY_AUTOJOIN SETTINGS_PREFIX "autojoin"
 #define SETTINGS_KEY_REJOIN   SETTINGS_PREFIX "rejoin"
 
@@ -303,6 +304,7 @@ struct WSM_Input {
     s32 value;                  // arbitrary value
     LTThread caller_thread;     // only dealloc WSM_Input when NULL
     LTEvent event;              // used to trigger callback
+    LTWiFi_VendorIE scan_vendor_ie; // probe-request vendor IE for WS_ScanStart (length 0 = none)
     union {
         LTWiFi_ScanSpec scan_spec;
         LTWiFi_ApInfo   join_spec;
@@ -326,13 +328,13 @@ enum {
     WiFiConfig_StateMachineStackSize = 1536,
     WiFiConfig_StartTimeoutSeconds = 2,
     WiFiConfig_CheckDriverSeconds = 2,
-    WiFiConfig_ScanTimeoutSeconds = 6,
+    WiFiConfig_ScanTimeoutSeconds = 10,
     WiFiConfig_JoinTimeoutSeconds = 9,
     WiFiConfig_LinkCheckSeconds = 4,
 };
 
 // Maximum number of cached APs from the driver's scan. Some drivers burst them.
-#define MAX_SCANNED_APS 20
+#define MAX_SCANNED_APS 100
 
 /** WSM Variables *************************************************************/
 
@@ -586,7 +588,7 @@ static void CheckMetrics(u8 mode) {
     if (mode == kCheckMetricsReset || (Metrics.sampleCount % METRICS_SAMPLES_PER_LOG) == (METRICS_SAMPLES_PER_LOG - 1)) {
         if(Metrics.sampleCount > 0) {
             #if USE_LOGGER_RECORDS
-                pLogger->EncodeRecord(&Metrics_Record);
+                if (pLogger) pLogger->EncodeRecord(&Metrics_Record);
             #endif
             LTLOG_LEVEL(kLogDebug, "metrics",
                         "sc:%lu js:%lu jf:%lu dc:%lu ch:%lu rs:%ld rh:%ld rl:%ld sn:%ld tx:%lu rx:%lu",
@@ -988,7 +990,7 @@ static void WSM_DoNext(WSM_Input *input) {
                     WSM_Backoff->API->Reset(WSM_Backoff);
                     delay = WSM_Backoff->API->GetNextBackoff(WSM_Backoff);
                 }
-                LTLOG("wsm.boff", "backoff delay: %llds", LT_Pu64(LTTime_GetSeconds(delay)));
+                LTLOG("wsm.boff", "backoff delay: %llds", LT_Ps64(LTTime_GetSeconds(delay)));
                 SET_SLEEP(delay);
                 // Release sleep disallowance grant after setting backoff timer
                 if (WSM_DisallowanceGrant) {
@@ -1012,7 +1014,20 @@ static void WSM_DoNext(WSM_Input *input) {
             WSM_ScanActive = true;
             WSM_ScanEvent = WSM_ThisRequest.event;
             //LTLOG("event", "------scan event set %lx------", WSM_ScanEvent);
-            DRV_WiFi->ScanStart(DRV_Unit, &WSM_ThisRequest.scan_spec, WSM_Scan_DriverCB);
+            if (WSM_ThisRequest.scan_vendor_ie.length > 0 && DRV_WiFi->ScanWithVendorIE) {
+                // Probe-request vendor IE attached (find-host): run the scan via
+                // the driver's vendor-IE path. Routing it through the WSM (rather
+                // than a direct driver call) means the result callback is later
+                // delivered on the API caller's thread via WSM_ScanEvent, so a
+                // per-channel find-host sweep can safely start the next scan from
+                // that callback without re-entering the driver's event thread.
+                LTWiFi_ScanWithIE swie;
+                swie.scan     = WSM_ThisRequest.scan_spec;
+                swie.vendorIE = WSM_ThisRequest.scan_vendor_ie;
+                DRV_WiFi->ScanWithVendorIE(DRV_Unit, &swie, WSM_Scan_DriverCB);
+            } else {
+                DRV_WiFi->ScanStart(DRV_Unit, &WSM_ThisRequest.scan_spec, WSM_Scan_DriverCB);
+            }
             iEvent->NotifyEvent(WSM_StatEvent, kLTDeviceWiFi_Status_ScanStart, DRV_Unit);
             NEXT_TIME(WS_ScanCheck, 200);
             break;
@@ -1453,6 +1468,9 @@ static bool API_LoadApSettings(LTWiFi_ApInfo *ap) {
                     LTLOG("bssid", "%s", bssid);
                     MAC_Library->StringToMacAddress(bssid, &ap->bssid);
                 }
+                s64 chval = 0;
+                if (SET_Library->GetIntegerValue(SETTINGS_KEY_CHANNEL, &chval))
+                    ap->channel = (u8)chval;
             }
         }
     }
@@ -1482,12 +1500,28 @@ static bool API_SaveApSettings(LTWiFi_ApInfo *ap) {
         // ap->ssid == "": Delete wifi/{ssid,pass,security}
         bResult = (SET_Library->DeleteSetting(SETTINGS_KEY_SSID)
                    && SET_Library->DeleteSetting(SETTINGS_KEY_PASS)
-                   && SET_Library->DeleteSetting(SETTINGS_KEY_SECURITY));
+                   && SET_Library->DeleteSetting(SETTINGS_KEY_SECURITY)
+                   && SET_Library->DeleteSetting(SETTINGS_KEY_BSSID)
+                   && SET_Library->DeleteSetting(SETTINGS_KEY_CHANNEL));
     } else {
         u32 pass_len = lt_strlen(ap->pass) + 1;
         bResult = (SET_Library->SetStringValue(SETTINGS_KEY_SSID, ap->ssid)
                    && SET_Library->SetBinaryValue(SETTINGS_KEY_PASS, (const u8*)ap->pass, pass_len)
                    && SET_Library->SetStringValue(SETTINGS_KEY_SECURITY, DEV_ApSecurityStrings[ap->security]));
+        /* Write bssid/channel when present, else delete any stale value so a
+         * new network does not inherit a previous one's BSSID/channel. */
+        if (bResult) {
+            if (!MAC_Library->IsZero(&ap->bssid))
+                bResult = SET_Library->SetStringValue(SETTINGS_KEY_BSSID, MacToStr(&ap->bssid));
+            else
+                bResult = SET_Library->DeleteSetting(SETTINGS_KEY_BSSID);
+        }
+        if (bResult) {
+            if (ap->channel)
+                bResult = SET_Library->SetIntegerValue(SETTINGS_KEY_CHANNEL, ap->channel);
+            else
+                bResult = SET_Library->DeleteSetting(SETTINGS_KEY_CHANNEL);
+        }
     }
     API_LoadApSettings(&WSM_JoinSpec); // Reload in-memory cached variables
     return bResult;
@@ -1543,6 +1577,11 @@ static bool API_IsConnected(void) {
     return (bool)(LTAtomic_Load(&WSM_Connected)); // atomic
 }
 
+static bool API_IsLinkConnected(void) {
+    TR;
+    return (bool)(LTAtomic_Load(&WSM_LinkConnected)); // atomic
+}
+
 static bool API_GetApInfo(LTWiFi_ApInfo *apInfo) {
     TR;
     bool linked = LTAtomic_Load(&WSM_LinkConnected);
@@ -1588,7 +1627,7 @@ static LTWiFi_DisconnectReason API_GetDiscReason(void) {
     return DRV_WiFi->GetDiscReasonCode(DRV_Unit);
 }
 
-static LTWiFi_DisconnectReason API_GetLastJoinStatus(void) {
+static LTWiFi_JoinStatus API_GetLastJoinStatus(void) {
     if (DRV_Unit == 0 ||DRV_WiFi->GetLastJoinStatus == NULL) {
         return kLTWiFi_JoinStatus_Unknown;
     }
@@ -1600,6 +1639,68 @@ static void API_GetWiFiDrvTxQStats(u8 ac, LTWiFi_DrvTxQStats *stats) {
         return;
     }
     return DRV_WiFi->GetWiFiDrvTxQStats(DRV_Unit, ac, stats);
+}
+
+/*******************************************************************************
+ * WiFi STA capability  Extensions — pass-through to driver layer
+ ******************************************************************************/
+
+static bool API_SetVendorIE(LTWiFi_VendorIE const *ie)
+{
+    if (!DRV_WiFi || !DRV_WiFi->SetVendorIE) return false;
+    return DRV_WiFi->SetVendorIE(DRV_Unit, ie);
+}
+
+static void API_ClearVendorIE(void)
+{
+    if (DRV_WiFi && DRV_WiFi->ClearVendorIE)
+        DRV_WiFi->ClearVendorIE(DRV_Unit);
+}
+
+static bool API_EnterMonitorMode(LTWiFi_MonitorConfig const *config)
+{
+    if (!DRV_WiFi || !DRV_WiFi->EnterMonitorMode) return false;
+    return DRV_WiFi->EnterMonitorMode(DRV_Unit, config);
+}
+
+static void API_ExitMonitorMode(void)
+{
+    if (DRV_WiFi && DRV_WiFi->ExitMonitorMode)
+        DRV_WiFi->ExitMonitorMode(DRV_Unit);
+}
+
+static int API_TxMgmtFrame(void const *buf, u16 len, u8 channel)
+{
+    if (!DRV_WiFi || !DRV_WiFi->TxMgmtFrame) return -1;
+    return DRV_WiFi->TxMgmtFrame(DRV_Unit, buf, len, channel);
+}
+
+static bool API_SetAutoRfOff(bool enable, u32 timeout_ms)
+{
+    if (!DRV_WiFi || !DRV_WiFi->SetAutoRfOff) return false;
+    return DRV_WiFi->SetAutoRfOff(DRV_Unit, enable, timeout_ms);
+}
+
+static void API_ScanWithVendorIE(LTWiFi_ScanWithIE const *params, LTDeviceWiFi_ScanCallback *cb, void *callback_data)
+{
+    if (!DRV_WiFi || !DRV_WiFi->ScanWithVendorIE || !params) return;
+
+    // Route through the WSM exactly like API_ScanAps, additionally carrying the
+    // probe-request vendor IE. The IE and the scan_spec's channel buffer must
+    // remain valid until the WSM thread starts the scan (same lifetime contract
+    // as ScanAps); find-host keeps both in persistent member storage. Going
+    // through the WSM means results are delivered on this caller's thread (via
+    // the event below), so a per-channel sweep can advance from the result
+    // callback without re-entering the driver's scan-done event thread.
+    WSM_Input *req = WSM_CreateInput(WS_ScanStart); // req is cleared
+    if (!req) return;
+    req->scan_spec      = params->scan;
+    req->scan_vendor_ie = params->vendorIE;
+    if (cb) {
+        req->event = pCore->CreateEvent(&WSM_ScanEventArgs, WSM_ScanEventProc, WSM_ScanEventCompleteProc, NULL, NULL);
+        iEvent->RegisterForEvent(req->event, cb, NULL, callback_data, false);
+    }
+    WSM_PostRequest(req);
 }
 /*******************************************************************************
  * Library Standard Functions
@@ -1613,7 +1714,7 @@ static void LTDeviceWiFiImpl_LibFini(void) {
 #if USE_LOGGER_RECORDS
     if (pLogger) {
         pLogger->RemoveRecord(&Metrics_Record);
-        pCore->CloseLibrary((LTLibrary*)pLogger));
+        pCore->CloseLibrary((LTLibrary*)pLogger)); // null ok
     }
 #endif
 }
@@ -1627,7 +1728,6 @@ static bool LTDeviceWiFiImpl_LibInit(void) {
         if (pLogger) {
     #endif
             CheckMetrics(kCheckMetricsReset); // Uses pLogger if USE_LOGGER_RECORDS enabled
-
             //LTLOG_DEBUG("lib.init", "wifi init");
             if (DEV_Init() && API_Init() && WSM_Init()) return true;
     #if USE_LOGGER_RECORDS
@@ -1676,6 +1776,7 @@ define_LTDEVICE_LIBRARY_ROOT_INTERFACE(LTDeviceWiFi, LTDeviceWiFiImpl_Run, 1024)
     .ScanAps                    = API_ScanAps,
     .JoinAp                     = API_JoinAp,
     .IsConnected                = API_IsConnected,
+    .IsLinkConnected            = API_IsLinkConnected,
     .GetApInfo                  = API_GetApInfo,
     .Disconnect                 = API_Disconnect,
     .StartAp                    = API_StartAp,
@@ -1685,4 +1786,11 @@ define_LTDEVICE_LIBRARY_ROOT_INTERFACE(LTDeviceWiFi, LTDeviceWiFiImpl_Run, 1024)
     .GetDiscReason              = API_GetDiscReason,
     .GetLastJoinStatus          = API_GetLastJoinStatus,
     .GetWiFiDrvTxQStats         = API_GetWiFiDrvTxQStats,
+    .SetVendorIE                = API_SetVendorIE,
+    .ClearVendorIE              = API_ClearVendorIE,
+    .EnterMonitorMode           = API_EnterMonitorMode,
+    .ExitMonitorMode            = API_ExitMonitorMode,
+    .TxMgmtFrame                = API_TxMgmtFrame,
+    .SetAutoRfOff               = API_SetAutoRfOff,
+    .ScanWithVendorIE           = API_ScanWithVendorIE,
 LTLIBRARY_DEFINITION;

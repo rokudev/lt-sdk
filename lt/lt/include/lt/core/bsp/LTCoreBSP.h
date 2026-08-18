@@ -44,7 +44,8 @@ typedef u64 (LTCoreBSP_RISCV_GetCycleCount)(void) LT_ISR_SAFE;
 typedef u8 LTCoreBSP_RISCV_VectorMode;
 enum LTCoreBSP_RISCV_VectorMode {
     kLTCoreBSP_RISCV_VectorMode_CLICNotPresent  = 0,  /**< Core Local Interrupt Controller (CLIC) not present */
-    kLTCoreBSP_RISCV_VectorMode_CLICPresent     = 2   /**< CLIC present */
+    kLTCoreBSP_RISCV_VectorMode_CLICPresent     = 2,  /**< CLIC present */
+    kLTCoreBSP_RISCV_VectorMode_CLICVectored    = 3   /**< CLIC vectored mode (mtvec.MODE=3) */
 };
 
 /** RISC-V architecture configuration */

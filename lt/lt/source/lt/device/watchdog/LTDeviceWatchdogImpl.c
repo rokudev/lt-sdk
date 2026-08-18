@@ -47,6 +47,16 @@ DispatchRebootEventProc(LTEvent hEvent, void *eventProc, LTArgs *eventArgs, void
 /*******************************************************************************
  * HardBoot Procedure for ThreadWatchdogManager                               */
 static void HardBoot(void) {
+    /* Assumes the hardware WDT is already running (it is, because HardBoot is only reachable
+     * via ThreadWatchdogManager, which requires a prior WatchThread call, which is only
+     * made after the WDT is enabled at startup).
+     * Trigger the fault handler to write a crashdump of all thread backtraces before
+     * resetting.  The fault handler hangs in while(1); the still-running hardware WDT
+     * fires and performs the actual reset. */
+    LT_GetCore()->AssertFailed(__FILE__, __LINE__, "watchdog.assert.reboot");  /* log the breach */
+    LT_GetCore()->DebugBreak();  /* trigger fault handler to write crashdump; hangs in while(1) until WDT fires */
+    /* Fallback: if DebugBreak did not cause a fault (should not happen), force an
+     * immediate WDT reset so we always reboot. */
     if (s_pILTDriverWatchdog) {
         s_pILTDriverWatchdog->DisableTimer();
         s_pILTDriverWatchdog->SetTimeout(LTTime_Zero());

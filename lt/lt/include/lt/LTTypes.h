@@ -1640,7 +1640,7 @@ typedef struct LTLibrary_MacroCreateObjectParms {
             if (pOnDestroyHandleProc) (*pOnDestroyHandleProc)(handle);                                             \
         }                                                                                                           \
     }                                                                                                                \
-    static name s_##name LTTYPES_EXPAND_RODATA_RAM_CRITICAL_NUMBER_##roDataRamCriticalSectionNumber = {  \
+    DEFINE_LTLIBRARY_STATIC_STRUCT_INSTANCE(name) LTTYPES_EXPAND_RODATA_RAM_CRITICAL_NUMBER_##roDataRamCriticalSectionNumber = {  \
         .GetInterfaceName                   = name##Impl_GetInterfaceName,                                            \
         .GetInterfaceVersion                = name##Impl_GetInterfaceVersion,                                         \
         .GetInterfaceType                   = name##Impl_GetInterfaceType,                                            \
@@ -1756,7 +1756,7 @@ typedef struct LTLibrary_MacroCreateObjectParms {
 #if defined (__cplusplus)
     #define FORWARD_DECLARE_LTLIBRARY_STATIC_STRUCT(libraryName) namespace { extern const struct libraryName##Api s_##libraryName; }
     #define DEFINE_LTLIBRARY_STATIC_STRUCT_INSTANCE(libraryName) namespace { extern const struct libraryName##Api s_##libraryName
-    #define END_LTLIBRARY_STATIC_STRUCT_DEFINITION                         { } }; };
+    #define END_LTLIBRARY_STATIC_STRUCT_DEFINITION                         }; }
 #else
     #define FORWARD_DECLARE_LTLIBRARY_STATIC_STRUCT(libraryName) static libraryName s_##libraryName;
     #define DEFINE_LTLIBRARY_STATIC_STRUCT_INSTANCE(libraryName) static libraryName s_##libraryName
@@ -1929,7 +1929,7 @@ typedef struct LTLibrary_MacroCreateObjectParms {
  *   define_LTLIBRARY_INTERFACE(interfaceName, onDestroyHandleProc)
  */
 #define define_LTLIBRARY_INTERFACE(name, ...)                                              \
-    static const struct name##Api s_##name;                                                \
+    FORWARD_DECLARE_LTLIBRARY_STATIC_STRUCT(name)                                                \
     DEFINE_LTINTERFACE_PROTOTYPE(name, __VA_ARGS__)
 
 /************************************************
@@ -2041,13 +2041,13 @@ typedef struct LTLibrary_MacroCreateObjectParms {
  *  }
  *
  */
-#define define_LTLIBRARY_APPLICATION(appName, appVersion, stackSize)                                      \
-    static int appName##_Main(int argc, const char ** argv);                                                 \
+#define define_LTLIBRARY_APPLICATION(appName, appVersion, stackSize)                                     \
+    static int appName##_Main(int argc, const char ** argv);                                              \
     LT_EXTERN_C_BEGIN                                                                                      \
-        typedef_LTLIBRARY_ROOT_INTERFACE(appName, appVersion)                  LTLIBRARY_EMPTY_INTERFACE;  \
-        define_LTLIBRARY_ROOT_INTERFACE(appName, appName##_Main, stackSize)    LTLIBRARY_DEFINITION;         \
-        static bool appName##Impl_LibInit(void) { return true; }                                                \
-        static void appName##Impl_LibFini(void) { }                                                              \
+        typedef_LTLIBRARY_ROOT_INTERFACE(appName, appVersion)                  LTLIBRARY_EMPTY_INTERFACE;   \
+        define_LTLIBRARY_ROOT_INTERFACE(appName, appName##_Main, stackSize)    {} LTLIBRARY_DEFINITION;      \
+        static bool appName##Impl_LibInit(void) { return true; }                                              \
+        static void appName##Impl_LibFini(void) { }                                                            \
     LT_EXTERN_C_END
 
 /****************************************************************

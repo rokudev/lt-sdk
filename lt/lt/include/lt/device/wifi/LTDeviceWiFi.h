@@ -57,7 +57,7 @@ typedef u8 LTDeviceWiFi_Status;
  *       for failure vs success. Keep that relationship for new constants.
  * @ingroup ltdevice_wifi_enum
  */
-enum LTDeviceWiFi_Status {
+enum {
     kLTDeviceWiFi_Status_Unknown = 0,
     kLTDeviceWiFi_Status_Reset,             ///< In reset. Wait for up before continuing.
     kLTDeviceWiFi_Status_Down,              ///< Chip/driver down. Don't attempt commands.
@@ -289,6 +289,17 @@ struct LTDeviceWiFi {
          * @return false if AP is not connected
          */
 
+    bool (*IsLinkConnected)(void);
+       /**<
+         * @brief Return true if the link to the AP is currently up.
+         *
+         * Unlike IsConnected(), which stays true while the state machine
+         * retries an armed rejoin, this reflects the live link. Equivalent to
+         * GetApInfo() succeeding, without the LTWiFi_ApInfo on the caller stack.
+         *
+         * @return false if the link is down
+         */
+
     bool (*GetApInfo)(LTWiFi_ApInfo *ap);
        /**<
          * @brief Get AP information.
@@ -379,6 +390,85 @@ struct LTDeviceWiFi {
          *
          * @param[in] ac: Access category from 0 to 3. 0:V0, 1:VI, 2:BE, 3:BK
          * @param[out] stats: Stats result
+         */
+
+    /**************************************************************************
+     * WiFi STA capability extensions (vendor IE / monitor mode / mgmt-frame TX / RF control)
+     **************************************************************************/
+
+    bool (*SetVendorIE)(LTWiFi_VendorIE const *ie);
+        /**<
+         * @brief Inject a vendor IE into association requests.
+         *
+         * The IE remains active until ClearVendorIE is called.
+         *
+         * @param[in] ie: vendor IE to inject
+         * @return true on success
+         */
+
+    void (*ClearVendorIE)(void);
+        /**<
+         * @brief Remove any previously set vendor IE.
+         */
+
+    bool (*EnterMonitorMode)(LTWiFi_MonitorConfig const *config);
+        /**<
+         * @brief Enter monitor mode on a specific channel.
+         *
+         * STA and monitor mode are mutually exclusive.
+         * The caller must disconnect STA before entering monitor mode.
+         *
+         * The request may complete asynchronously: the return value only
+         * reports whether it was accepted.  Provide config->onStarted to
+         * learn the actual start result (invoked from driver context; a
+         * synchronous driver may invoke it before this call returns).
+         * Wait for onStarted before issuing another monitor request.
+         *
+         * @param[in] config: channel + RX callback + optional onStarted
+         * @return true if the monitor request was accepted
+         */
+
+    void (*ExitMonitorMode)(void);
+        /**<
+         * @brief Exit monitor mode and restore STA mode.
+         */
+
+    int (*TxMgmtFrame)(void const *buf, u16 len, u8 channel);
+        /**<
+         * @brief Transmit a raw management frame.
+         *
+         * Used for action frames (FMR), probe requests, etc.
+         * If channel is 0, transmit on the current operating channel.
+         *
+         * May transmit asynchronously: the frame is copied and the return
+         * value only reports that the request was accepted (the TX result is
+         * not reported back). A TX queued right after ExitMonitorMode is
+         * serialized behind the monitor stop by the driver.
+         *
+         * @param[in] buf: complete 802.11 frame (header + body)
+         * @param[in] len: length of buf
+         * @param[in] channel: target channel (0 = current)
+         * @return 0 if the request was accepted, negative on error
+         */
+
+    bool (*SetAutoRfOff)(bool enable, u32 timeout_ms);
+        /**<
+         * @brief Enable/disable automatic RF power-down after idle.
+         *
+         * @param[in] enable: true to enable, false to disable
+         * @param[in] timeout_ms: idle duration before RF off (ignored when disabling)
+         * @return true on success
+         */
+
+    void (*ScanWithVendorIE)(LTWiFi_ScanWithIE const *params, LTDeviceWiFi_ScanCallback *cb, void *callback_data);
+        /**<
+         * @brief Scan with a vendor IE injected into probe requests.
+         *
+         * Convenience: sets vendor IE, runs scan, clears vendor IE.
+         *
+         * @param[in] params: scan spec + vendor IE
+         * @param[in] cb: called for each result, NULL when done
+         * @param[in] callback_data: data passed to callback
          */
 };
 LT_EXTERN_C_END

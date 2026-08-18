@@ -10,13 +10,14 @@
 
 #include <lt/core/LTCore.h>
 #include <lt/device/usb/LTDeviceUsbCDC.h>
+#include <lt/device/watchdog/LTDeviceWatchdog.h>
 #include <lt/product/config/LTProductConfig.h>
 #include <lt/system/usbconsole/LTSystemUsbConsole.h>
 #include <lt/system/shell/LTShellBanner.h>
 
 /*__________________________
   LTConsoleUSB.c #defines */
-#define LTCONSOLEUSB_THREAD_STACKSIZE   (512)
+#define LTCONSOLEUSB_THREAD_STACKSIZE   (1832)
 #define LTCONSOLEUSB_THREAD_NAME        "LTConsoleUSB"
 #define VT100_CLEAR_SEQUENCE            "\x1b[H\x1b[2J"
 
@@ -125,6 +126,19 @@ static void OnUsbError(void * pClientData) {
     LT_UNUSED(pClientData);
 }
 
+
+/*_________________________________________
+  LTConsoleUSB thread watchdog registration */
+static bool USBConsole_ThreadInitProc(void) {
+    /* Register USB console thread with thread watchdog so a hang triggers HardBoot + crashdump.
+     * bTerminationAllowed=true: graceful shutdown via LibFini calls Terminate() which is expected. */
+    LTDeviceWatchdog * wd = lt_openlibrary(LTDeviceWatchdog);
+    if (wd) {
+        wd->WatchThread(LTTime_Seconds(10), true);
+        lt_closelibrary(wd);
+    }
+    return true;
+}
 /*______________________________________
   LTSystemUsbConsole object constructors */
 static void LTSystemUsbConsoleImpl_DestructObject(LTSystemUsbConsoleImpl * pConsoleUSB);
@@ -160,7 +174,7 @@ static bool LTSystemUsbConsoleImpl_ConstructObject(LTSystemUsbConsoleImpl * pCon
         if (pConsoleUSB->pConsoleConnector->API->ConnectConsole(pConsoleUSB->pConsoleConnector, LTConsoleUSB_ConsolePutCharProc, pConsoleUSB)) {
             /* everything is good, set s_pConsoleUSB, and configure and start the thread  */
             LT_SIZE nMask = LT_GetCore()->Disable(); s_pConsoleUSB = pConsoleUSB; LT_GetCore()->Enable(nMask);
-            pConsoleUSB->pThread->API->Start(pConsoleUSB->pThread, LTCONSOLEUSB_THREAD_NAME, NULL, NULL);
+            pConsoleUSB->pThread->API->Start(pConsoleUSB->pThread, LTCONSOLEUSB_THREAD_NAME, USBConsole_ThreadInitProc, NULL);
         }
     } while (false);
 

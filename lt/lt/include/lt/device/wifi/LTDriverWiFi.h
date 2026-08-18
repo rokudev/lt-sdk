@@ -376,6 +376,114 @@ struct LTDriverWiFiApi {
     // !!! Needs doc if actually added
     void (*SniffFrames)(LTDeviceUnit unit, LTWiFi_SniffCallback callback);  ///< DOCUMENTATION_NEEDED
     int  (*SendFrame)(LTDeviceUnit unit, LTWiFi_Frame *frame);              ///< DOCUMENTATION_NEEDED
+
+    bool (*SendPrivVenCommand)(const char* cmd, u8* buffer, u32* len);
+    /**<
+     * @brief Send a vendor-specific AT command to WiFi driver for manufacturing tests
+     *
+     * Parses and executes AT commands for WiFi manufacturing and calibration tests.
+     * Commands follow the format: AT+<CMD>=<params> or AT+<CMD>?
+     *
+     * Supported commands:
+     * - AT+CAPCODE?         : Query crystal oscillator cap code
+     * - AT+CAPCODE=<value>  : Set crystal oscillator cap code (0-255)
+     * - AT+WLANTX=<params>  : Start WiFi TX test mode
+     * - AT+WLANRX=<params>  : Start WiFi RX test mode
+     * - AT+WLANSTOP         : Stop WiFi test mode
+     *
+     * @param[in] cmd: AT command string (e.g., "AT+WLANTX=2.4G,7,11n,MCS7,1000,100,40")
+     * @param[out] buffer: Response buffer (reserved for future use; currently unused)
+     * @param[inout] len: Buffer length (reserved for future use; currently unused)
+     * @return TRUE if command was successfully parsed and executed, FALSE otherwise
+     */
+    /***************************************************************************
+     * WiFi STA capability extensions (vendor IE / monitor mode / mgmt-frame TX / RF control)
+     ***************************************************************************/
+
+    bool (*SetVendorIE)(LTDeviceUnit unit, LTWiFi_VendorIE const *ie);
+    /**<
+     * @brief Inject a vendor IE into probe requests and association requests.
+     *
+     * The IE remains active until ClearVendorIE is called.
+     *
+     * @param[in] unit: specifies the driver unit instance
+     * @param[in] ie: vendor IE to inject (tag+len+payload)
+     * @return TRUE on success
+     */
+
+    void (*ClearVendorIE)(LTDeviceUnit unit);
+    /**<
+     * @brief Remove any previously set vendor IE.
+     *
+     * @param[in] unit: specifies the driver unit instance
+     */
+
+    bool (*EnterMonitorMode)(LTDeviceUnit unit, LTWiFi_MonitorConfig const *config);
+    /**<
+     * @brief Enter monitor mode on a specific channel.
+     *
+     * STA and monitor mode are mutually exclusive on Bouffalo.
+     * The caller must disconnect STA before entering monitor mode.
+     *
+     * May complete asynchronously: the return value only reports that the
+     * request was accepted (e.g. dispatched to the driver worker thread so
+     * the blocking vendor confirm wait never runs on the caller thread).
+     * The actual result is delivered via config->onStarted when provided.
+     *
+     * @param[in] unit: specifies the driver unit instance
+     * @param[in] config: channel + RX callback + optional onStarted
+     * @return TRUE if the monitor request was accepted
+     */
+
+    void (*ExitMonitorMode)(LTDeviceUnit unit);
+    /**<
+     * @brief Exit monitor mode and restore STA mode.
+     *
+     * @param[in] unit: specifies the driver unit instance
+     */
+
+    int (*TxMgmtFrame)(LTDeviceUnit unit, void const *buf, u16 len, u8 channel);
+    /**<
+     * @brief Transmit a raw management frame.
+     *
+     * Used for action frames (FMR), probe requests, etc.
+     * If channel is 0, transmit on the current operating channel.
+     *
+     * May transmit asynchronously (e.g. queued to the driver worker thread,
+     * behind any pending monitor stop/start): the frame is copied and the
+     * return value only reports that the request was accepted.
+     *
+     * @param[in] unit: specifies the driver unit instance
+     * @param[in] buf: complete 802.11 frame (header + body)
+     * @param[in] len: length of buf
+     * @param[in] channel: target channel (0 = current)
+     * @return 0 if the request was accepted, negative on error
+     */
+
+    bool (*SetAutoRfOff)(LTDeviceUnit unit, bool enable, u32 timeout_ms);
+    /**<
+     * @brief Enable/disable automatic RF power-down after idle.
+     *
+     * When enabled, the radio powers off after timeout_ms of no TX activity.
+     *
+     * @param[in] unit: specifies the driver unit instance
+     * @param[in] enable: TRUE to enable, FALSE to disable
+     * @param[in] timeout_ms: idle duration before RF off (ignored when disabling)
+     * @return TRUE on success
+     */
+
+    void (*ScanWithVendorIE)(LTDeviceUnit unit, LTWiFi_ScanWithIE const *params, LTWiFi_ScanResults_CB callback);
+    /**<
+     * @brief Perform a scan with a vendor IE injected into probe requests.
+     *
+     * Convenience: sets vendor IE, runs scan, then clears vendor IE.
+     * The callback reports scan results identically to ScanStart.
+     *
+     * @param[in] unit: specifies the driver unit instance
+     * @param[in] params: scan spec + vendor IE
+     * @param[in] callback: called for each result, NULL when done
+     */
+
 };
 LT_EXTERN_C_END
 #endif /* LTDRIVERWIFI_H */

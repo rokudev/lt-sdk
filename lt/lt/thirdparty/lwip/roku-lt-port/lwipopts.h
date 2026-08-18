@@ -1,9 +1,12 @@
-/*
- * Copyright (c) 2021 Roku, Inc. All rights reserved.
- * This software and any compilation or derivative thereof is, and shall
- * remain, the proprietary information of Roku, Inc. and is highly confidential
- * in nature.
- */
+/******************************************************************************
+ * lt/thirdparty/lwip/roku-lt-port/lwipopts.h
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
 
 #ifndef lwipopts_netipwifi
 #define lwipopts_netipwifi
@@ -77,7 +80,10 @@
 #define LWIP_RAND() lt_lwip_rand()
 
 #define LWIP_DNS 1
-#define DNS_TABLE_SIZE      16
+#ifndef LT_DNS_TABLE_SIZE
+#define LT_DNS_TABLE_SIZE 16
+#endif
+#define DNS_TABLE_SIZE      LT_DNS_TABLE_SIZE
 #define DNS_MAX_RETRIES     2
 #define LT_DNS_MAX_SERVERS (DNS_MAX_SERVERS + 2)    /* 2 from Router, 2 for google dns server*/
 #define LT_DNS_TMR_INTERVAL 500                     /* 500ms */

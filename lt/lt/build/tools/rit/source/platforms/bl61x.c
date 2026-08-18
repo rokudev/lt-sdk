@@ -140,11 +140,14 @@ static const char * s_deviceTypes[kDeviceType_Total] = {
 };
 
 /* Flash parameters */
-enum { kFlashParams_Total = 3 };
-static const FlashParamsMap s_flashParamsMap[kFlashParams_Total] = {
+enum { kFlashParamsMap_Total = 5 };
+enum { kFlashParams_Total = 4 };
+static const FlashParamsMap s_flashParamsMap[kFlashParamsMap_Total] = {
     { kDeviceType_bl618d, { 0xc8, 0x40, 0x15 }, 0 },  /* 0: Gigadevice GD25Q16 */
     { kDeviceType_bl618d, { 0x5e, 0x32, 0x14 }, 1 },  /* 1: Zbit ZB25D80B */
     { kDeviceType_bl618d, { 0xef, 0x40, 0x17 }, 2 },  /* 2: Winbond W25Q64 */
+    { kDeviceType_bl618d, { 0xc8, 0x60, 0x16 }, 3 },  /* 3: Gigadevice GD25LQ32 */
+    { kDeviceType_bl618d, { 0x20, 0x50, 0x16 }, 3 },  /* 4: XMC XM25QU32 (reuse GD25LQ32 params) */
 };
 // Explanation of the flashParams can be found in Bouffalo Labs SDK.
 // struct SPI_Flash_Cfg_Type defined in bl702l_sflah.h
@@ -172,6 +175,14 @@ static const u8 s_flashParams[kFlashParams_Total][84] = {
         0x02, 0x01, 0xab, 0x01, 0x05, 0x35, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x38, 0xff, 0xa0, 0xff,
         0x77, 0x03, 0x02, 0x40, 0x77, 0x03, 0x02, 0xf0, 0x2c, 0x01, 0xb0, 0x04, 0xb0, 0x04, 0x05, 0x00,
         0xe8, 0x80, 0x14, 0x00
+    },
+    { /* Idx 3: GigaDevice GD25LQ32 (4MB) */
+        0x04, 0x01, 0x00, 0x00, 0x66, 0x99, 0xff, 0x03, 0x9f, 0x00, 0x9f, 0x00, 0x04, 0xc8, 0x00, 0x01,
+        0xc7, 0x20, 0x52, 0xd8, 0x06, 0x02, 0x32, 0x00, 0x0b, 0x01, 0x0b, 0x01, 0x3b, 0x01, 0xbb, 0x00,
+        0x6b, 0x01, 0xeb, 0x02, 0xeb, 0x02, 0x02, 0x50, 0x00, 0x01, 0x00, 0x01, 0x01, 0x00, 0x02, 0x01,
+        0x02, 0x01, 0xab, 0x01, 0x05, 0x35, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x38, 0xff, 0xa0, 0xff,
+        0x77, 0x03, 0x02, 0x40, 0x77, 0x03, 0x02, 0xf0, 0x2c, 0x01, 0xb0, 0x04, 0xb0, 0x04, 0x05, 0x00,
+        0xff, 0xff, 0x16, 0x00
     },
 };
 
@@ -288,7 +299,7 @@ static int GetInitialFlashConfig(const char * pDeviceType, InitialFlashConfig * 
         0x80 0x10 0x01 0x01
     */
     // Set some recommended default values
-    pConfig->flashPin = 0x24; // SF_IO_EXT_SF2, use GPIO34-39 only
+    pConfig->flashPin = 0x80; // Auto-detect flash pin. User can also specify the flash pin in the LTFlashConfig.json file (e.g. 0x24 for a0 which uses pin a0 for flash).
     pConfig->flashClkCfg = 0x10;
     pConfig->flashIOMmode = 0x01;
     pConfig->flashClkDelay = 0x01;
@@ -300,7 +311,7 @@ static int GetFlashConfig(const char * pDeviceType, FlashConfig * pConfig, Flash
     if (nDeviceTypeIdx < 0) return nDeviceTypeIdx;
     if (pFlashID == NULL) return 0;
     /* Find flash config */
-    for (u32 nIdx = 0; nIdx < kFlashParams_Total; nIdx++) {
+    for (u32 nIdx = 0; nIdx < kFlashParamsMap_Total; nIdx++) {
         if ((s_flashParamsMap[nIdx].type == nDeviceTypeIdx) && (lt_memcmp(s_flashParamsMap[nIdx].flashID, pFlashID, 3) == 0)) {
             lt_memcpy(pConfig->flashParams, &s_flashParams[s_flashParamsMap[nIdx].flashParamIdx], sizeof(s_flashParams[0]));
             return 0;

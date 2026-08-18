@@ -67,6 +67,7 @@ static void Private_Shell_Init(void) {
 }
 
 static void Private_Shell_Fini(void) {
+    if (!S.shell) return;
     S.shell->UnregisterCommands(s_commands);
     lt_closelibrary(S.shell);
     S.shell = NULL;

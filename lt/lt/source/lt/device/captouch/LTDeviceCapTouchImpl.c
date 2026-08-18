@@ -19,7 +19,7 @@
 
 /*____________________________
   LTDeviceCapTouch #defines */
-//DEFINE_LTLOG_SECTION("lt.dev.captouch");
+DEFINE_LTLOG_SECTION("lt.dev.captouch");
 #define CAP_TOUCH_MODE_SET_IN_PROGRESS_SLEEP_DELAY_MS (10)
 #define CAP_TOUCH_MODE_TRIGGER_COUNT_DROP_THRESHOLD   (1000)
 
@@ -91,10 +91,18 @@ static void LTDeviceCapTouchImpl_DestructObject(LTDeviceCapTouchImpl *capTouch) 
 static bool LTDeviceCapTouchImpl_ConstructObject(LTDeviceCapTouchImpl *capTouch) {
     do
     {
-        if (NULL == (capTouch->driver = lt_createdriverobject_fordevice(LTDriverCapTouch, capTouch))) break;
-        if (LTHANDLE_INVALID == (capTouch->hEvent = LT_GetCore()->CreateEvent(&s_capTouchEventArgs, &LTDeviceCapTouchImpl_CapTouchEventDispatchProc, NULL, NULL, NULL))) break;
+        LTLOG("construct.start", NULL);
+        if (NULL == (capTouch->driver = lt_createdriverobject_fordevice(LTDriverCapTouch, capTouch))) {
+            LTLOG_REDALERT("construct.fail.driver", "Failed to create driver object");
+            break;
+        }
+        if (LTHANDLE_INVALID == (capTouch->hEvent = LT_GetCore()->CreateEvent(&s_capTouchEventArgs, &LTDeviceCapTouchImpl_CapTouchEventDispatchProc, NULL, NULL, NULL))) {
+            LTLOG_REDALERT("construct.fail.event", "Failed to create trigger event");
+            break;
+        }
         capTouch->iEvent = lt_gethandleinterface(ILTEvent, capTouch->hEvent);
         capTouch->iThread = lt_getlibraryinterface(ILTThread, LT_GetCore());
+        LTLOG("construct.success", NULL);
         return true;
     } while (false);
     lt_destroyobject(capTouch->driver);
@@ -115,13 +123,13 @@ LTDeviceCapTouchImpl_NoCapTouchTriggerEvent(LTDeviceCapTouchImpl *capTouch, LTDe
 }
 
 static bool
-LTDeviceCapTouchImpl_Initialize(LTDeviceCapTouchImpl *capTouch, LTDeviceCapTouch_Mode mode) {
+LTDeviceCapTouchImpl_Initialize(LTDeviceCapTouchImpl *capTouch, LTDeviceCapTouch_Mode mode, LTDeviceCapTouch_ResultProc *pResultProc, void *pResultClientData) {
     LTThread hThreadCurrent = capTouch->iThread->GetCurrentThread();
     u32 nMask = LT_GetCore()->Disable();
     LTThread hThreadOld = capTouch->hInitializingThread;
     capTouch->hInitializingThread = hThreadCurrent;
     LT_GetCore()->Enable(nMask);
-    if (capTouch->driver->API->Initialize(capTouch->driver, mode, hThreadCurrent, &LTDeviceCapTouchImpl_StaticCapTouchMotionProc, capTouch)) {
+    if (capTouch->driver->API->Initialize(capTouch->driver, mode, hThreadCurrent, &LTDeviceCapTouchImpl_StaticCapTouchMotionProc, capTouch, pResultProc, pResultClientData)) {
         return true;
     }
     nMask = LT_GetCore()->Disable();
@@ -159,6 +167,11 @@ LTDeviceCapTouchImpl_ResetTest(LTDeviceCapTouchImpl *capTouch) {
     return capTouch->driver->API->ResetTest(capTouch->driver);
 }
 
+static bool
+LTDeviceCapTouchImpl_IsDoNotResuscitate(LTDeviceCapTouchImpl *capTouch) {
+    return capTouch->driver->API->IsDoNotResuscitate(capTouch->driver);
+}
+
 /*_____________________________
   LTDeviceKeypad api binding */
 define_LTObjectImplPublic(LTDeviceCapTouch, LTDeviceCapTouchImpl,
@@ -170,7 +183,8 @@ define_LTObjectImplPublic(LTDeviceCapTouch, LTDeviceCapTouchImpl,
     IsCapTouchTriggerActive,
     GetTotalTriggerCount,
     ResetTotalTriggerCount,
-    ResetTest
+    ResetTest,
+    IsDoNotResuscitate
 );
 
 /*******************************************************************************

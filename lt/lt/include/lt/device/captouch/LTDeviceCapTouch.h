@@ -50,6 +50,14 @@ typedef void (LTDeviceCapTouch_TriggerEventProc)(u32 numTriggers, void *pClientD
      * @param pClientData The client data that was passed in during registration
      */
 
+typedef LTCapTouch_ResultProc LTDeviceCapTouch_ResultProc;
+    /**< ResultProc type for notifying when captouch initialization completes
+     *
+     * @param success true if initialization succeeded, false if failed
+     * @param attemptCount number of attempts required to initialize
+     * @param pClientData The client data that was passed in during registration
+     */
+
 /* _______________________
    LTDeviceCapTouch API */
 typedef_LTObject(LTDeviceCapTouch, 1) {
@@ -78,12 +86,14 @@ typedef_LTObject(LTDeviceCapTouch, 1) {
          * @param[in] triggerEventProc The event proc to be unregistered.
          */
 
-    bool (*Initialize)(LTDeviceCapTouch *capTouch, LTDeviceCapTouch_Mode mode);
+    bool (*Initialize)(LTDeviceCapTouch *capTouch, LTDeviceCapTouch_Mode mode, LTDeviceCapTouch_ResultProc *resultProc, void *pResultClientData);
         /**< initializes the captouch device with the operating mode.
          *
          *  @param[in]  capTouch the cap touch device to set the mode on.
          *  @param[in]  mode the mode to set the capTouch device to.
-         *  @return the current operating mode.
+         *  @param[in]  resultProc the result proc to be called when initialization completes (success or failure).
+         *  @param[in]  pResultClientData the client data passed back to the result callback.
+         *  @return true if initialization was successful.
          *
          *  @note When the device is created it is created in the
          */
@@ -107,6 +117,9 @@ typedef_LTObject(LTDeviceCapTouch, 1) {
 
     bool (*ResetTest)(LTDeviceCapTouch *capTouch);
         /**< Tests the reset line and SDA state (for MFG testing). */
+
+    bool (*IsDoNotResuscitate)(LTDeviceCapTouch *capTouch);
+        /**< Returns true if captouch has permanently failed and should not be reinitialized. */
 } LTOBJECT_API;
 
 LT_EXTERN_C_END

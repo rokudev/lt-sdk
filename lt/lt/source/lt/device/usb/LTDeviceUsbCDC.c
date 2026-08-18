@@ -95,6 +95,7 @@ struct LTDeviceUsbCDCPort {
     u32                      endpointCDCRX;
     bool                     canRead;
     bool                     canWrite;
+    bool                     dtrActive;   /* true when host terminal has opened the port (DTR asserted) */
     u8                       commFeature[8];
     LTDeviceUsbCDCLineCoding lineCoding;
 };
@@ -121,26 +122,26 @@ static u32                             s_NumPorts = 0;
 static void LT_ISR_SAFE NotifyReadReady(LTDeviceUsbCDCPort *port) {
     LTDeviceUsbCDCImpl *user = port->user;
     if (user && user->readReadyCallback) {
-        user->callbackThread->API->QueueTaskProc(user->callbackThread, user->readReadyCallback, NULL, user->clientData);
+        user->callbackThread->API->QueueTaskProcIfRequired(user->callbackThread, user->readReadyCallback, NULL, user->clientData);
     }
 }
 
 static void LT_ISR_SAFE NotifyWriteReady(LTDeviceUsbCDCPort *port) {
     LTDeviceUsbCDCImpl *user = port->user;
     if (user && user->writeReadyCallback) {
-        user->callbackThread->API->QueueTaskProc(user->callbackThread, user->writeReadyCallback, NULL, user->clientData);
+        user->callbackThread->API->QueueTaskProcIfRequired(user->callbackThread, user->writeReadyCallback, NULL, user->clientData);
     }
 }
 
 static void LT_ISR_SAFE NotifyError(LTDeviceUsbCDCPort *port) {
     LTDeviceUsbCDCImpl *user = port->user;
     if (user && user->errorCallback) {
-        user->callbackThread->API->QueueTaskProc(user->callbackThread, user->errorCallback, NULL, user->clientData);
+        user->callbackThread->API->QueueTaskProcIfRequired(user->callbackThread, user->errorCallback, NULL, user->clientData);
     }
 }
 
 static void LT_ISR_SAFE SetupFinished(LTDeviceUsbCDCPort *port) {
-    if (!port->canWrite) {
+    if (port->dtrActive && !port->canWrite) {
         port->canWrite = true;
         NotifyWriteReady(port);
     }
@@ -222,7 +223,12 @@ static bool LT_ISR_SAFE DeviceRequestHandler(void *clientData, LTDeviceUsbStd_Co
                     return true;
                 case kLTDeviceUsbCDCStd_Request_SetControlLineState:
                     //ISRLOG("req.scls", "SetControlLineState, wValue 0x%02x", (unsigned)request->wValue);
-                    SetupFinished(port);
+                    port->dtrActive = (request->wValue & 0x01) != 0;
+                    if (port->dtrActive) {
+                        SetupFinished(port);
+                    } else if (port->canWrite) {
+                        port->canWrite = false;
+                    }
                     return true;
                 case kLTDeviceUsbCDCStd_Request_GetCommFeature:
                     //ISRLOG("req.gcf", "GetCommFeature");
@@ -342,6 +348,7 @@ static u32 LTDeviceUsbCDCImpl_GetMaxReadSize(LTDeviceUsbCDCImpl *device) {
 }
 
 static s32 LTDeviceUsbCDCImpl_Write(LTDeviceUsbCDCImpl *device, void const *data, LT_SIZE size) {
+    if (!device->port->canWrite) return 0;
     return s_iDevUsbClient->Write(s_hDevUsbClient, device->port->endpointCDCTX, data, size);
 }
 
@@ -378,6 +385,7 @@ static bool InitPorts(u32 deviceSection) {
             },
             .canRead = false,
             .canWrite = false,
+            .dtrActive = false,
             .commFeature = {},
         };
         result = true;

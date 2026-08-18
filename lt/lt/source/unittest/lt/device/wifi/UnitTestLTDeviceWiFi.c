@@ -9,7 +9,8 @@
  *
  * Copyright 2026, Roku, Inc.  All rights reserved.
  *
- * To run: ltrun TiltEngine  UnitTestLTDeviceWiFi
+ * To run: ltrun UnitTestLTDeviceWiFi
+ *         ltrun TiltEngine  UnitTestLTDeviceWiFi  (legacy)
  *
  * Test note for successful result:
  *
@@ -24,7 +25,23 @@
  ******************************************************************************/
 
 #include <lt/LT.h>
-#define TILT_LIBRARY_TIMEOUT 90
+#define TILT_LIBRARY_TIMEOUT 120
+/* JiltEngine (TILT 2.0) for direct ltrun support */
+#include <tilt/JiltEngine.h>
+/* Undef macros that Jilt.h and TiltImpl.h both define, so TiltImpl.h versions take effect */
+#undef  TILT_TEST_SECTION
+#undef  TILT_REPORT_FAILURE
+#undef  TILT_REPORT_CANNOT_RUN
+#undef  TILT_EXPECT_TRUE
+#undef  TILT_EXPECT_FALSE
+#undef  TILT_ASSERT_TRUE
+#undef  TILT_ASSERT_FALSE
+#undef  TILT_DEBUG
+#undef  TILT_WARNING
+#undef  TILT_REPORT_INTEGER
+#undef  TILT_REPORT_INTEGER_WITH_UNITS
+#undef  TILT_REPORT_FLOAT
+#undef  TILT_REPORT_FLOAT_WITH_UNITS
 #include <tilt/TiltImpl.c>
 #include <lt/device/wifi/LTDeviceWiFi.h>
 
@@ -53,6 +70,7 @@ static struct Statics {
     bool                 wifiRejoinEnabled;
     const char          *ssid;
     const char          *pass;
+    int                  security;
     LTWiFi_ApInfo        ap;
 } S;
 
@@ -189,7 +207,8 @@ static void HandleScanAps(LTWiFi_ApInfo *ap, void *clientData) {
     if (lt_strcmp(S.ssid, ap->ssid) == 0) S.apFound++;
     char bssid[20];
     S.macLib->MacAddressToString(&ap->bssid, bssid, ':');
-    TILT_MESSAGE(trc, "  %s chan: %3u RSSI: %4d sec: %-6s SSID: \"%s\"", bssid, ap->channel, ap->rssi, ApSecurityStrings[ap->security], ap->ssid);
+    TILT_MESSAGE(trc, "  %s chan: %3u RSSI: %4d sec: %-6s wps: %d SSID: \"%s\"",
+        bssid, ap->channel, ap->rssi, ApSecurityStrings[ap->security], ap->wps, ap->ssid);
 }
 
 static void TestScanAps(const TiltImplReportingCallbacks *trc) {
@@ -209,7 +228,7 @@ static void ZeroFoundAp(const TiltImplReportingCallbacks *trc) {
 }
 
 static void HandleJoinAp(LTWiFi_JoinStatus status, void *clientData);
-static void HandleRetryAp(LTWiFi_JoinStatus status, LTDeviceUnit unit, void *clientData);
+static void HandleRetryAp(LTDeviceWiFi_Status status, LTDeviceUnit unit, void *clientData);
 
 static void StartJoinAp(const TiltImplReportingCallbacks *trc, const char *ssid, char *pass, u16 options) {
     CLEAR(S.ap);
@@ -218,7 +237,7 @@ static void StartJoinAp(const TiltImplReportingCallbacks *trc, const char *ssid,
     if (ssid) {
         lt_strncpyTerm(S.ap.ssid, ssid, kLTWiFi_Max_Ssid + 1);
     }
-    S.ap.security = kLTWiFi_ApSecurity_Wpa2;
+    S.ap.security = S.security;
     S.joinStarted = false;
     S.joinFailed = false;
     TILT_MESSAGE(trc, "Joining SSID: %s pass: %s security: %d", S.ap.ssid, S.ap.pass, S.ap.security);
@@ -259,7 +278,7 @@ static void HandleJoinAp(LTWiFi_JoinStatus status, void *clientData) {
     trc->SignalCompletion(S.doneSignal);
 }
 
-static void HandleRetryAp(LTWiFi_JoinStatus status, LTDeviceUnit unit, void *clientData) {
+static void HandleRetryAp(LTDeviceWiFi_Status status, LTDeviceUnit unit, void *clientData) {
     LT_UNUSED(unit);
     const TiltImplReportingCallbacks *trc = (TiltImplReportingCallbacks *)clientData;
     if (!S.joinStarted) {
@@ -305,6 +324,10 @@ static void TestJoinFailed(const TiltImplReportingCallbacks *trc) {
 }
 
 static void TestJoinBadPass(const TiltImplReportingCallbacks *trc) {
+    if (S.security <= kLTWiFi_ApSecurity_Open) {
+        TILT_REPORT_CANNOT_RUN(trc, "bad-password test not applicable for Open AP");
+        return;
+    }
     S.doneSignal = trc->GetTestName();
     StartJoinAp(trc, S.ssid, "badpassword", 0);
 }
@@ -378,6 +401,10 @@ static void TestBadSsidReason(const TiltImplReportingCallbacks *trc) {
 }
 
 static void TestBadPassReason(const TiltImplReportingCallbacks *trc) {
+    if (S.security <= kLTWiFi_ApSecurity_Open) {
+        TILT_REPORT_CANNOT_RUN(trc, "bad-password test not applicable for Open AP");
+        return;
+    }
     // If this driver returns a valid kLTWiFi_DisconnectReason_* it
     // should be "kLTWiFi_DisconnectReason_ApReceiveDeauth"
     // after trying to join with a bad password
@@ -397,9 +424,80 @@ static void DelaySettle(const TiltImplReportingCallbacks *trc) {
     iThread->Sleep(LTTime_Seconds(JOIN_SETTLE_TIME));
 }
 
+static void TestTxBroadcast(const TiltImplReportingCallbacks *trc) {
+    /* Exercise the driver data-TX path with a broadcast Ethernet frame so
+     * the test works regardless of AP security mode.  Verifies that
+     * TransmitFrames actually hands frames to the radio by checking
+     * GetMetrics().tx_frame_count increments. */
+    S.core->ConsolePrint(">>> TxBroadcast: entered (connected=%d)\n",
+                         S.wifiLib->IsConnected() ? 1 : 0);
+    if (!S.wifiLib->IsConnected()) {
+        TILT_REPORT_CANNOT_RUN(trc, "not connected — cannot test TX");
+        return;
+    }
+
+    LTMacAddress mac;
+    CLEAR(mac);
+    S.wifiLib->GetMacAddress(&mac);
+
+    /* Build a minimum-sized Ethernet frame: 6+6+2 + 32-byte payload.
+     * EtherType 0x88B5 is IEEE "local experimental" — unlikely to be
+     * parsed by the AP, but will be forwarded/dropped harmlessly. */
+    u8 frame[60];
+    lt_memset(frame, 0, sizeof(frame));
+    lt_memset(&frame[0], 0xFF, 6);                 /* DA = broadcast */
+    lt_memcpy(&frame[6], mac.octet, 6);            /* SA = our MAC */
+    frame[12] = 0x88;                              /* EtherType hi */
+    frame[13] = 0xB5;                              /* EtherType lo */
+    lt_memset(&frame[14], 0xA5, sizeof(frame) - 14);
+
+    LTBufferChain chain;
+    CLEAR(chain);
+    chain.next      = NULL;
+    chain.buffer    = frame;
+    chain.size      = sizeof(frame);
+    chain.bytesUsed = sizeof(frame);
+
+    LTWiFi_Metrics mBefore;
+    CLEAR(mBefore);
+    S.wifiLib->GetMetrics(&mBefore, sizeof(mBefore));
+
+    /* Send a handful of frames so a single lost one does not fail the test. */
+    const u32 N_FRAMES = 4;
+    u32 sentOk = 0;
+    for (u32 i = 0; i < N_FRAMES; i++) {
+        if (S.wifiLib->TransmitFrames(0, &chain)) sentOk++;
+    }
+
+    ILTThread *iThread = lt_getlibraryinterface(ILTThread, S.core);
+    iThread->Sleep(LTTime_Milliseconds(500));
+
+    LTWiFi_Metrics mAfter;
+    CLEAR(mAfter);
+    S.wifiLib->GetMetrics(&mAfter, sizeof(mAfter));
+
+    u32 delta = mAfter.tx_frame_count - mBefore.tx_frame_count;
+    S.core->ConsolePrint(">>> TxBroadcast: sentOk=%lu/%lu delta=%lu before=%lu after=%lu\n",
+                         LT_Pu32(sentOk), LT_Pu32(N_FRAMES), LT_Pu32(delta),
+                         LT_Pu32(mBefore.tx_frame_count), LT_Pu32(mAfter.tx_frame_count));
+    TILT_EXPECT_TRUE(trc, sentOk == N_FRAMES,
+                     "TransmitFrames returned false: %lu/%lu", sentOk, N_FRAMES);
+    TILT_EXPECT_TRUE(trc, delta >= sentOk,
+                     "tx_frame_count did not advance: before=%lu after=%lu sent=%lu",
+                     mBefore.tx_frame_count, mAfter.tx_frame_count, sentOk);
+}
+
 static void BeforeAllTestsHook(const TiltImplReportingCallbacks * trc) {
     S.ssid = trc->GetProperty("AP_SSID", DEFAULT_AP_SSID);
     S.pass = trc->GetProperty("AP_PASS", DEFAULT_AP_PASS);
+    {
+        const char *secStr = trc->GetProperty("AP_SECURITY", "WPA2");
+        if (lt_strcmp(secStr, "OPEN") == 0) {
+            S.security = kLTWiFi_ApSecurity_Open;
+        } else {
+            S.security = kLTWiFi_ApSecurity_Wpa2;
+        }
+    }
     S.ignoreDisconnect = true;
 }
 static void AfterAllTestsHook(const TiltImplReportingCallbacks * trc) {
@@ -413,6 +511,234 @@ static TiltImplTestHooks testHooks = {
     .BeforeAllTests = BeforeAllTestsHook,
     .AfterAllTests = AfterAllTestsHook
 };
+
+/******************************************************************************
+ *  Jilt Run Adapter
+ *
+ *  Bridges TiltImpl (TILT 1.0) test functions to JiltEngine (TILT 2.0) so that
+ *  the test suite can run via direct ltrun invocation with full async support.
+ ******************************************************************************/
+
+static JiltEngine       *s_engine;
+static Tilt             *s_currentTilt;
+static TiltImplReportingCallbacks s_jiltTrc;
+
+static void JiltAdapter_ReportFailure(TiltResult type, const char *pFileName, u32 lineNumber,
+                                      const char *pMessage, ...) {
+    char buf[256];
+    lt_va_list args;
+    lt_va_start(args, pMessage);
+    lt_vsnprintf(buf, sizeof(buf), pMessage, args);
+    lt_va_end(args);
+    if (type == kTilt_Result_CannotRun) {
+        s_currentTilt->API->ReportCannotRun(pFileName, lineNumber, "%s", buf);
+    } else {
+        s_currentTilt->API->ReportFailure(pFileName, lineNumber, "%s", buf);
+    }
+}
+
+static void JiltAdapter_Message(const char *pFileName, u32 lineNumber, TiltMessageLevel level,
+                                const char *pMessage, ...) {
+    LT_UNUSED(pFileName); LT_UNUSED(lineNumber);
+    char buf[256];
+    lt_va_list args;
+    lt_va_start(args, pMessage);
+    lt_vsnprintf(buf, sizeof(buf), pMessage, args);
+    lt_va_end(args);
+    s_currentTilt->API->Report((TiltReportLevel)level, "%s", buf);
+}
+
+static void JiltAdapter_ReportInteger(const char *pName, s64 value, const char *pUnits) {
+    s_currentTilt->API->ReportInteger(pName, value, pUnits);
+}
+
+static void JiltAdapter_ReportFloat(const char *pName, double value, const char *pUnits) {
+    s_currentTilt->API->ReportFloat(pName, value, pUnits);
+}
+
+static void JiltAdapter_ReportBuffer(const char *pName, const u8 *pData, u32 length) {
+    s_currentTilt->API->ReportBinary(pName, pData, length);
+}
+
+static const char *JiltAdapter_GetTestName(void) {
+    return s_currentTilt->API->GetTestName();
+}
+
+static void JiltAdapter_DeferCompletion(LTTime timeout, LTThread_ClientDataReleaseProc *cleanupProc,
+                                        void *cleanupData) {
+    LT_UNUSED(cleanupProc); LT_UNUSED(cleanupData);
+    s_engine->API->DeferTestCompletion(s_engine, timeout, NULL, NULL);
+}
+
+static void JiltAdapter_SignalCompletion(const char *pTestName) {
+    s_engine->API->SignalTestCompletion(s_engine, pTestName);
+}
+
+static const char *JiltAdapter_GetProperty(const char *pPropertyName, const char *pDefaultValue) {
+    return s_currentTilt->API->GetProperty(pPropertyName, pDefaultValue);
+}
+
+static bool JiltAdapter_HookLibrary(const char *pLibraryName, LTCore_LibraryHookFunction *pHookFn) {
+    LT_UNUSED(pLibraryName); LT_UNUSED(pHookFn);
+    return false;
+}
+
+static void InitJiltAdapter(Tilt *tilt) {
+    s_currentTilt              = tilt;
+    s_jiltTrc.ReportFailure    = JiltAdapter_ReportFailure;
+    s_jiltTrc.Message          = JiltAdapter_Message;
+    s_jiltTrc.ReportInteger    = JiltAdapter_ReportInteger;
+    s_jiltTrc.ReportFloat      = JiltAdapter_ReportFloat;
+    s_jiltTrc.ReportBuffer     = JiltAdapter_ReportBuffer;
+    s_jiltTrc.GetTestName      = JiltAdapter_GetTestName;
+    s_jiltTrc.DeferCompletion  = JiltAdapter_DeferCompletion;
+    s_jiltTrc.SignalCompletion = JiltAdapter_SignalCompletion;
+    s_jiltTrc.GetProperty      = JiltAdapter_GetProperty;
+    s_jiltTrc.HookLibrary      = JiltAdapter_HookLibrary;
+}
+
+/* Wrapper: generates a TILT 2.0 test proc from a TiltImpl test proc */
+#define JILT_WRAP(fn) \
+    static void Jilt_##fn(Tilt *tilt) { InitJiltAdapter(tilt); fn(&s_jiltTrc); }
+
+JILT_WRAP(TestOpenDevice)
+JILT_WRAP(DelaySettle)
+JILT_WRAP(TestWiFiUp)
+JILT_WRAP(TestGetDeviceInfo)
+JILT_WRAP(TestGetMacAddress)
+JILT_WRAP(TestScanAps)
+JILT_WRAP(TestFoundAp)
+JILT_WRAP(ZeroFoundAp)
+JILT_WRAP(TestJoinAp)
+JILT_WRAP(TestRetryAp)
+JILT_WRAP(TestRejoinAp)
+JILT_WRAP(TestJoinFailed)
+JILT_WRAP(TestJoinBadPass)
+JILT_WRAP(TestJoinBadSsid)
+JILT_WRAP(TestIsConnected)
+JILT_WRAP(TestIsNotConnected)
+JILT_WRAP(TestGetApInfo)
+JILT_WRAP(TestGetNoApInfo)
+JILT_WRAP(TestDisconnect)
+JILT_WRAP(TestDisconnectReason)
+JILT_WRAP(TestBadSsidReason)
+JILT_WRAP(TestBadPassReason)
+ JILT_WRAP(TestTxBroadcast)
+
+static void JiltBeforeAllTests(Tilt *tilt) { InitJiltAdapter(tilt); BeforeAllTestsHook(&s_jiltTrc); }
+static void JiltAfterAllTests(Tilt *tilt)  { InitJiltAdapter(tilt); AfterAllTestsHook(&s_jiltTrc); }
+
+static const TiltEngineTestHooks s_jiltHooks = {
+    .BeforeAllTests = JiltBeforeAllTests,
+    .AfterAllTests  = JiltAfterAllTests
+};
+
+static const TiltEngineTest s_jiltTests[] = {
+    { Jilt_TestOpenDevice,     "OpenDevice",     "open device",           0 },
+    { Jilt_DelaySettle,        "DelaySettle",    "let it settle",         0 },
+
+    TILT_TEST_SECTION("General information"),
+
+    { Jilt_TestWiFiUp,         "WiFiUp",         "confirm wifi is up",    0 },
+    { Jilt_TestGetDeviceInfo,  "GetDeviceInfo",  "vendor, product, etc",  0 },
+    { Jilt_TestGetMacAddress,  "GetMacAddress",  "get mac address",       0 },
+    { Jilt_TestDisconnect,     "Disconnect",     "disconnect AP",         0 },
+    { Jilt_TestIsNotConnected, "IsNotConnected", "verify no connection",  0 },
+    { Jilt_TestGetNoApInfo,    "GetNoApInfo",    "no AP info",            0 },
+
+    TILT_TEST_SECTION("Join the specified AP"),
+
+    { Jilt_TestRetryAp,        "RetryAp",        "join AP, Retry=true",   0 },
+    { Jilt_TestIsConnected,    "IsConnected",    "verify connection",     0 },
+    { Jilt_TestGetApInfo,      "GetApInfo",      "get ap information",    0 },
+    { Jilt_DelaySettle,        "DelaySettle",    "let it settle",         0 },
+    { Jilt_TestIsConnected,    "IsConnected",    "verify connection",     0 },
+    { Jilt_TestTxBroadcast,    "TxBroadcast",    "exercise data TX path", 0 },
+
+    TILT_TEST_SECTION("Disconnect while associated"),
+
+    { Jilt_TestDisconnect,     "Disconnect",     "disconnect AP",         0 },
+    { Jilt_TestDisconnectReason,"DisconnectReason","disconnect reason",   0 },
+    { Jilt_TestIsNotConnected, "IsNotConnected", "verify no connection",  0 },
+    { Jilt_TestGetNoApInfo,    "GetNoApInfo",    "no AP info",            0 },
+
+    TILT_TEST_SECTION("Disconnect while not associated (no-op)"),
+
+    { Jilt_TestDisconnect,     "Disconnect",     "disconnect AP",         0 },
+    { Jilt_TestIsNotConnected, "IsNotConnected", "verify no connection",  0 },
+
+    TILT_TEST_SECTION("Rejoin after explicit disconnect"),
+
+    { Jilt_TestJoinAp,         "JoinAp",         "join AP",               0 },
+    { Jilt_TestIsConnected,    "IsConnected",    "verify connection",     0 },
+    { Jilt_TestGetApInfo,      "GetApInfo",      "get ap information",    0 },
+    { Jilt_DelaySettle,        "DelaySettle",    "let it settle",         0 },
+
+    TILT_TEST_SECTION("Rejoin while associated"),
+
+    { Jilt_TestRejoinAp,       "RejoinAp",       "rejoin AP",             0 },
+    { Jilt_TestIsConnected,    "IsConnected",    "verify connection",     0 },
+    { Jilt_TestGetApInfo,      "GetApInfo",      "get ap information",    0 },
+    { Jilt_DelaySettle,        "DelaySettle",    "let it settle",         0 },
+
+    TILT_TEST_SECTION("Scan while associated"),
+
+    { Jilt_ZeroFoundAp,        "ZeroFoundAp",    "reset counter",         0 },
+    { Jilt_TestScanAps,        "ScanAps",        "scan for APs",          0 },
+    { Jilt_TestScanAps,        "ScanAps",        "scan for APs",          0 },
+    { Jilt_TestScanAps,        "ScanAps",        "scan for APs",          0 },
+    { Jilt_TestFoundAp,        "FoundAp",        "check for specific AP", 0 },
+
+    TILT_TEST_SECTION("Scan while not associated"),
+
+    { Jilt_TestDisconnect,     "Disconnect",     "disconnect AP",         0 },
+    { Jilt_TestIsNotConnected, "IsNotConnected", "verify no connection",  0 },
+    { Jilt_ZeroFoundAp,        "ZeroFoundAp",    "reset counter",         0 },
+    { Jilt_TestScanAps,        "ScanAps",        "scan for APs",          0 },
+    { Jilt_TestScanAps,        "ScanAps",        "scan for APs",          0 },
+    { Jilt_TestScanAps,        "ScanAps",        "scan for APs",          0 },
+    { Jilt_TestFoundAp,        "FoundAp",        "check for specific AP", 0 },
+
+    TILT_TEST_SECTION("Rejoin after scan tests"),
+
+    { Jilt_TestJoinAp,         "JoinAp",         "join AP",               0 },
+    { Jilt_TestIsConnected,    "IsConnected",    "verify connection",     0 },
+    { Jilt_TestGetApInfo,      "GetApInfo",      "get ap information",    0 },
+    { Jilt_DelaySettle,        "DelaySettle",    "let it settle",         0 },
+    { Jilt_TestIsConnected,    "IsConnected",    "verify connection",     0 },
+
+    { Jilt_TestDisconnect,     "Disconnect",     "disconnect AP",         0 },
+    { Jilt_TestIsNotConnected, "IsNotConnected", "verify no connection",  0 },
+
+    TILT_TEST_SECTION("Fail to join with bad SSID, no rejoin"),
+
+    { Jilt_TestJoinBadSsid,    "JoinBadSsid",    "fail with bad SSID",    0 },
+    { Jilt_TestIsNotConnected, "IsNotConnected", "verify no connection",  0 },
+    { Jilt_TestJoinFailed,     "JoinFailed",     "verify no rejoin",      0 },
+    { Jilt_TestBadSsidReason,  "BadSsidReason",  "verify dcrsn = NoAp",   0 },
+
+    TILT_TEST_SECTION("Fail to join with bad password"),
+
+    { Jilt_TestJoinBadPass,    "JoinBadPass",    "fail with bad password",0 },
+    { Jilt_TestIsNotConnected, "IsNotConnected", "verify no connection",  0 },
+    { Jilt_TestBadPassReason,  "BadPassReason",  "verify dcrsn = auth",   0 },
+
+    TILT_TEST_SECTION("Restore WiFi connection"),
+
+    { Jilt_TestDisconnect,     "Disconnect",     "disconnect AP",         0 },
+    { Jilt_TestRetryAp,        "RetryAp",        "join AP, Retry=true",   0 },
+};
+
+static int UnitTestLTDeviceWiFi_Run(int argc, const char ** argv) {
+    s_engine = lt_createobject(JiltEngine);
+    s_engine->API->SetTestSuiteTimeout(s_engine, LTTime_Seconds(TILT_LIBRARY_TIMEOUT));
+    s_engine->API->ConfigureTestSuite(s_engine, s_jiltTests,
+        sizeof(s_jiltTests) / sizeof(s_jiltTests[0]), &s_jiltHooks);
+    int result = s_engine->API->RunTestSuite(s_engine, argc, argv);
+    lt_destroyobject(s_engine);
+    s_engine = NULL;
+    return result;
+}
 
 static bool UnitTestLTDeviceWiFiImpl_LibInit(void) {
     S = (struct Statics){ .core = LT_GetCore() };
@@ -439,6 +765,7 @@ static bool UnitTestLTDeviceWiFiImpl_LibInit(void) {
         { TestGetApInfo,      "GetApInfo",      "get ap information",    0 },
         { DelaySettle,        "DelaySettle",    "let it settle",         0 },
         { TestIsConnected,    "IsConnected",    "verify connection",     0 },
+        { TestTxBroadcast,    "TxBroadcast",    "exercise data TX path", 0 },
 
         TILT_TEST_SECTION("Disconnect while associated"),
 
@@ -533,7 +860,7 @@ static void UnitTestLTDeviceWiFiImpl_LibFini(void) {
 
 typedef_LTLIBRARY_ROOT_INTERFACE(UnitTestLTDeviceWiFi, 1) LTLIBRARY_EMPTY_INTERFACE;
 
-define_LTLIBRARY_ROOT_INTERFACE(UnitTestLTDeviceWiFi) LTLIBRARY_DEFINITION;
+define_LTLIBRARY_ROOT_INTERFACE(UnitTestLTDeviceWiFi, UnitTestLTDeviceWiFi_Run, 4096) LTLIBRARY_DEFINITION;
 
 LTLIBRARY_EXPORT_INTERFACES(UnitTestLTDeviceWiFi, (ITilt))
 

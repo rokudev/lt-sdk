@@ -40,7 +40,7 @@ enum { kInvalidTestIndex = 999999 };
 /*--- Flags for the testFlags field in UnitTestSpecifier ---*/
 
 typedef u8 TiltTestFlags;
-enum  TiltTestFlags {
+enum {
     kTiltTestFlag_NoAutomation  = 0x01,  ///< Do not run this test in automation.
     kTiltTestFlag_NeedsRtos     = 0x02,  ///< This test requires a real RTOS (for thread scheduling, etc.)
     kTiltTestFlag_SectionHeader = 0x04,  ///< This "test" is simply a header that's printed during execution.
@@ -71,7 +71,7 @@ typedef struct {
  * framework or its client.
  */
 typedef u8 TiltResult;
-enum TiltResult {
+enum {
     kTilt_Result_None,       ///< No result type specified
     kTilt_Result_Success,    ///< Test succeeded
     kTilt_Result_Failure,    ///< Test detected an error in code under test
@@ -84,7 +84,7 @@ enum TiltResult {
  * Every Message() call contains a message level.
  */
 typedef u8 TiltMessageLevel;
-enum TiltMessageLevel {
+enum {
     kTilt_Message_Level_Debug,      ///< Debug output; normally not shown
     kTilt_Message_Level_Info,       ///< Standard message, not shown in quiet mode
     kTilt_Message_Level_Warning,    ///< Warning message; will normally be shown

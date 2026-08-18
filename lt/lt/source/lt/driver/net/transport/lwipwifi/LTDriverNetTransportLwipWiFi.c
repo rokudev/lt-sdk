@@ -30,6 +30,7 @@
 #include "lwip/tcpip.h"
 #include "lwip/init.h"
 #include "lwip/timeouts.h"
+#include "lwip/stats.h"
 #include "lwip/ethip6.h"
 #include "lwip/prot/dhcp.h"
 #include "lwip/dns.h"
@@ -206,6 +207,12 @@ static void NetIpWiFi_ShowLwipStat(LTTransportDriver *data, bool logToServer) {
     // Probably need to permanently enable this flag ??
 #if LT_LWIP_MEMP_STAT
     stats_display(logToServer);
+    /* The port's stats_display() skips the link-layer protos; print the ones
+     * that localize where inbound packets stop (ARP resolution, IP input). */
+    LINK_STATS_DISPLAY(logToServer);
+    ETHARP_STATS_DISPLAY(logToServer);
+    IP_STATS_DISPLAY(logToServer);
+    ICMP_STATS_DISPLAY(logToServer);
 #else
     LT_UNUSED(logToServer);
 #endif
@@ -284,7 +291,7 @@ CBK err_t OnWiFiOutput(struct netif *netif, struct pbuf *pbuf) {
     if (!S.iWiFi || !netif) return ERR_CLSD;
 
     Priv_Tran *tran = GET_NETIF_PRIV_TRAN(netif);
-    if (!tran || !GET_NETIF(tran) || !tran->openCount) return ERR_CLSD;
+    if (!tran || !tran->openCount) return ERR_CLSD;
     LTBufferChain wifiBuffers[MAX_WIFI_BUFS];
     LTBufferChain *wbuf = wifiBuffers;
     u32 total_len = 0;
@@ -316,6 +323,7 @@ CBK bool OnWiFiInput(LTBufferChain *wifiBuffer, void *clientData) {
     if (!clientData) return false;
     struct netif *netif = (struct netif *)clientData;
     Priv_Tran *tran = GET_NETIF_PRIV_TRAN(netif);
+    if (!tran || !tran->openCount) return false;
     u32 len = wifiBuffer->bytesUsed;
     if (tran->debug) DumpBytes(__FUNCTION__, len, wifiBuffer->buffer);
     LT_ASSERT(wifiBuffer->next == NULL);
@@ -1000,12 +1008,30 @@ PUB void NetIpWiFi_CloseTransport(LTTransportDriver *driverData) { // Called fro
         return;
     }
 
+    // Deregister the RX callback before teardown so a late frame cannot be
+    // delivered to a torn-down transport (BL61x_WiFiDataRx_Deliver -> OnWiFiInput
+    // racing the lt_memset(tran, 0) below).
+    if (tran->wifiUnit) {
+        S.iWiFi->ReceiveFrame(tran->wifiUnit, NULL, NULL);
+    }
     LTLOG("wifi.disc", "force WiFi disconnect");
     S.iWiFi->Disconnect();
     if (tran->linkConnected) {
         tran->linkConnected = false;
         NotifyTransport(tran, kLTTransport_Event_Down);
     }
+
+    // Terminate the transport thread BEFORE destroying the lwip state.  The
+    // WiFi status callback (OnWiFiChange) is dispatched as a queued task on
+    // this thread, and its Disconnected branch touches the same netif/DHCP
+    // state destroyed below.  Draining the thread first (StopNetwork also
+    // deregisters the callback, on the correct thread) guarantees no status
+    // dispatch -- e.g. from an in-flight asynchronous disconnect -- can run
+    // concurrently with, or after, the netif/timeout teardown.  This replaces
+    // the former in-lock 500ms "wait for disconnect" sleep, which only
+    // narrowed this race instead of closing it.
+    S.iThread->Terminate(tran->hThread);
+    S.iThread->WaitUntilFinished(tran->hThread, LTTime_Seconds(10));
 
     LOCK_API;
     if (tran->dhcpActive) {
@@ -1026,6 +1052,9 @@ PUB void NetIpWiFi_CloseTransport(LTTransportDriver *driverData) { // Called fro
     S.iThread->Destroy(tran->hThread);
 
     lt_lwip_sys_destroy();
+    // Destroyed only here: sys_timeouts_destroy() above cancels the lwip cyclic
+    // timers via KillTimer on this thread, which needs the handle still valid.
+    S.iThread->Destroy(tran->hThread);
     lt_memset(tran, 0, sizeof(Priv_Tran));
 }
 

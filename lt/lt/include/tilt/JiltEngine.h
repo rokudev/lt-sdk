@@ -34,7 +34,7 @@ enum {
 
 /** TiltEngine test flags */
 typedef u8 TiltEngineFlags;
-enum TiltEngineFlags {
+enum {
     kTiltEngineFlag_NoAutomation  = 0x01,  /**< Do not run this test in automation. */
 };
 

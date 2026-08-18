@@ -16,8 +16,8 @@
  * Copyright 2026, Roku, Inc.  All rights reserved.
  ******************************************************************************/
 
-#ifndef LT_INCLUDE_TILT_TILT_H
-#define LT_INCLUDE_TILT_TILT_H
+#ifndef LT_INCLUDE_TILT_JILT_H
+#define LT_INCLUDE_TILT_JILT_H
 
 /* TILT 2.0 Framework
  *
@@ -395,5 +395,6 @@ typedef_LTObject(Tilt, 1) {
 } LTOBJECT_API;
 
 LT_EXTERN_C_END
-#endif /* LT_INCLUDE_TILT_TILT_H */
+
+#endif /* #ifndef LT_INCLUDE_TILT_JILT_H */
 

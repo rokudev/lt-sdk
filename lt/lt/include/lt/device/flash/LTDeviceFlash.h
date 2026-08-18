@@ -235,6 +235,15 @@ struct ILTFlashDeviceUnitApi {
          * @param[out] pByteOffset Where to store the byte offset.
          * @return true if mapping can be determined, false otherwise. */
 
+    void * (* ByteOffsetToBusAddress)(LTDeviceUnit hFlashUnit, u32 nByteOffset);
+        /**< Obtain the memory-mapped (XIP) bus address for a given flash byte offset.
+         * @note Only valid on platforms with memory-mapped flash (XIP)- always do 
+         * function pointer NULL check before calling.
+         *
+         * @param[in]  hFlashUnit The handle to the flash device being queried.
+         * @param[in]  nByteOffset The flash byte offset to convert to a bus address.
+         * @return The bus address for the given offset. */
+
     u16 (* GetWriteQuantum)(LTDeviceUnit hFlashUnit);
         /**< Obtain the alignment and size constraint value for writing flash.
          * Flash write addresses must be aligned to the write quantum.

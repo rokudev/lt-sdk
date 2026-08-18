@@ -18,7 +18,7 @@ LT_EXTERN_C_BEGIN
 /**
  * @brief LTDeviceOta Library Root Interface.
  */
-typedef_LTDEVICE_LIBRARY_ROOT_INTERFACE(LTDeviceOta, 1) {
+typedef_LTDEVICE_LIBRARY_ROOT_INTERFACE(LTDeviceOta, 2) {
 
     // Step 1, initialize OTA internal if any.
     bool (*Init)(void);
@@ -63,9 +63,12 @@ typedef_LTDEVICE_LIBRARY_ROOT_INTERFACE(LTDeviceOta, 1) {
     bool (*MarkValidated)(void);
     /**< Mark OTA storage good for swup */
 
+    bool (*VerifyRegion)(u32 byteOffset, u32 imageSize, const u8 imageHash[SHA256_HASH_LENGTH]);
+    /**< Verify a region of storage against a SHA-256 hash, independent of the FW OTA slot */
+
 } LTLIBRARY_INTERFACE;
 
-typedef_LTLIBRARY_INTERFACE(ILTOta, 1) {
+typedef_LTLIBRARY_INTERFACE(ILTOta, 2) {
 
     bool (*Init)(void);
     bool (*IsValidated)(void);
@@ -75,6 +78,7 @@ typedef_LTLIBRARY_INTERFACE(ILTOta, 1) {
     bool (*VerifyImage)(u32 imageSize, const u8 imageHash[SHA256_HASH_LENGTH]);
     bool (*ApplyUpdate)(const char *version);
     void (*Complete)(void);
+    bool (*VerifyRegion)(u32 byteOffset, u32 imageSize, const u8 imageHash[SHA256_HASH_LENGTH]);
     bool (*MarkValidated)(void);
 
 } LTLIBRARY_INTERFACE;

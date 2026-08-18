@@ -35,7 +35,7 @@ LT_EXTERN_C_BEGIN
 typedef struct LTWiFi_DriverInfo {
     u16  edition;               ///< compatibility version of this struct
     char vendor[4];             ///< vendor code (eg. RTK)
-    char product[16];           ///< product identifier (eg. AmebaD)
+    char product[16];           ///< product identifer
     char chip[16];              ///< WiFi chip identifier (eg. rtl8710c)
     char version[20];           ///< version string (free format)
     char updated[16];           ///< release date (example YYYY-MM-DD)
@@ -56,7 +56,7 @@ typedef u8 LTWiFi_DriverState;
  * Some API actions and options may cause driver to go down, and state machine
  * must wait for driver to come back up. For example, soft-AP setup
  */
-enum LTWiFi_DriverState {
+enum {
     kLTWiFi_DriverState_Unknown = 0,  ///< take the interface down
     kLTWiFi_DriverState_ResetChip,    ///< a full reset of chip and driver
     kLTWiFi_DriverState_ResetDriver,  ///< reset only the driver
@@ -128,7 +128,7 @@ typedef u8 LTWiFi_ApSecurity;
  * @brief AP security modes
  * @ingroup ltdevice_wifi_enum
  */
-enum LTWiFi_ApSecurity {
+enum {
     kLTWiFi_ApSecurity_Unknown = 0,
     kLTWiFi_ApSecurity_Open,      ///< no security
     kLTWiFi_ApSecurity_Wep,       ///< wired equivalent
@@ -143,7 +143,7 @@ enum LTWiFi_ApSecurity {
     kLTWiFi_ApSecurity_Wpa3Eap,   ///< WPA3 enterprise
     kLTWiFi_ApSecurity_Max
 };
-#define LTWIFI_IS_SECURE(s) (s) > kLTWiFi_ApSecurity_Open}
+#define LTWIFI_IS_SECURE(s) ((s) > kLTWiFi_ApSecurity_Open)
 
 #ifndef DOXY_SKIP // [
 /**
@@ -183,6 +183,7 @@ typedef struct LTWiFi_ApInfo {
     char ssid[34];              ///< SSID or wildcard
     char *pass;                 ///< used for JOIN (NULL for SCAN)
     LTWiFi_ApSecurity security; ///< security modes (e.g. WPA2-AES)
+    bool wps;                   ///< WPS support advertised by AP
     LTMacAddress bssid;         ///< BSSID of AP (or ZERO for don't care)
     u8 channel;                 ///< operating channel
     u8 bandwidth;               ///< operating bandwidth (e.g. 20, 40, 80)
@@ -222,6 +223,7 @@ enum LTWiFi_JoinOption {
     kLTWiFi_JoinOption_Rejoin  = (1<<0), ///< enable auto-rejoin
     kLTWiFi_JoinOption_Retry   = (1<<1), ///< if join fails, immediately retry
     kLTWiFi_JoinOption_Strong  = (1<<2), ///< join strongest AP with same SSID
+    kLTWiFi_JoinOption_DirectBssid = (1<<3), ///< connect directly to bssid+channel without an SSID-match scan (e.g. cloaked host)
 };
 
 typedef u8 LTWiFi_JoinStatus;
@@ -234,7 +236,7 @@ typedef u8 LTWiFi_JoinStatus;
  *
  * @ingroup ltdevice_wifi_enum
  */
-enum LTWiFi_JoinStatus  {
+enum {
     // Initializing status:
     kLTWiFi_JoinStatus_Unknown = 0,     ///< not in use
     // Functioning status:
@@ -275,7 +277,7 @@ typedef u8 LTWiFi_DisconnectReason;
  *
  * @ingroup ltdevice_wifi_enum
  */
-enum LTWiFi_DisconnectReason {
+enum {
     kLTWiFi_DisconnectReason_Unknown = 0,
     kLTWiFi_DisconnectReason_System,                   ///< DC initiated by higher layer.
     kLTWiFi_DisconnectReason_DriverGeneric,            ///< Generic DC initiated by Driver.
@@ -301,7 +303,7 @@ typedef u8 LTWiFi_NetworkDisconnectReason;
  *
  * @ingroup ltdevice_wifi_enum
  */
-enum LTWiFi_NetworkDisconnectReason {
+enum {
     kLTWiFi_NetworkDisconnectReason_Unknown = 0x10,
     kLTWiFi_NetworkDisconnectReason_NoIp    = 0x20,        ///< No DHCP Ip addr.
     kLTWiFi_NetworkDisconnectReason_Max     = 0xF0
@@ -430,5 +432,74 @@ typedef struct LTWiFi_DrvTxQStats {
     u8 overfull;
 } LTWiFi_DrvTxQStats;
 
+
+/*******************************************************************************
+** WiFi out-of-band provisioning types
+*******************************************************************************/
+
+/**
+ * @brief Vendor Information Element injected into probe/assoc requests (e.g. WPS pairing, find-host).
+ */
+typedef struct LTWiFi_VendorIE {
+    u8 const *data;             ///< IE payload (complete IE including tag+len)
+    u16 length;                 ///< Total length of the IE data
+} LTWiFi_VendorIE;
+
+/**
+ * @brief WiFi credentials captured by an out-of-band provisioning flow.
+ *
+ * Filled in by drivers/state-machines that obtain SSID+passphrase outside
+ * of a normal configured-join (currently: WPS PBC enrollee).
+ */
+typedef struct LTWiFi_Credentials {
+    char              ssid[kLTWiFi_Max_Ssid + 1]; ///< NUL-terminated SSID
+    char              pass[kLTWiFi_Max_Pass + 1]; ///< NUL-terminated passphrase (may be empty for Open)
+    LTWiFi_ApSecurity security;                   ///< AP security mode
+} LTWiFi_Credentials;
+
+ /* @brief Monitor mode receive callback.
+ *
+ * Called from driver context for each received frame while in monitor mode.
+ *
+ * @param[in] frame: pointer to the raw 802.11 frame
+ * @param[in] len: total length of frame
+ * @param[in] rssi: signal strength
+ * @param[in] ctx: caller-provided context
+ */
+typedef void (LTWiFi_MonitorRxCallback)(void const *frame, u16 len, s8 rssi, void *ctx);
+
+/* @brief Monitor start completion callback.
+ *
+ * Reports the actual result of an EnterMonitorMode request.  Drivers that
+ * start monitor mode asynchronously (off-thread) invoke this from driver
+ * context once the radio is (or failed to get) parked; a synchronous driver
+ * may invoke it before EnterMonitorMode returns.  Optional: when NULL, the
+ * caller learns only that the request was accepted.
+ *
+ * @param[in] ok: true if monitor mode is active on the requested channel
+ * @param[in] ctx: caller-provided context (onStartedCtx)
+ */
+typedef void (LTWiFi_MonitorStartedCallback)(bool ok, void *ctx);
+
+/**
+ * @brief Monitor mode configuration.
+ */
+typedef struct LTWiFi_MonitorConfig {
+    u8 channel;                 ///< Channel to monitor on
+    LTWiFi_MonitorRxCallback *callback; ///< Frame receive callback
+    void *ctx;                  ///< Caller context passed to callback
+    LTWiFi_MonitorStartedCallback *onStarted; ///< Optional start-completion callback (NULL = none)
+    void *onStartedCtx;         ///< Caller context passed to onStarted
+} LTWiFi_MonitorConfig;
+
+/**
+ * @brief Scan-with-vendor-IE parameters.
+ *
+ * Extends the standard scan to inject a vendor IE into probe requests.
+ */
+typedef struct LTWiFi_ScanWithIE {
+    LTWiFi_ScanSpec scan;       ///< Standard scan parameters
+    LTWiFi_VendorIE vendorIE;   ///< Vendor IE to inject during scan
+} LTWiFi_ScanWithIE;
 LT_EXTERN_C_END
 #endif /* LTWIFI_H */

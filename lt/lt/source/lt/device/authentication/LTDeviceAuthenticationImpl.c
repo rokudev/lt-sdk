@@ -40,8 +40,8 @@ static u32 s_nNumDeviceUnits = 0;
 
 /*******************************************************************************
  * Legacy support - maintain separate instances for crypto, efuse and entropy */
-static LTDriverCryptoAes128Cbc *s_pLibAesCbc = NULL;
-static LTDriverCryptoEntropy *s_pLibEntropy = NULL;
+static LTDriverCryptoAes128Cbc *s_pAesCbc = NULL;
+static LTDriverCryptoEntropy *s_pEntropy = NULL;
 static LTDeviceEfuse *s_pLibEfuse = NULL;
 static ILTDriverEfuseDeviceUnit *s_iEfuse = NULL;
 
@@ -59,12 +59,12 @@ static bool AES_Encode_ECB(const u8 *keyPtr, const u8 *input, u8 *output, LT_SIZ
     }
 
     // Fallback to direct crypto driver
-    if (!s_pLibAesCbc) return false;
+    if (!s_pAesCbc) return false;
 
     // IV == {0} on a CBC operation is equivalent to an ECB operation
     const u8 iv[AES128_CBC_IV_LENGTH] = {0};
 
-    if (s_pLibAesCbc->API->Encrypt(keyPtr, iv, input, dataLen, output) != kLTSystemCrypto_Result_Ok)
+    if (s_pAesCbc->API->Encrypt(keyPtr, iv, input, dataLen, output) != kLTSystemCrypto_Result_Ok)
         return false;
 
     return true;
@@ -78,12 +78,12 @@ static bool AES_Decode_ECB(const u8 *keyPtr, const u8 *input, u8 *output, LT_SIZ
     }
 
     // Fallback to direct crypto driver
-    if (!s_pLibAesCbc) return false;
+    if (!s_pAesCbc) return false;
 
     // IV == {0} on a CBC operation is equivalent to an ECB operation
     const u8 iv[AES128_CBC_IV_LENGTH] = {0};
 
-    if (s_pLibAesCbc->API->Decrypt(keyPtr, iv, input, dataLen, output) != kLTSystemCrypto_Result_Ok)
+    if (s_pAesCbc->API->Decrypt(keyPtr, iv, input, dataLen, output) != kLTSystemCrypto_Result_Ok)
         return false;
 
     return true;
@@ -153,10 +153,10 @@ static bool LTDeviceAuthentication_AuthDecode(u8 const in[kLTAuthenticationKeyBy
 }
 
 static void LTDeviceAuthentication_GetRandom16(u8 data[kLTAuthenticationKeyBytes]) {
-    if (!data || !s_pLibEntropy) return;
+    if (!data || !s_pEntropy) return;
 
     u8 buf[32] = {0};
-    if (s_pLibEntropy->API->GetEntropy(buf, sizeof(buf))) {
+    if (s_pEntropy->API->GetEntropy(buf, sizeof(buf))) {
         lt_memcpy(data, buf, kLTAuthenticationKeyBytes);
     }
 }
@@ -230,11 +230,18 @@ static bool LTDeviceAuthentication_ValidateKeyCheck(LTSystemSchell *shell) {
     // Get the chipID
     u32 chipID = GetChipIDForKeyCheck();
 
-    // Get the key_check value from efuse
+    // Get the key_check value from efuse. If the platform doesn't define a
+    // key_check field there is nothing to compare against, so report success
+    // rather than failing: callers such as 'ota switch' gate other work on this
+    // result, and a platform without the field should still be able to run
+    // those other checks and complete the switch.
     s16 keyCheckIdx = s_iEfuse->GetEfuseFieldIndexFromName("key_check");
-    if (keyCheckIdx >= 0) {
-        s_iEfuse->GetEfuseFieldData(keyCheckIdx, keyCheck);
+    if (keyCheckIdx < 0) {
+        LTLOG("vkc.no_field", "no key_check efuse field, skipping validation");
+        shell->API->Print(shell, "No key_check efuse field, skipping key check\n");
+        return true;
     }
+    s_iEfuse->GetEfuseFieldData(keyCheckIdx, keyCheck);
 
     // Add the chip ID to the proper location in the padded array
     lt_memcpy(&paddedChipID[sizeof(paddedChipID) - sizeof(chipID)], &chipID, sizeof(chipID));
@@ -388,12 +395,12 @@ static LTDeviceUnit LTDeviceAuthenticationImpl_CreateDeviceUnitHandle(u32 nDevic
 /*******************************************************************************
  * Library startup and shutdown:                                              */
 static void LTDeviceAuthenticationImpl_LibFini(void) {
-    if (s_pLibAesCbc) lt_closelibrary(s_pLibAesCbc);
-    if (s_pLibEntropy) lt_closelibrary(s_pLibEntropy);
+    if (s_pAesCbc) lt_destroyobject(s_pAesCbc);
+    if (s_pEntropy) lt_destroyobject(s_pEntropy);
     if (s_pLibEfuse) lt_closelibrary(s_pLibEfuse);
     ShutDownDriver();
-    s_pLibAesCbc = NULL;
-    s_pLibEntropy = NULL;
+    s_pAesCbc = NULL;
+    s_pEntropy = NULL;
     s_iEfuse = NULL;
     s_pLibEfuse = NULL;
     s_iAuth = NULL;
@@ -457,17 +464,17 @@ static bool LTDeviceAuthenticationImpl_LibInit(void) {
     LT_GetCore()->DestroyHandle(hEfuseUnit);
 
     // Try to open AES CBC crypto driver for fallback
-    s_pLibAesCbc = lt_createobject_typed(LTDriverCryptoAes128Cbc, LTHardwareCryptoAes128Cbc);
+    s_pAesCbc = lt_createobject_typed(LTDriverCryptoAes128Cbc, LTHardwareCryptoAes128Cbc);
 
-    if (!s_pLibAesCbc) {
+    if (!s_pAesCbc) {
         LTLOG("init.fail.no_aes_crypto", "Failed to create AES CBC crypto driver");
         LTDeviceAuthenticationImpl_LibFini();
         return false;
     }
 
     // Try to open entropy driver
-    s_pLibEntropy = lt_createobject(LTDriverCryptoEntropy);
-    if (!s_pLibEntropy) {
+    s_pEntropy = lt_createobject(LTDriverCryptoEntropy);
+    if (!s_pEntropy) {
         LTLOG("init.fail.no_entropy", "Failed to create entropy driver");
         LTDeviceAuthenticationImpl_LibFini();
         return false;

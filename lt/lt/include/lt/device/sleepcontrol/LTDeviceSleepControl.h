@@ -150,6 +150,17 @@ struct LTDeviceSleepControl {
      *
      * @retval true if the device is prevented from sleeping, false otherwise
      */
+
+    bool                        (*DisableWakeupSource)(LTDeviceSleepControl_WakeupSources wakeupSource);
+    /**< @brief Dynamically disable a wakeup source
+     *
+     * This is used to disable a previously enabled wakeup source after initialization.
+     * For example, when captouch encounters an unrecoverable failure (doNotResuscitate),
+     * call this to remove the captouch GPIO wakeup to prevent spurious wakes.
+     *
+     * @param[in] wakeupSource The wakeup source to disable
+     * @retval true if the source was disabled successfully, false otherwise
+     */
 };
 
 typedef_LTLIBRARY_INTERFACE(ILTDriverSleepControl, 1) {
@@ -165,6 +176,7 @@ typedef_LTLIBRARY_INTERFACE(ILTDriverSleepControl, 1) {
     LTDeviceSleepControl_WakeReason (*GetWakeReason)(void);
     bool                            (*AllowSleep)(LTDeviceSleepControl_SleepMode sleepMode);
     bool                            (*PreventSleep)(void);
+    bool                            (*DisableWakeupSource)(LTDeviceSleepControl_WakeupSources wakeupSource);
 }
 
 LTLIBRARY_INTERFACE;

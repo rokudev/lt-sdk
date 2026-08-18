@@ -206,8 +206,8 @@ static void /*LTDeviceWiFi_ScanCallback*/ TestWiFi_ScanApsCallback(LTWiFi_ApInfo
     if (!ap) return;
     char bssid[20];
     iMacAddress->MacAddressToString(&ap->bssid, bssid, ':');
-    TestWiFi_iShell->Print(hShell, "  %s chan: %3u rssi: %4d sec: %-6s ssid: \"%s\"\n",
-        bssid, ap->channel, ap->rssi, ApSecurityStrings[ap->security], ap->ssid);
+    TestWiFi_iShell->Print(hShell, "  %s chan: %3u rssi: %4d sec: %-6s wps: %d ssid: \"%s\"\n",
+        bssid, ap->channel, ap->rssi, ApSecurityStrings[ap->security], ap->wps, ap->ssid);
 }
 
 static void /*LTDeviceWiFi_JoinCallback*/ TestWiFi_JoinApCallback(LTWiFi_JoinStatus status, void *callback_data) {

@@ -12,6 +12,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/wait.h>
 #include <linux/fs.h>
 
 #include <errno.h>
@@ -44,7 +45,7 @@ DEFINE_LTLOG_SECTION("linux.sdcard.unit");
  * Static variables
  ***************************************/
 static const ILTSDCardDeviceUnit s_ILTSDCardDeviceUnit; // forward decl
-                                                        
+
 static ILTEvent  * s_iEvent;
 static ILTThread * s_iThread;
 
@@ -52,10 +53,10 @@ static LTThread s_hPollThread = LTHANDLE_INVALID;
 static LTEvent  s_hEvent = LTHANDLE_INVALID;
 static LTMutex *s_SDCardOpMutex = NULL; // Mutex protects Mount/Unmount/Format operations
 
-// Static buffer for mount commands (max needed: ~48 chars)
+// Static buffer for mount/fsck commands (max needed: ~50 chars)
 static char s_mntCmd[64];
 
-// Only the polling thread should read or modify this value
+// Shared between the poll thread and app thread; access protected by s_SDCardOpMutex
 static LTDeviceSDCard_SDCardInfo s_previousPollInfo;
 
 static LTDeviceSDCard_SDCardInfo GetSDCardInfo(LTHandle hUnit);
@@ -137,10 +138,14 @@ static LTDeviceSDCard_SDCardInfo GetSDCardInfo(LTHandle hUnit) {
     if (info.mounted) {
         struct statvfs statvfsbuf = {};
         int ret = statvfs(MOUNTPOINT, &statvfsbuf);
-        if (ret < 0) { 
-            // Assume sd card is unmounted if statvfs fails
-            LTLOG("statvfs", "statvfs failed: %s", strerror(errno));
-            info = (LTDeviceSDCard_SDCardInfo){};
+        if (ret < 0) {
+            // statvfs can fail transiently under I/O pressure (e.g. disk full).
+            // The card is still physically present (stat() succeeded above) and
+            // still mounted (found in /proc/mounts above), so preserve those
+            // flags. Only mark capacity/available as unknown.
+            LTLOG_SERVER("statvfs", "statvfs failed: %s", strerror(errno));
+            info.capacity  = 0;
+            info.available = 0;
         } else {
             info.capacity = statvfsbuf.f_bsize * (u64) statvfsbuf.f_blocks;
             info.available = statvfsbuf.f_bsize * (u64) statvfsbuf.f_bfree;
@@ -150,20 +155,21 @@ static LTDeviceSDCard_SDCardInfo GetSDCardInfo(LTHandle hUnit) {
     return info;
 }
 
-static bool Mount_Private(LTDeviceUnit hUnit) {
-    // Create the mount point directory if it doesn't exist
+// Resolve which device path to use and try mounting with filesystem fallbacks.
+// Returns 0 on success, non-zero on failure.
+static int TryMount(const char **outDevicePath) {
     struct stat st = {0};
+
+    // Create the mount point directory if it doesn't exist
     if (stat(MOUNTPOINT, &st) == -1) {
         if (mkdir(MOUNTPOINT, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH) != 0) { // 0755
             LTLOG_YELLOWALERT("mkdir.fail", "Failed to create mount point directory %s: %s", MOUNTPOINT, strerror(errno));
-            return false;
+            return -1;
         }
     }
-    
-    // Try to mount - check if partition exists first
-    int ret = -1;
-    const char* devicePath;
-    
+
+    // Check if partition exists first
+    const char *devicePath;
     if (stat(SDCARD_PART_PATH, &st) == -1) {
         // No partition, try mounting whole device
         devicePath = SDCARD_PATH;
@@ -171,10 +177,11 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
         // Partition exists, try mounting it
         devicePath = SDCARD_PART_PATH;
     }
-    
-    // Common mounting logic with filesystem fallbacks
+    if (outDevicePath) *outDevicePath = devicePath;
+
+    // Try mounting with auto-detect, then vfat, then exfat
     snprintf(s_mntCmd, sizeof(s_mntCmd), "mount %s %s 2>/dev/null", devicePath, MOUNTPOINT);
-    ret = system(s_mntCmd);
+    int ret = system(s_mntCmd);
     if (ret != 0) {
         snprintf(s_mntCmd, sizeof(s_mntCmd), "mount -t vfat %s %s 2>/dev/null", devicePath, MOUNTPOINT);
         ret = system(s_mntCmd);
@@ -183,13 +190,64 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
             ret = system(s_mntCmd);
         }
     }
-    
-    if (ret != 0) {
-        LTLOG_YELLOWALERT("mnt.fail", "Failed to mount %s", devicePath);
+    return ret;
+}
+
+// fsck exit codes: 0=clean, 1=corrected, 2=corrected+reboot-suggested.
+// Codes < 4 indicate the filesystem is usable. system() returns a
+// wait-status word, not the raw exit code, so decode with WEXITSTATUS.
+static bool FsckSucceeded(int status) {
+    return WIFEXITED(status) && WEXITSTATUS(status) < 4;
+}
+
+// Full mount with fsck fallback — used on card insertion and boot.
+// May block for a significant duration on large/corrupt cards.
+static bool Mount_Private(LTDeviceUnit hUnit) {
+    const char *devicePath = NULL;
+    int ret = TryMount(&devicePath);
+
+    if (ret != 0 && devicePath) {
+        // Mount failed — the filesystem may be dirty or corrupt (e.g. from
+        // writes that failed when the card was full). Attempt a non-destructive
+        // filesystem repair and retry the mount.
+        LTLOG_SERVER("mnt.fsck", "Mount failed, attempting fsck on %s", devicePath);
+
+        snprintf(s_mntCmd, sizeof(s_mntCmd), "fsck.vfat -a %s 2>/dev/null", devicePath);
+        int fsckRet = system(s_mntCmd);
+        if (!FsckSucceeded(fsckRet)) {
+            snprintf(s_mntCmd, sizeof(s_mntCmd), "fsck.exfat -a %s 2>/dev/null", devicePath);
+            fsckRet = system(s_mntCmd);
+        }
+
+        if (FsckSucceeded(fsckRet)) {
+            LTLOG_SERVER("mnt.fsck.ok", "fsck succeeded, retrying mount");
+            ret = TryMount(NULL);
+        }
+
+        if (ret != 0) {
+            LTLOG_YELLOWALERT("mnt.fail", "Failed to mount %s", devicePath);
+            return false;
+        }
+    } else if (ret != 0) {
+        LTLOG_YELLOWALERT("mnt.fail", "Failed to mount SD card");
         return false;
     }
-    
+
     // Notify on successful mount
+    s_previousPollInfo.mounted = true;
+    NotifySDCardEvent(hUnit);
+    return true;
+}
+
+// Quick mount without fsck — used by the poll thread for remount recovery
+// to avoid blocking the poll thread with potentially long fsck operations.
+static bool MountQuick_Private(LTDeviceUnit hUnit) {
+    int ret = TryMount(NULL);
+    if (ret != 0) {
+        LTLOG("mnt.quick.fail", "Quick remount failed");
+        return false;
+    }
+    s_previousPollInfo.mounted = true;
     NotifySDCardEvent(hUnit);
     return true;
 }
@@ -201,11 +259,21 @@ static bool Mount(LTDeviceUnit hUnit) {
     return success;
 }
 
+static bool MountQuick(LTDeviceUnit hUnit) {
+    s_SDCardOpMutex->API->Lock(s_SDCardOpMutex);
+    bool success = MountQuick_Private(hUnit);
+    s_SDCardOpMutex->API->Unlock(s_SDCardOpMutex);
+    return success;
+}
+
 static void Unmount(LTDeviceUnit hUnit) {
     s_SDCardOpMutex->API->Lock(s_SDCardOpMutex);
     // Always attempt to unmount with a lazy unmount, so it will succeed even if sd card was physically removed
     int ret = umount2(MOUNTPOINT, MNT_DETACH);
-    if (ret == 0) NotifySDCardEvent(hUnit);
+    if (ret == 0) {
+        s_previousPollInfo.mounted = false;
+        NotifySDCardEvent(hUnit);
+    }
     s_SDCardOpMutex->API->Unlock(s_SDCardOpMutex);
 }
 
@@ -281,28 +349,59 @@ static void DispatchSDCardEventComplete(LTEvent hEvent, LTArgs *pEventArgs) {
 static void SDCardPoll(void *pClientData) {
     LT_UNUSED(pClientData);
 
-    /* Read previous SD card state and update */
+    /* Read previous state under lock (consistent snapshot), then call GetSDCardInfo
+     * outside the lock — stat/getmntent/statvfs can block on a struggling card and
+     * would otherwise delay app-thread Mount/Unmount. Write new state back under lock. */
+    s_SDCardOpMutex->API->Lock(s_SDCardOpMutex);
     bool previousPresentState = s_previousPollInfo.present;
+    bool previousMountedState = s_previousPollInfo.mounted;
+    s_SDCardOpMutex->API->Unlock(s_SDCardOpMutex);
+
     LTDeviceSDCard_SDCardInfo currentInfo = GetSDCardInfo(DEFAULT_SDCARD_DEVICE_LTHANDLE);
     bool currentPresentState = currentInfo.present;
+    bool currentMountedState = currentInfo.mounted;
+
+    s_SDCardOpMutex->API->Lock(s_SDCardOpMutex);
     s_previousPollInfo = currentInfo;
+    s_SDCardOpMutex->API->Unlock(s_SDCardOpMutex);
 
     /* Case 0: No state change, so no action required */
-    if (previousPresentState == currentPresentState) return;
+    if (previousPresentState == currentPresentState &&
+        previousMountedState == currentMountedState) return;
 
-    /* Case 1: SD card was inserted -> try Mount()
+    /* Case 1: SD card was physically removed -> Unmount()
+     * Removed == state change from (present) -> (not present) */
+    if (previousPresentState && !currentPresentState) {
+        Unmount(DEFAULT_SDCARD_DEVICE_LTHANDLE);
+        return;
+    }
+
+    /* Case 2: SD card was inserted -> try Mount()
      * Inserted == state change from (not present) -> (present) */
-    if (currentPresentState == true) {
+    if (!previousPresentState && currentPresentState) {
         bool mountSuccess = Mount(DEFAULT_SDCARD_DEVICE_LTHANDLE);
         // If mount fails, log and move on
         if (!mountSuccess) LTLOG_YELLOWALERT("mnt.fail", NULL);
         return;
     }
 
-    /* Case 2: SD card was removed -> Unmount() 
-     * Removed == state change from (present) -> (not present) */
-    if (currentPresentState == false) {
-        Unmount(DEFAULT_SDCARD_DEVICE_LTHANDLE);
+    /* Case 3: Card is present but filesystem dropped out (e.g. I/O error,
+     * disk full stress) -> attempt quick remount first, then fall back to
+     * full mount with fsck if the filesystem is dirty from the forced unmount. */
+    if (currentPresentState && previousMountedState && !currentMountedState) {
+        LTLOG_SERVER("mnt.recover", "Card present but filesystem unmounted, attempting remount");
+        bool mountSuccess = MountQuick(DEFAULT_SDCARD_DEVICE_LTHANDLE);
+        if (!mountSuccess) {
+            LTLOG_SERVER("mnt.recover.fsck", "Quick remount failed, attempting fsck + mount");
+            mountSuccess = Mount(DEFAULT_SDCARD_DEVICE_LTHANDLE);
+        }
+        if (!mountSuccess) LTLOG_YELLOWALERT("mnt.recover.fail", NULL);
+        return;
+    }
+    /* Case 4: Card became mounted (e.g. external mount or recovery succeeded)
+     * -> notify listeners of the new state */
+    if (currentPresentState && !previousMountedState && currentMountedState) {
+        NotifySDCardEvent(DEFAULT_SDCARD_DEVICE_LTHANDLE);
         return;
     }
 }
@@ -331,6 +430,15 @@ bool LinuxSDCardDeviceUnit_Init(void) {
     s_previousPollInfo = GetSDCardInfo(DEFAULT_SDCARD_DEVICE_LTHANDLE);
     if (s_previousPollInfo.present && !s_previousPollInfo.mounted) {
         Mount(DEFAULT_SDCARD_DEVICE_LTHANDLE);
+        // Reset mounted flag so the first poll tick fires Case 4 after
+        // listeners have registered.  Mount_Private sets mounted=true
+        // and fires NotifySDCardEvent, but no listeners exist yet at
+        // Init time (they register later in LocalRecordingController_Init).
+        // Clearing the flag here makes the first poll see false->true,
+        // triggering Case 4 which re-notifies with listeners present.
+        s_SDCardOpMutex->API->Lock(s_SDCardOpMutex);
+        s_previousPollInfo.mounted = false; /* poll thread not yet started; mutex for pattern consistency */
+        s_SDCardOpMutex->API->Unlock(s_SDCardOpMutex);
     }
 
     s_iThread->Start(s_hPollThread, SDCardPollThreadStart, SDCardPollThreadStop);

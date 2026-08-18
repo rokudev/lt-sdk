@@ -56,6 +56,11 @@ static bool LTDeviceOta_MarkValidated(void) {
     return s_iOta->MarkValidated();
 }
 
+static bool LTDeviceOta_VerifyRegion(u32 byteOffset, u32 imageSize, const u8 imageHash[SHA256_HASH_LENGTH]) {
+    if (!s_iOta->VerifyRegion) return false;
+    return s_iOta->VerifyRegion(byteOffset, imageSize, imageHash);
+}
+
 /*******************************************************************************
  * Library Standard Functions
  ******************************************************************************/
@@ -108,6 +113,7 @@ define_LTDEVICE_LIBRARY_ROOT_INTERFACE(LTDeviceOta) {
     .VerifyImage    = &LTDeviceOta_VerifyImage,
     .ApplyUpdate    = &LTDeviceOta_ApplyUpdate,
     .Complete       = &LTDeviceOta_Complete,
+    .VerifyRegion   = &LTDeviceOta_VerifyRegion,
     .MarkValidated  = &LTDeviceOta_MarkValidated,
 } LTLIBRARY_DEFINITION;
 
