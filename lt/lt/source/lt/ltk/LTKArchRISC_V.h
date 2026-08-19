@@ -17,10 +17,6 @@
     #error "RISC-V core must be rv32i"
 #endif
 
-#if defined(__riscv_float_abi_double) || (defined(__riscv_flen) && __riscv_flen == 64)
-    #error "RISC-V double precision float is NOT supported"
-#endif
-
 #if 0
   /* TODO: Do I need to do anything about this? */
   #if __riscv_cmodel_medlow
@@ -44,10 +40,16 @@ typedef struct {
     u32 nRegister[LTK_ARCH_RISC_V_SF_SIZE / 4];
 } LTKStackFrame;
 
+#if defined(__riscv_flen)
+    #define LTK_ARCH_RISC_V_FP_RESERVE    LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
+#else
+    #define LTK_ARCH_RISC_V_FP_RESERVE    0
+#endif
+
 enum {
-    kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + 128,
+    kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + 128 + LTK_ARCH_RISC_V_FP_RESERVE,
     /* RISC-V has more expensive stacking requirements than ARM. */
-    kLTK_DefaultThreadStackSize = 512 + 128
+    kLTK_DefaultThreadStackSize = 512 + 128 + LTK_ARCH_RISC_V_FP_RESERVE
 };
 
 LT_INLINE bool InterruptsAreDisabled(void) LT_ISR_SAFE {

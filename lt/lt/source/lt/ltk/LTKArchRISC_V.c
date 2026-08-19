@@ -383,7 +383,7 @@ _LTKInitThread(LTKThread * pThread, u8 nPriority, void * pEntry, s32 nArg,
     pStackFrame->nRegister[LTK_FRAME_WORD(MEPC)]    = (u32)pEntry;
     pStackFrame->nRegister[LTK_FRAME_WORD(A0)]      = nArg;
     pStackFrame->nRegister[LTK_FRAME_WORD(RA)]      = (u32)_LTKThreadExit;
-#if defined(__riscv_float_abi_single)
+#if defined(__riscv_flen)
     pStackFrame->nRegister[LTK_FRAME_WORD(MSTATUS)] = LTK_ARCH_RISC_V_START_MSTATUS_FP;
 #else
     pStackFrame->nRegister[LTK_FRAME_WORD(MSTATUS)] = LTK_ARCH_RISC_V_START_MSTATUS;
@@ -393,6 +393,10 @@ _LTKInitThread(LTKThread * pThread, u8 nPriority, void * pEntry, s32 nArg,
     for (; pFill >= (u32 *)pStackBottom; pFill--) {
         *pFill = kLTKStackFillValue;
     }
+#if defined(__riscv_flen)
+    // Initialize the saved FCSR slot that the first FP context restore reads.
+    *(u32 *)((u8 *)pStackFrame + LTK_ARCH_RISC_V_FCSR_FRAME_OFFSET) = 0;
+#endif
     // Initialize context and state
     pThread->pStack           = (u8 *)pStackFrame;
     pThread->nCycleCount      = 0;

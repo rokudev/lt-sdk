@@ -15,7 +15,7 @@
  *   The gp register is initialized in BSP prior to run.
  *   The tp register is used to store the scheduler run mode.
  *   This implementation (by default) keeps interrupts locked out during interrupt
- *     service. If interrupt nesting is desired interrupts may be re-enabled in the
+ *     service. If interrupt nesting is desired interrupts may be reenabled in the
  *     BSP interrupt handler, but the following rules must be followed:
  *       (1) Interrupts must be re-disabled prior to handler return.
  *       (2) The BSP interrupt handler and/or CLIC hardware must manage the interrupt
@@ -78,6 +78,44 @@ _LTKMachineTrapHandler:
     csrr      a0, mstatus
     sw        a0, LTK_FRAME(MSTATUS)(sp)
     sw        ra, LTK_FRAME(RA)(sp)
+#if defined(__riscv_flen)
+    addi                       sp, sp, -LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
+    LTK_ARCH_RISC_V_FP_STORE   f0,   1*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f1,   2*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f2,   3*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f3,   4*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f4,   5*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f5,   6*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f6,   7*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f7,   8*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f8,   9*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f9,  10*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f10, 11*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f11, 12*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f12, 13*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f13, 14*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f14, 15*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f15, 16*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f16, 17*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f17, 18*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f18, 19*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f19, 20*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f20, 21*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f21, 22*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f22, 23*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f23, 24*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f24, 25*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f25, 26*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f26, 27*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f27, 28*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f28, 29*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f29, 30*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f30, 31*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f31, 32*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    frcsr                      t0
+    sw                         t0,  33*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    addi                       sp, sp, LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
+#endif
     mv        a0, sp
 
     /* Increment nesting counter and potentially switch to interrupt stack */
@@ -130,6 +168,44 @@ Restore:
     sw        t0, 4(s0)
 
     /* Restore Context */
+#if defined(__riscv_flen)
+    addi                      sp, sp, -LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
+    LTK_ARCH_RISC_V_FP_LOAD   f0,   1*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f1,   2*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f2,   3*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f3,   4*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f4,   5*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f5,   6*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f6,   7*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f7,   8*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f8,   9*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f9,  10*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f10, 11*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f11, 12*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f12, 13*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f13, 14*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f14, 15*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f15, 16*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f16, 17*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f17, 18*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f18, 19*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f19, 20*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f20, 21*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f21, 22*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f22, 23*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f23, 24*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f24, 25*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f25, 26*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f26, 27*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f27, 28*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f28, 29*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f29, 30*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f30, 31*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_LOAD   f31, 32*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    lw                        t0,  33*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    fscsr                     t0
+    addi                      sp, sp, LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
+#endif
     lw        a0, LTK_FRAME(MSTATUS)(sp)
     csrw      mstatus, a0
     lw        ra, LTK_FRAME(RA)(sp)

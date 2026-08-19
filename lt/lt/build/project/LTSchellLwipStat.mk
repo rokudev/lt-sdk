@@ -1,5 +1,5 @@
 ################################################################################
-# LTShellLwipStat.mk
+# LTSchellLwipStat.mk
 #
 # This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 # If a copy of the MPL was not distributed with this file, you can obtain one at
@@ -9,7 +9,7 @@
 ################################################################################
 
 # source dir and files
-LT_PROJECT_SOURCE_DIR		:=	$(LT_PROJECT_SOURCE_DIR_BASE)/ltshell/lwipstat
+LT_PROJECT_SOURCE_DIR		:=	$(LT_PROJECT_SOURCE_DIR_BASE)/ltschell/lwipstat
 LT_PROJECT_SOURCE_FILES		:= 	LTShellLwipStat.c
 
 # make

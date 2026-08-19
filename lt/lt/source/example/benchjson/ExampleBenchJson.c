@@ -63,7 +63,7 @@ static void BenchThreadExit(void) {
         lt_destroyobject(s_parser);
         s_parser = NULL;
     }
-    LTProbe_CaptureProbe(s_probe, "EXIT  BenchThreadExitf");
+    LTProbe_CaptureProbe(s_probe, "EXIT  BenchThreadExit");
 }
 
 /*______________________________________

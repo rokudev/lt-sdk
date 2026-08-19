@@ -9,7 +9,7 @@
 ################################################################################
 
 # source dir and files
-LT_PROJECT_SOURCE_DIR		:=	$(LT_PROJECT_SOURCE_DIR_BASE)/ltshell/pwm
+LT_PROJECT_SOURCE_DIR		:=	$(LT_PROJECT_SOURCE_DIR_BASE)/ltschell/pwm
 LT_PROJECT_SOURCE_FILES		:= 	LTShellPwm.c
 LT_PROJECT_SOURCE_FILES		+= 	PwmNotes.c
 
