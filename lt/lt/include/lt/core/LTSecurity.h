@@ -41,6 +41,18 @@ enum {
     /* Group 3 and 4 claims are reserved for future use */
 };
 
+/* Each signature type is a 4-Byte integer.
+ * The high three bytes indicate the signature algorithm, and
+ * the low byte indicates a variant of a signature type.
+ * DO NOT change already defined types.
+ */
+typedef u32 LTLTATSignatureType;
+enum {
+    kLTLTATSignatureType_Ed25519        = (0 << 8),      /**< The signature is R+S, 64 Bytes */
+    kLTLTATSignatureType_EcdsaP256      = (1 << 8),      /**< The signature is R+S, 64 Bytes */
+    kLTLTATSignatureType_EcdsaP256_X962 = (1 << 8) + 1,  /**< The signature is in ANSI X9.62 format */
+};
+
 /***********************************
  * LT Authentication Token (LTAT) */
 typedef struct __attribute__((packed)) {
@@ -48,15 +60,21 @@ typedef struct __attribute__((packed)) {
     u16                  nVersion;                       /**< Version number (for issuer use only) */
     u32                  timeStamp;                      /**< Time of issue */
     u8                   rsvd[42];                       /**< For future use */
-    u8                   id[kLTSecurity_DeviceIDLength]; /**< Device identity */
-    LTSecurityClaimMask  mask[4];                        /**< Security claim group bitmasks */
+    union {
+        u32              chipId;                         /**< Chip Id, 4 Bytes, @0x34 */
+        u8               id[kLTSecurity_DeviceIDLength]; /**< Device identity, @0x34 */
+    };
+    LTSecurityClaimMask  mask[4];                        /**< Security claim group bitmasks, @0x40 */
 } LTSecurityLTATHeader;
+
+LT_STATIC_ASSERT_SIZE_32_64(LTSecurityLTATHeader, 80, 80)
 
 typedef struct __attribute__((packed)) {
     LTSecurityLTATHeader hdr;                       /**< Header */
-    u8                   data[128];                 /**< For future use */
+    LTLTATSignatureType  sigAlgorithm;              /**< LTAT signature type, @0x50 */
+    u8                   data[124];                 /**< For future use */
     u8                   unalloc[240];              /**< For future use */
-    u8                   sig[0];                    /**< Platform-dependent signature follows */
+    u8                   sig[0];                    /**< Platform-dependent signature follows, @0x1c0 */
 } LTSecurityLTATPayload;
 
 LT_STATIC_ASSERT_SIZE_32_64(LTSecurityLTATPayload, 448, 448)
