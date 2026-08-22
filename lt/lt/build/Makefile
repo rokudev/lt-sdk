@@ -792,18 +792,6 @@ endif
 
 LT_SOFTWARE_VERSION             := $(LT_VERSION_PLID)$(LT_VERSION_MAJOR_BASE31).$(LT_VERSION_MINOR_BASE31)$(LT_VERSION_PATCH_BASE31)$(LT_VERSION_TYPE)$(LT_VERSION_BUILD_NUMBER_PADDED)$(LT_VERSION_SIGNING_FLAG)
 LT_BUILD_VERSION                := RokuLT-$(LT_SOFTWARE_VERSION)-$(LT_VERSION_COMMIT)-$(LT_VERSION_PRODUCT_PLATFORM_DATE)
-LT_PLATFORM_DISTRO_VERSION      := RokuLT-$(LT_SOFTWARE_VERSION)-$(LT_VERSION_DATE)-$(LT_PLATFORM_FAMILY)
-
-LT_OPENSOURCE_BUILD_NUMBER                  ?= 001
-ifeq (Darwin, $(LT_HOST_OS))
-LT_OPENSOURCE_VERSION                       := $(LT_VERSION_MAJOR_BASE31).$(LT_VERSION_MINOR_BASE31).$(LT_OPENSOURCE_BUILD_NUMBER).$(shell date +%Y%m%d)
-else
-LT_OPENSOURCE_VERSION                       := $(LT_VERSION_MAJOR_BASE31).$(LT_VERSION_MINOR_BASE31).$(LT_OPENSOURCE_BUILD_NUMBER).$(shell date --date= +%Y%m%d)
-endif
-LT_OPENSOURCE_DISTRO_VERSION                := RokuLT-$(LT_OPENSOURCE_VERSION)-opensource_distro
-LT_OPENSOURCE_DISTRO_VERSION_LT             := $(LT_OPENSOURCE_DISTRO_VERSION)_lt
-LT_OPENSOURCE_DISTRO_VERSION_LT_TOOLCHAINS  := $(LT_OPENSOURCE_DISTRO_VERSION)_lt-toolchains
-LT_SDK_CEO_DISTRO_VERSION                   := RokuLT-SDK-CEO1.$(LT_OPENSOURCE_VERSION)
 
 # BEGIN BANNER DEBUGGING - INVOCATION (BANNER) DEBUGGING is enabled when LT_DEBUG_BANNER_INVOCATION is yes; always checkin with it set to no!
 LT_DEBUG_BANNER_INVOCATION := no
@@ -1022,18 +1010,6 @@ LT_TARGET_DOXYDOCS_INDEX_HTML       := $(LT_TARGET_DOXYDOCS_DIR)/html/index.html
 LT_TARGET_SDKDOCS_DIR               := $(LT_TARGET_DIR_THIS_BUILD)/doc/sdk
 LT_TARGET_SDKDOCS_ERROR_FILE        := $(LT_TARGET_SDKDOCS_DIR)/sphinx-errors.log
 LT_TARGET_SDKDOCS_INDEX_HTML        := $(LT_TARGET_SDKDOCS_DIR)/html/index.html
-LT_SDK_DISTRO_DIR_STAGING_NAME      := sdk-distro-staging
-LT_SDK_DISTRO_DIR_STAGING_BASE      := $(LT_TARGET_OBJ_DIR)/$(LT_SDK_DISTRO_DIR_STAGING_NAME)
-LT_SDK_DISTRO_DIR_STAGING           := $(LT_SDK_DISTRO_DIR_STAGING_BASE)/$(LT_SDK_CEO_DISTRO_VERSION)
-LT_TARGET_DISTRO_DIR_BASE           := $(LT_TARGET_ROOT)/targets/distros
-LT_SDK_DISTRO_ZIP_FILE_NAME         := $(LT_SDK_CEO_DISTRO_VERSION).zip
-LT_SDK_DISTRO_ZIP_FILE              := $(LT_TARGET_DISTRO_DIR_BASE)/$(LT_SDK_DISTRO_ZIP_FILE_NAME)
-LT_OPENSOURCE_DISTRO_TGZ_NAME       := $(LT_OPENSOURCE_DISTRO_VERSION)_lt.tgz
-LT_OPENSOURCE_DISTRO_TGZ            := $(LT_TARGET_DISTRO_DIR_BASE)/$(LT_OPENSOURCE_DISTRO_TGZ_NAME)
-LT_OPENSOURCE_TOOLCHAIN_DISTRO_TGZ_NAME := $(LT_OPENSOURCE_DISTRO_VERSION)_lt-toolchains.tgz
-LT_OPENSOURCE_TOOLCHAIN_DISTRO_TGZ  := $(LT_TARGET_DISTRO_DIR_BASE)/$(LT_OPENSOURCE_TOOLCHAIN_DISTRO_TGZ_NAME)
-LT_OPENSOURCE_TOOLS_DISTRO_TGZ_NAME := $(LT_OPENSOURCE_DISTRO_VERSION)_lt-commander.tgz
-LT_OPENSOURCE_TOOLS_DISTRO_TGZ      := $(LT_TARGET_DISTRO_DIR_BASE)/$(LT_OPENSOURCE_TOOLS_DISTRO_TGZ_NAME)
 
 # set tools to use for doxybuild, user can override in environment
 LT_DOXYDOCS_DOXYGEN_TOOL            ?= doxygen
@@ -1046,8 +1022,18 @@ LT_TOOLCHAIN_HOST_ARCHITECTURE      := $(shell uname -m)
 LT_TOOLCHAIN_HOST_OS_NAME           := $(shell uname -s)
 # set default vendor toolchain root location
 LT_VENDOR_TOOLCHAINS_DIR            ?= $(abspath $(HOME)/lt-vendor-toolchains)
-# allow the caller to set default vendor toolchain tarball location
-LT_VENDOR_TOOLCHAIN_TARBALLS_DIR    ?= $(abspath $(LT_OS_ROOT)/../../lt-toolchains)
+# commands to fetch vendor toolchain tarballs (note use of = and not :=, important)
+LT_GITLAB_TOOLCHAIN_FETCH_COMMAND    = git archive --format=tar --remote=$(LT_TOOLCHAIN_REPO) HEAD $(LT_TOOLCHAIN_TARFILE) | tar -xf -
+ifeq (yes, $(shell if command -v curl >& /dev/null; then echo yes; else echo no; fi;))
+  LT_GITHUB_TOOLCHAIN_FETCH_COMMAND  = curl -L -O https://github.com/$(LT_TOOLCHAIN_REPO)/raw/refs/heads/main/$(LT_TOOLCHAIN_TARFILE)
+else
+  ifeq (yes, $(shell if command -v wget >& /dev/null; then echo yes; else echo no; fi;))
+    LT_GITHUB_TOOLCHAIN_FETCH_COMMAND  = wget --quiet --show-progress https://github.com/$(LT_TOOLCHAIN_REPO)/raw/refs/heads/main/$(LT_TOOLCHAIN_TARFILE)
+  else
+    LT_GITHUB_TOOLCHAIN_FETCH_COMMAND :=
+  endif
+endif
+
 # output of build info for TeamCity
 LT_BUILDINFO_FILE                   ?= $(LT_TARGET_DIR_THIS_BUILD)/buildinfo
 # output of version info for automation
@@ -1231,24 +1217,37 @@ ifeq (yes, $(LT_NULLIFY_ALL_LT_ASSERTS))
     LT_CXXFLAGS_GENERIC   += -DLT_NULLIFY_ALL_ASSERTS
 endif
 
-# check if the platform Makefile.config specified a gcc toolchain by setting LT_GCC_TOOLCHAIN_PATH
+# TOOLCHAIN IDENTIFICATION - the following information must be specified in the platform Makefile.config file
+# 1. Identifying the location:
+#    Either:
+#      LT_GCC_TOOLCHAIN_PATH    - the absolute path to the bin directory for the toolchain binaries
+#    Or:
+#      LT_TOOLCHAIN_SERVER      - <gitlab | github> - the server type from which to fetch the toolchain tarball
+#      LT_TOOLCHAIN_REPO        - the repo from which to fetch the toolchain tarball
+#      LT_TOOLCHAIN_TARFILE     - the name of the toolchain tarball file to fetch from the repo
+#      LT_TOOLCHAIN_DIRNAME     - the name of the top level directory extracted from the toolchain tarball, e.g. if riscv64-bl70x-elf, toolchain bin dir would be: riscv64-bl70x-elf/bin
+#                               - note: if LT_TOOLCHAIN_DIRNAME not specified, taken from basename of LT_TOOLCHAIN_TARFILE
+# 2. Identifying the prefix:
+#      LT_GCC_TOOLCHAIN_PREFIX  - the prefix of toolchain binaries, e.g. "riscv64-unknown-elf" for riscv64-unknown-elf-gcc, riscv64-unknown-elf-nm, etc.
+
+# if the platform Makefile.config did not specify an absolute LT_GCC_TOOLCHAIN_PATH, then set it from the fetch variables
 ifeq (, $(LT_GCC_TOOLCHAIN_PATH))
-    ifneq (, $(LT_VENDOR_TOOLCHAIN_TGZ))
-        ifneq (, $(LT_GCC_TOOLCHAIN_NAME))
-            LT_GCC_TOOLCHAIN_PATH := $(LT_VENDOR_TOOLCHAINS_DIR)/$(LT_GCC_TOOLCHAIN_NAME)/bin
-        else
-            LT_GCC_TOOLCHAIN_PATH := $(LT_VENDOR_TOOLCHAINS_DIR)/$(basename $(notdir $(LT_VENDOR_TOOLCHAIN_TGZ)))/bin
-        endif
-    else
-        LT_OUT := $(error "Must specify either LT_GCC_TOOLCHAIN_PATH or LT_VENDOR_TOOLCHAIN_TGZ")
-    endif
+  ifeq ($(shell [ "$(LT_TOOLCHAIN_SERVER)" = "" -o "$(LT_TOOLCHAIN_REPO)" = "" -o "$(LT_TOOLCHAIN_TARFILE)" = "" ] && echo true),true)
+    LT_OUT := $(error "In platform Makefile.config, must specify either LT_GCC_TOOLCHAIN_PATH or LT_TOOLCHAIN_SERVER, LT_TOOLCHAIN_REPO and LT_TOOLCHAIN_TARFILE")
+  endif
+  ifeq (, $(LT_TOOLCHAIN_DIRNAME))
+    LT_TOOLCHAIN_DIRNAME := $(basename $(notdir $(LT_TOOLCHAIN_TARFILE)))
+  endif
+  LT_GCC_TOOLCHAIN_PATH := $(LT_VENDOR_TOOLCHAINS_DIR)/$(LT_TOOLCHAIN_DIRNAME)/bin
 endif
 
-# determine the location of the toolchain tarball, if a name for it is given.  This is necessary
-# for the toolchain target.
-ifneq (, $(LT_VENDOR_TOOLCHAIN_TGZ))
-    ifneq (, $(wildcard $(LT_VENDOR_TOOLCHAIN_TARBALLS_DIR)/$(LT_VENDOR_TOOLCHAIN_TGZ)))
-        LT_VENDOR_TOOLCHAIN_TARBALL_PATH := $(abspath $(LT_VENDOR_TOOLCHAIN_TARBALLS_DIR)/$(LT_VENDOR_TOOLCHAIN_TGZ))
+ifeq (gitlab,$(LT_TOOLCHAIN_SERVER))
+    LT_TOOLCHAIN_FETCH_COMMAND := $(LT_GITLAB_TOOLCHAIN_FETCH_COMMAND)
+else
+    ifeq (github,$(LT_TOOLCHAIN_SERVER))
+      LT_TOOLCHAIN_FETCH_COMMAND := $(LT_GITHUB_TOOLCHAIN_FETCH_COMMAND)
+    else
+      LT_TOOLCHAIN_FETCH_COMMAND :=
     endif
 endif
 
@@ -1257,6 +1256,7 @@ ifeq (, $(LT_GCC_TOOLCHAIN_PREFIX))
 else
     LT_GCC_TOOLCHAIN_PATH_AND_PREFIX := $(LT_GCC_TOOLCHAIN_PATH)/$(LT_GCC_TOOLCHAIN_PREFIX)-
 endif
+
 
 LT_CC        := $(LT_GCC_TOOLCHAIN_PATH_AND_PREFIX)gcc
 LT_CXX       := $(LT_GCC_TOOLCHAIN_PATH_AND_PREFIX)g++
@@ -1543,8 +1543,6 @@ $(call LT_DUMP,LT_VERSION_DATE)
 $(call LT_DUMP,LT_VERSION_PRODUCT)
 $(call LT_DUMP,LT_VERSION_PLATFORM)
 $(call LT_DUMP,LT_BUILD_VERSION)
-$(call LT_DUMP,LT_PLATFORM_DISTRO_VERSION)
-$(call LT_DUMP,LT_OPENSOURCE_DISTRO_VERSION)
 $(call LT_DUMP,LT_DUMPVARS)
 $(call LT_DUMP,LT_DISABLE_STATS)
 $(call LT_DUMP,MAKECMDGOALS)
@@ -1572,15 +1570,11 @@ $(call LT_DUMP,LT_TARGET_DOXYDOCS_DIR)
 $(call LT_DUMP,LT_TARGET_DOXYDOCS_INDEX_HTML)
 $(call LT_DUMP,LT_TARGET_SDKDOCS_DIR)
 $(call LT_DUMP,LT_TARGET_SDKDOCS_INDEX_HTML)
-$(call LT_DUMP,LT_TARGET_DISTRO_DIR_BASE)
-$(call LT_DUMP,LT_OPENSOURCE_DISTRO_TGZ_NAME)
-$(call LT_DUMP,LT_OPENSOURCE_DISTRO_TGZ)
 $(call LT_DUMP,LT_DOXYDOCS_DOXYGEN_TOOL)
 $(call LT_DUMP,LT_DOXYDOCS_PREVIEW_BROWSER)
 $(call LT_DUMP,LT_TOOLCHAIN_HOST_ARCHITECTURE)
 $(call LT_DUMP,LT_TOOLCHAIN_HOST_OS_NAME)
 $(call LT_DUMP,LT_VENDOR_TOOLCHAINS_DIR)
-$(call LT_DUMP,LT_VENDOR_TOOLCHAIN_TARBALLS_DIR)
 $(call LT_DUMP,LT_BUILDINFO_FILE)
 $(call LT_DUMP,LT_OS_BUILD_SCRIPTS_DIR)
 $(call LT_DUMP,LT_OS_BUILD_PROJECT_DIR)
@@ -1608,8 +1602,10 @@ $(call LT_DUMP,LT_BUILD_ARTIFACT_PACKAGE)
 $(call LT_DUMP,LT_BUILD_ARTIFACT_PACKAGE_TGZ)
 $(call LT_DUMP,LT_BUILD_ARTIFACT_PACKAGE_PATH)
 $(call LT_DUMP,LT_PUBLISHED_ARTIFACTS)
-$(call LT_DUMP,LT_VENDOR_TOOLCHAIN_TARBALL_PATH)
 $(call LT_DUMP,LT_GCC_TOOLCHAIN_PATH_AND_PREFIX)
+$(call LT_DUMP,LT_GITHUB_TOOLCHAIN_FETCH_COMMAND)
+$(call LT_DUMP,LT_GITLAB_TOOLCHAIN_FETCH_COMMAND)
+$(call LT_DUMP,LT_TOOLCHAIN_FETCH_COMMAND)
 $(call LT_DUMP,LT_CC)
 $(call LT_DUMP,LT_CXX)
 $(call LT_DUMP,LT_LD)
@@ -1654,7 +1650,10 @@ $(info $(LT_)____________________________________)
 $(info $(LT_)CHAPTER 4 - platform Makefile.config)
 $(call LT_DUMP,LT_PLATFORM_HAS_RUNTIME_DYNAMIC_LOADER)
 $(call LT_DUMP,LT_GCC_TOOLCHAIN_PATH)
-$(call LT_DUMP,LT_VENDOR_TOOLCHAIN_TGZ)
+$(call LT_DUMP,LT_TOOLCHAIN_SERVER)
+$(call LT_DUMP,LT_TOOLCHAIN_REPO)
+$(call LT_DUMP,LT_TOOLCHAIN_TARFILE)
+$(call LT_DUMP,LT_TOOLCHAIN_DIRNAME)
 $(call LT_DUMP,LT_GCC_TOOLCHAIN_PREFIX)
 $(call LT_DUMP,LT_PLATFORM_LTCOREBSP_PROJECT)
 $(call LT_DUMP,LT_PLATFORM_MASTERING_PROJECTS)
@@ -1743,22 +1742,30 @@ buildtools: $(patsubst %,buildtool-%,$(LT_BUILDTOOLS_BUILD_TARGETS))
 
 # TOOLCHAIN
 .PHONY: toolchain
+
 ifeq (no, $(shell if [ -x $(LT_CC_TOOL) ] ; then echo yes; else echo no; fi;))
+
 toolchain: $(LT_CC_TOOL)
 
+ifeq (, $(LT_TOOLCHAIN_FETCH_COMMAND))
 $(LT_CC_TOOL):
-	$(LT_QUIET_CMD) @echo INSTALL toolchain
-	@if [ -z $(LT_VENDOR_TOOLCHAIN_TARBALL_PATH) ]; then \
-		echo -n "Error: Unable to find toolchain tarball $(LT_VENDOR_TOOLCHAIN_TGZ) "; \
-		if [ -z $(LT_VENDOR_TOOLCHAIN_TARBALLS_DIR) ]; then \
-			echo "in default location."; \
-		else \
-			echo "in $(abspath $(LT_VENDOR_TOOLCHAIN_TARBALLS_DIR))."; \
-		fi; \
-		echo "       Please set LT_VENDOR_TOOLCHAIN_TARBALLS_DIR to specify location of toolchain tarballs or copy tarballs to $(abspath $(LT_VENDOR_TOOLCHAIN_TARBALLS_DIR))."; exit 1; \
-	fi
-	$(LT_EXEC_CMD)  mkdir -p $@
-	$(LT_EXEC_CMD)  tar --directory=$(LT_VENDOR_TOOLCHAINS_DIR) -xf $(LT_VENDOR_TOOLCHAIN_TARBALL_PATH)
+	@echo
+	@echo "FETCH toolchain $(LT_TOOLCHAIN_TARFILE)"
+	@echo "Error: curl or wget required to fetch toolchain.  Please install curl or wget."
+	@false
+
+else
+$(LT_CC_TOOL):
+	@echo
+	@echo "FETCH toolchain $(LT_TOOLCHAIN_TARFILE)"
+	$(LT_EXEC_CMD)  mkdir -p $(LT_VENDOR_TOOLCHAINS_DIR)
+	$(LT_EXEC_CMD)  rm -f $(LT_VENDOR_TOOLCHAINS_DIR)/$(notdir $(LT_TOOLCHAIN_TARFILE))
+	$(LT_EXEC_CMD)  cd $(LT_VENDOR_TOOLCHAINS_DIR) && $(LT_TOOLCHAIN_FETCH_COMMAND)
+	@echo INSTALL toolchain
+	$(LT_EXEC_CMD)  cd $(LT_VENDOR_TOOLCHAINS_DIR) && tar -xf $(LT_VENDOR_TOOLCHAINS_DIR)/$(notdir $(LT_TOOLCHAIN_TARFILE))
+	$(LT_EXEC_CMD)  rm -f $(LT_VENDOR_TOOLCHAINS_DIR)/$(notdir $(LT_TOOLCHAIN_TARFILE))
+
+endif
 else
 toolchain: ;
 endif
@@ -1977,86 +1984,6 @@ sdkdocs-strict: doxydocs-files sdkdocs-files check-sdkdocs-files launch-sdkdocs-
 
 .PHONY: sdkdocs
 sdkdocs: doxydocs-files sdkdocs-files launch-sdkdocs-files
-
-.PHONY: clean-sdk-distro
-clean-sdk-distro:
-	$(LT_QUIET_CMD) @echo RM obj/$(LT_SDK_DISTRO_DIR_STAGING_NAME)
-	$(LT_EXEC_CMD)  rm -rf $(LT_SDK_DISTRO_DIR_STAGING_BASE)
-	$(LT_QUIET_CMD) @echo RM distros/$(LT_SDK_DISTRO_ZIP_FILE_NAME)
-	$(LT_EXEC_CMD)  rm -f $(LT_SDK_DISTRO_ZIP_FILE)
-
-.PHONY: sdk-distro
-sdk-distro: clean-sdk-distro opensource-distro
-	$(LT_QUIET_CMD) @echo MKDIR distros/
-	$(LT_EXEC_CMD)  mkdir -p $(LT_TARGET_DISTRO_DIR_BASE)
-	$(LT_QUIET_CMD) @echo MKDIR staging/
-	$(LT_EXEC_CMD)  mkdir -p $(LT_SDK_DISTRO_DIR_STAGING_BASE)
-	$(LT_QUIET_CMD) @echo UNTAR $(LT_OPENSOURCE_DISTRO_TGZ_NAME)
-	$(LT_EXEC_CMD)  cd $(LT_SDK_DISTRO_DIR_STAGING_BASE) && $(LT_TAR) xzf $(LT_OPENSOURCE_DISTRO_TGZ) --transform 's`^$(LT_OPENSOURCE_DISTRO_VERSION)/`$(LT_SDK_CEO_DISTRO_VERSION)/`'
-	$(LT_QUIET_CMD) @echo UNTAR $(LT_OPENSOURCE_TOOLCHAIN_DISTRO_TGZ_NAME)
-	$(LT_EXEC_CMD)  cd $(LT_SDK_DISTRO_DIR_STAGING_BASE) && $(LT_TAR) xf $(LT_OPENSOURCE_TOOLCHAIN_DISTRO_TGZ) --transform 's`^$(LT_OPENSOURCE_DISTRO_VERSION)/`$(LT_SDK_CEO_DISTRO_VERSION)/`'
-	$(LT_QUIET_CMD) @echo UNTAR $(LT_OPENSOURCE_TOOLS_DISTRO_TGZ_NAME)
-	$(LT_EXEC_CMD)  cd $(LT_SDK_DISTRO_DIR_STAGING_BASE) && $(LT_TAR) xzf $(LT_OPENSOURCE_TOOLS_DISTRO_TGZ) --transform 's`^$(LT_OPENSOURCE_DISTRO_VERSION)/`$(LT_SDK_CEO_DISTRO_VERSION)/`'
-	$(LT_QUIET_CMD) @echo "ZIP $(LT_SDK_DISTRO_ZIP_FILE_NAME)"
-	$(LT_EXEC_CMD)  cd $(LT_SDK_DISTRO_DIR_STAGING_BASE) && $(LT_ZIP) -q $(LT_SDK_DISTRO_ZIP_FILE) --recurse-paths $(LT_SDK_CEO_DISTRO_VERSION)
-
-.PHONY: clean-opensource-distro
-clean-opensource-distro:
-	$(LT_QUIET_CMD) @echo RM distros/$(LT_OPENSOURCE_DISTRO_TGZ_NAME)
-	$(LT_EXEC_CMD)  rm -f $(LT_OPENSOURCE_DISTRO_TGZ)
-	$(LT_QUIET_CMD) @echo RM distros/$(LT_OPENSOURCE_TOOLCHAIN_DISTRO_TGZ_NAME)
-	$(LT_EXEC_CMD)  rm -f $(LT_OPENSOURCE_TOOLCHAIN_DISTRO_TGZ)
-	$(LT_QUIET_CMD) @echo RM distros/$(LT_OPENSOURCE_TOOLS_DISTRO_TGZ_NAME)
-	$(LT_EXEC_CMD)  rm -f $(LT_OPENSOURCE_TOOLS_DISTRO_TGZ)
-
-.PHONY: clean-distros
-clean-distros:
-	$(LT_QUIET_CMD) @echo RM staging/$(LT_SDK_CEO_DISTRO_VERSION)
-	$(LT_EXEC_CMD)  rm -rf $(LT_SDK_DISTRO_DIR_STAGING_BASE)
-	$(LT_QUIET_CMD) @echo RM $(LT_TARGET_DISTRO_DIR_BASE)
-	$(LT_EXEC_CMD)  rm -rf $(LT_TARGET_DISTRO_DIR_BASE)
-
-.PHONY: opensource-distro
-opensource-distro: clean-opensource-distro opensource-toolchain-distro opensource-tools-distro
-	$(LT_ARROWLINE)
-	@echo $(LT_ARROW_SEPARATOR) Making $@
-	$(LT_QUIET_CMD) @echo MKDIR distros/
-	$(LT_EXEC_CMD)  mkdir -p $(LT_TARGET_DISTRO_DIR_BASE)
-	$(LT_QUIET_CMD) @echo "TAR   $(LT_OPENSOURCE_DISTRO_TGZ)"
-	$(LT_EXEC_CMD)  $(LT_TAR) --directory=$(abspath $(LT_ROOTS_BASE)) \
-        --mode='u+w' --create --gzip \
-		--file $(LT_OPENSOURCE_DISTRO_TGZ) \
-        --transform 's`^./lt/source/example`$(LT_OPENSOURCE_DISTRO_VERSION)/lt/examples`' \
-    	--transform 's`^.`$(LT_OPENSOURCE_DISTRO_VERSION)/lt`' \
-		  ./lt \
-          ./platforms/apple \
-          ./platforms/common\
-          ./platforms/esp32 \
-          ./platforms/linux \
-          ./platforms/st
-
-.PHONY: opensource-toolchain-distro
-opensource-toolchain-distro:
-	$(LT_ARROWLINE)
-	@echo $(LT_ARROW_SEPARATOR) Making $@
-	$(LT_QUIET_CMD) @echo MKDIR distros/
-	$(LT_EXEC_CMD)  mkdir -p $(LT_TARGET_DISTRO_DIR_BASE)
-	$(LT_QUIET_CMD) @echo "TAR   $(LT_OPENSOURCE_TOOLCHAIN_DISTRO_TGZ)"
-	$(LT_EXEC_CMD)  $(LT_TAR) --directory=$(abspath $(LT_ROOTS_BASE)/..) --mode='u+w' --create --file $(LT_OPENSOURCE_TOOLCHAIN_DISTRO_TGZ) \
-    	--transform 's`^`$(LT_OPENSOURCE_DISTRO_VERSION)/`' \
-          lt-toolchains/arm-ak3918x-eabi.tgz \
-          lt-toolchains/xtensa-esp32-elf-gcc11_2_0-esp-2022r1-linux-amd64.tar.xz
-
-.PHONY: opensource-tools-distro
-opensource-tools-distro:
-	$(LT_ARROWLINE)
-	@echo $(LT_ARROW_SEPARATOR) Making $@
-	$(LT_QUIET_CMD) @echo MKDIR distros/
-	$(LT_EXEC_CMD)  mkdir -p $(LT_TARGET_DISTRO_DIR_BASE)
-	$(LT_QUIET_CMD) @echo "TAR   $(LT_OPENSOURCE_TOOLS_DISTRO_TGZ)"
-	$(LT_EXEC_CMD)  $(LT_TAR) --directory=$(abspath $(LT_OS_ROOT)/../tools) --mode='u+w' --create --gzip \
-       --exclude=source-code/node_modules \
-	   --file $(LT_OPENSOURCE_TOOLS_DISTRO_TGZ) --transform 's`^`$(LT_OPENSOURCE_DISTRO_VERSION)/`' lt-commander
 
 # CLEAN-LT_PLATFORM_LTCOREBSP_PROJECT
 clean-$(LT_PLATFORM_LTCOREBSP_PROJECT):
@@ -2308,8 +2235,6 @@ versioninfo: $(LT_VERSIONINFO_FILE)
 $(LT_VERSIONINFO_FILE): targetdirs
 	@echo "LT_SOFTWARE_VERSION=$(LT_SOFTWARE_VERSION)" > $@
 	@echo "LT_BUILD_VERSION=$(LT_BUILD_VERSION)" >> $@
-	@echo "LT_PLATFORM_DISTRO_VERSION=$(LT_PLATFORM_DISTRO_VERSION)" >> $@
-	@echo "LT_OPENSOURCE_DISTRO_VERSION=$(LT_OPENSOURCE_DISTRO_VERSION)" >> $@
 	@echo "LT_VERSION_COMMIT=$(LT_VERSION_COMMIT)" >> $@
 
 .PHONY: publish
@@ -2323,10 +2248,6 @@ publish: $(LT_TARGET_BUILD_ARTIFACTS_DIR)
 																$(LT_BUILD_MODE)/stats
 	$(LT_QUIET_CMD) @echo Publish artifacts to TeamCity
 	@$(foreach lt_artifact,$(LT_PUBLISHED_ARTIFACTS),echo "##teamcity[publishArtifacts '$(lt_artifact)']";)
-
-.PHONY: publish-opensource-distro
-publish-opensource-distro:
-	@echo "##teamcity[publishArtifacts '$(LT_OPENSOURCE_DISTRO_TGZ)']"
 
 ifeq (yes,$(LT_SAVECONFIG))
 .PHONY: saveconfig
@@ -2406,7 +2327,6 @@ saveconfig:
 	@echo '               platform) echo $${LT_PLATFORM_ROOT} ;;'
 	@echo '                     os) echo $${LT_OS_ROOT} ;;'
 	@echo '      bin|lib|obj|stats) echo $${LT_TARGET_ROOT}/targets/$${LT_OUTPUT_PRODUCT}/$${LT_OUTPUT_PLATFORM}/$${LT_BUILD_MODE}/$$1 ;;'
-	@echo '                distros) echo $${LT_TARGET_ROOT}/targets/distros ;;'
 	@echo '                      *) echo "usage: ltwhich [build|bin|lib|obj|stats|product|platform|os]" ;;'
 	@echo '    esac'
 	@echo "}"
@@ -2424,8 +2344,8 @@ saveconfig:
 	@echo "#"
 	@echo "ltcd() {"
 	@echo '    case "$$1" in'
-	@echo '        build|product|platform|os|bin|lib|obj|stats|distros) cd `ltwhich $$1` ;;'
-	@echo '        *) echo "usage: ltcd [build|bin|lib|obj|stats|distros|product|platform|os]" ;;'
+	@echo '        build|product|platform|os|bin|lib|obj|stats) cd `ltwhich $$1` ;;'
+	@echo '        *) echo "usage: ltcd [build|bin|lib|obj|stats|product|platform|os]" ;;'
 	@echo '    esac'
 	@echo "}"
 	@echo
@@ -2517,7 +2437,5 @@ printvar-%:
 #   04-Aug-23   augustus    only scan PRODUCT_BUILD_PROJECT_DIR if it exists
 #   14-Jun-24   domitian    added all variables under the LT_USER_ namespace for implementing "Local User Libraries" and
 #                           the LT_USER_LIBRARY_FORAGER to reference the UserLib.mk
-#   26-Jun-24   domitian    LT_USER_ROOT is now treated as an optional enviromental variable to be set during the build process
-#   03-Jul-24   domitian    Removed publish-platform-distro & platform-distro, added opensource-distro & publish-opensource-distro
-#   16-Jul-24   domitian    added opensource-toolchain-distro & opensource-tools-distro targets
-
+#   26-Jun-24   domitian    LT_USER_ROOT is now treated as an optional enviroment variable to be set during the build process
+#   21-Aug-26   augustus    removed all distro versions; made toolchains independently fetch from github|gitlab
