@@ -1025,10 +1025,10 @@ LT_TOOLCHAIN_HOST_OS_NAME           := $(shell uname -s)
 LT_VENDOR_TOOLCHAINS_DIR            ?= $(abspath $(HOME)/lt-vendor-toolchains)
 # commands to fetch vendor toolchain tarballs (note use of = and not :=, important)
 LT_GITLAB_TOOLCHAIN_FETCH_COMMAND    = git archive --format=tar --remote=$(LT_TOOLCHAIN_REPO) HEAD $(LT_TOOLCHAIN_TARFILE) | tar -xf -
-ifeq (yes, $(shell if command -v curl >& /dev/null; then echo yes; else echo no; fi;))
+ifeq (yes, $(shell if command -v curl >/dev/null 2>&1; then echo yes; else echo no; fi;))
   LT_GITHUB_TOOLCHAIN_FETCH_COMMAND  = curl -L -O https://github.com/$(LT_TOOLCHAIN_REPO)/raw/refs/heads/main/$(LT_TOOLCHAIN_TARFILE)
 else
-  ifeq (yes, $(shell if command -v wget >& /dev/null; then echo yes; else echo no; fi;))
+  ifeq (yes, $(shell if command -v wget >/dev/null 2>&1; then echo yes; else echo no; fi;))
     LT_GITHUB_TOOLCHAIN_FETCH_COMMAND  = wget --quiet --show-progress https://github.com/$(LT_TOOLCHAIN_REPO)/raw/refs/heads/main/$(LT_TOOLCHAIN_TARFILE)
   else
     LT_GITHUB_TOOLCHAIN_FETCH_COMMAND :=
