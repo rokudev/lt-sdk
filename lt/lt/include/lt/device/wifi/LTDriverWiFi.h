@@ -484,6 +484,18 @@ struct LTDriverWiFiApi {
      * @param[in] callback: called for each result, NULL when done
      */
 
+    bool (*GetChannelPlan)(LTDeviceUnit unit, LTWiFi_ChannelPlan *plan);
+    /**<
+     * @brief Report the channels the active regulatory domain permits.
+     *
+     * DFS channels are included -- the caller decides how to treat them.
+     * Requires the driver to be up (the plan comes from the radio country code).
+     *
+     * @param[in] unit: specifies the driver unit instance
+     * @param[out] plan: channel list, 2.4 GHz first then 5 GHz
+     * @return TRUE when the plan was filled in
+     */
+
 };
 LT_EXTERN_C_END
 #endif /* LTDRIVERWIFI_H */
