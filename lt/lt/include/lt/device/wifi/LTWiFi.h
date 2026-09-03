@@ -121,6 +121,22 @@ typedef struct LTWiFi_ScanSpec {
     u8 home_dwell;              ///< home channel dwell time (milliseconds)
 } LTWiFi_ScanSpec;
 
+/** Maximum channels in a regulatory channel plan (2.4 GHz + 5 GHz, any country). */
+#define kLTWiFi_Max_ChannelPlan 48
+
+/**
+ * @brief Channels the radio may scan under the active regulatory domain.
+ *
+ * Includes DFS channels: they are legal to scan passively, and a host AP can
+ * beacon on one.  Callers that transmit during discovery must classify DFS
+ * themselves and stay passive there until a beacon is heard.
+ * @ingroup ltdevice_wifi_struct
+ */
+typedef struct LTWiFi_ChannelPlan {
+    u8 count;                             ///< valid entries in channel[]
+    u8 channel[kLTWiFi_Max_ChannelPlan];  ///< 2.4 GHz first, then 5 GHz, ascending
+} LTWiFi_ChannelPlan;
+
 #define kLTWiFi_ScanSpec_Edition 0
 
 typedef u8 LTWiFi_ApSecurity;
@@ -497,9 +513,32 @@ typedef struct LTWiFi_MonitorConfig {
  *
  * Extends the standard scan to inject a vendor IE into probe requests.
  */
+/**
+ * @brief Raw Beacon / Probe Response received during a scan.
+ *
+ * Invoked synchronously in the driver's WiFi task context as the frame is
+ * received: filter and hand off, nothing more. It must not block or do slow
+ * work, and must not retain @p frame past the call -- the buffer belongs to
+ * the driver and is reused immediately afterwards.
+ *
+ * Unlike the parsed LTWiFi_ApInfo results, this exposes the frame body, so a
+ * caller can read the host's own primary-channel IE and tell a genuine
+ * detection from one bleeding in on an adjacent 20 MHz sub-channel.
+ *
+ * @param frame   802.11 management frame, from the start of the MAC header.
+ * @param len     Frame length in bytes.
+ * @param freqMhz Frequency the frame arrived on, in MHz.
+ * @param rssi    Signal strength in dBm.
+ * @param ctx     Caller context from LTWiFi_ScanWithIE::frameCtx.
+ */
+typedef void (LTWiFi_ScanFrameCallback)(void const *frame, u16 len, u16 freqMhz,
+                                        s8 rssi, void *ctx);
+
 typedef struct LTWiFi_ScanWithIE {
     LTWiFi_ScanSpec scan;       ///< Standard scan parameters
     LTWiFi_VendorIE vendorIE;   ///< Vendor IE to inject during scan
+    LTWiFi_ScanFrameCallback *frameCallback; ///< Raw frame sink, NULL = none
+    void *frameCtx;             ///< Caller context passed to frameCallback
 } LTWiFi_ScanWithIE;
 LT_EXTERN_C_END
 #endif /* LTWIFI_H */

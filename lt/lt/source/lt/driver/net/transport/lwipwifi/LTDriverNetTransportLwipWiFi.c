@@ -1039,17 +1039,10 @@ PUB void NetIpWiFi_CloseTransport(LTTransportDriver *driverData) { // Called fro
         dhcp_stop(GET_NETIF(tran));
         dhcp_cleanup(GET_NETIF(tran));
     }
-    S.iThread->Sleep(LTTime_Milliseconds(500)); // hack to wait for disconnect !!!
-
     netif_set_link_down(GET_NETIF(tran));
     netif_remove(GET_NETIF(tran));
     sys_timeouts_destroy();
     UNLOCK_API;
-
-    // Terminate transport thread
-    S.iThread->Terminate(tran->hThread);
-    S.iThread->WaitUntilFinished(tran->hThread, LTTime_Seconds(10));
-    S.iThread->Destroy(tran->hThread);
 
     lt_lwip_sys_destroy();
     // Destroyed only here: sys_timeouts_destroy() above cancels the lwip cyclic

@@ -14,7 +14,7 @@
 #include <lt/LT.h>
 #include <lt/device/wifi/LTDeviceWiFi.h>
 #include <lt/system/settings/LTSystemSettings.h>
-#include <lt/system/shell/LTSystemShell.h>
+#include <lt/system/schell/LTSystemSchell.h>
 #include <lt/device/watchdog/LTDeviceWatchdog.h> // for reboot
 
 DEFINE_LTLOG_SECTION("ltshell.wifi");
@@ -38,11 +38,8 @@ enum LTShellWiFiErrorCode {
     LTShellWiFi_IWPRIV_FAIL     = -4,
 };
 
-static LTSystemShell *SHL_Library;
-
 /** Shell Variables ***********************************************************/
 
-static ILTShell      *SHL_iShell;
 static bool          SHL_JoinSave;
 static bool          SHL_SniffMode;
 static int           SHL_DebugMode;
@@ -62,8 +59,8 @@ static void SET_AutoJoin(bool state);
 static bool SET_AutoJoinIsSet(void);
 static void SET_Rejoin(bool state);
 static bool SET_RejoinIsSet(void);
-static int  SHL_Help(LTShell hShell, int argc, const char *argv[]);
-static int  SHL_Status(LTShell hShell, int argc, const char *argv[]);
+static int  SHL_Help(LTSystemSchell *shell, int argc, const char *argv[]);
+static int  SHL_Status(LTSystemSchell *shell, int argc, const char *argv[]);
 
 /** Utility Functions *********************************************************/
 
@@ -106,11 +103,11 @@ static void PrintApInfo(const char *prefix, LTWiFi_ApInfo *ap) {
     LTLOG_DEBUG("ap.info", "%s AP ssid: %s pass: %s sec: %s", prefix, ap->ssid, ap->pass, ApSecurityStrings[ap->security]);
 }
 
-static void WiFiPrint(LTShell hShell, const char *fmt, ...) {
+static void WiFiPrint(LTSystemSchell *shell, const char *fmt, ...) {
     lt_va_list args;
     lt_va_start(args, fmt);
-    SHL_iShell->Print(hShell, "WiFi: ");
-    SHL_iShell->VPrint(hShell, fmt, args);
+    shell->API->Print(shell, "WiFi: ");
+    shell->API->PrintV(shell, fmt, args);
     lt_va_end(args);
 }
 
@@ -173,7 +170,7 @@ static void SHL_AddApList(LTWiFi_ApInfo *new_ap) {
     LTList_AddTail(&SHL_ScanApList, &apn->node); // lowest RSSI
 }
 
-static void SHL_ListApList(LTShell hShell) {
+static void SHL_ListApList(LTSystemSchell *shell) {
     APNode *apn;
     u16 count = 0;
     LTList_ForEach(node, &SHL_ScanApList) {
@@ -181,11 +178,11 @@ static void SHL_ListApList(LTShell hShell) {
         LTWiFi_ApInfo *ap = &apn->ap;
         char bssid[20];
         iMacAddress->MacAddressToString(&ap->bssid, bssid, ':');
-        SHL_iShell->Print(hShell, "  %s hrd:%3u chan:%3u rssi:%4d sec:%-6s \"%s\"\n",
+        shell->API->Print(shell, "  %s hrd:%3u chan:%3u rssi:%4d sec:%-6s \"%s\"\n",
             bssid, apn->heard, ap->channel, ap->rssi, ApSecurityStrings[ap->security], ap->ssid);
         count++;
     } LTList_EndForEach;
-    SHL_iShell->Print(hShell, "  %u APs heard\n", count);
+    shell->API->Print(shell, "  %u APs heard\n", count);
 }
 
 static void SHL_FreeApList(void) {
@@ -196,7 +193,7 @@ static void SHL_FreeApList(void) {
 static void /*LTDeviceWiFi_ScanCallback*/ SHL_ScanCallback(LTWiFi_ApInfo *ap, void *callback_data);
 
 static void SHL_ShowScanResults(void *data) {  // called by QueueTaskProc
-    SHL_ListApList(VOIDPTR_TO_LTHANDLE(data));
+    SHL_ListApList((LTSystemSchell *)data);
     if (SHL_ScanRepeat <= 0) SHL_FreeApList();
     else iWiFi->ScanAps(NULL, SHL_ScanCallback, data);
 }
@@ -219,27 +216,27 @@ static void /*LTDeviceWiFi_StatusCallback*/ SHL_PrintWiFiStatus(LTDeviceWiFi_Sta
 }
 
 static void /*LTDeviceWiFi_ScanCallback*/ SHL_ScanCallback(LTWiFi_ApInfo *ap, void *callback_data) {
-    LTShell hShell = VOIDPTR_TO_LTHANDLE(callback_data);
+    LTSystemSchell *shell = (LTSystemSchell *)callback_data;
     if (!ap) {
-        SHL_iShell->Print(hShell, "\n");
+        shell->API->Print(shell, "\n");
         if (SHL_ScanRepeat > 0) {
             SHL_ScanRepeat--;
-            iThread->QueueTaskProc(SHL_Thread, SHL_ShowScanResults, NULL, LTHANDLE_TO_VOIDPTR(hShell));
+            iThread->QueueTaskProc(SHL_Thread, SHL_ShowScanResults, NULL, (void *)shell);
         }
         return;
     }
-    if (!SHL_ScanProbes) SHL_iShell->Print(hShell, ".");
+    if (!SHL_ScanProbes) shell->API->Print(shell, ".");
     else {
         char bssid[20];
         iMacAddress->MacAddressToString(&ap->bssid, bssid, ':');
-        SHL_iShell->Print(hShell, "  %s chan:%3u rssi:%4d sec:%-6s \"%s\"\n",
+        shell->API->Print(shell, "  %s chan:%3u rssi:%4d sec:%-6s \"%s\"\n",
             bssid, ap->channel, ap->rssi, ApSecurityStrings[ap->security], ap->ssid);
     }
     SHL_AddApList(ap);
 }
 
 static void /*LTDeviceWiFi_JoinCallback*/ SHL_JoinCallback(LTWiFi_JoinStatus status, void *callback_data) {
-    LTShell hShell = VOIDPTR_TO_LTHANDLE(callback_data);
+    LTSystemSchell *shell = (LTSystemSchell *)callback_data;
     char *str;
     switch (status) {
         case kLTWiFi_JoinStatus_Success:
@@ -252,7 +249,7 @@ static void /*LTDeviceWiFi_JoinCallback*/ SHL_JoinCallback(LTWiFi_JoinStatus sta
         default: str = "in progress...";
     }
     LTLOG("join", "%s", str);
-    if (iWiFi->IsConnected() && hShell) SHL_Status(hShell, 0, NULL);
+    if (iWiFi->IsConnected() && shell) SHL_Status(shell, 0, NULL);
     if (iWiFi->IsConnected() && SHL_JoinSave && iWiFi->SaveApSettings(&SHL_ApSpec)) {
         PrintApInfo("SAVE", &SHL_ApSpec);
     }
@@ -260,16 +257,26 @@ static void /*LTDeviceWiFi_JoinCallback*/ SHL_JoinCallback(LTWiFi_JoinStatus sta
 
 /** Command Functions *********************************************************/
 
-static int SHL_Scan(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Scan(LTSystemSchell *shell, int argc, const char *argv[]) {
     LTWiFi_ScanSpec spec = {};
     LTWiFi_ScanSpec *spec_ptr = NULL;
-    char target_ssid[256] = {0, };
-    u8 target_channels[16] = {0, };
+    // API_ScanAps copies the spec shallowly, so spec.ssid / spec.channel are
+    // still read on the WiFi state-machine thread after this frame is gone and
+    // must not be stack buffers. Static is safe: the shell runs one scan at a
+    // time. WiFiFindHost keeps its one-channel list persistent for this reason.
+    static char target_ssid[256];
+    static u8 target_channels[16];
     int pos = 0;
+    lt_memset(target_ssid, 0, sizeof(target_ssid));
+    lt_memset(target_channels, 0, sizeof(target_channels));
     SHL_ScanRepeat = 1;
     SHL_ScanProbes = false;
     if (HasArg(argc, argv, "-r")) SHL_ScanRepeat = 4;    // repeat a few times
     if (HasArg(argc, argv, "-p")) SHL_ScanProbes = true; // show probes
+    if (HasArg(argc, argv, "-P")) {  // passive: listen for beacons, send no probe request
+        spec.options |= kLTWiFi_ScanOption_Passive;
+        spec_ptr = &spec;
+    }
     if ((pos = HasArg(argc, argv, "-S")) && pos && pos + 1 < argc) { // target scan SSID
         lt_strncpyTerm(target_ssid, argv[pos + 1], 256);
         spec.ssid = target_ssid;
@@ -292,21 +299,29 @@ static int SHL_Scan(LTShell hShell, int argc, const char *argv[]) {
         spec.channel = target_channels;
         spec_ptr = &spec;
     }
+    if ((pos = HasArg(argc, argv, "-D")) && pos && pos + 1 < argc) { // per-channel dwell, ms
+        // The 2.4 GHz default (FHOST_SCAN_DWELL_2G_MS, 40 ms) is far shorter
+        // than a ~100 ms beacon interval, so use >=120 ms for any beacon-only
+        // measurement. The driver floors 5 GHz at FHOST_SCAN_DWELL_5G_MS, so
+        // short dwells are not testable there.
+        spec.chan_dwell = (u8)(lt_strtos32(argv[pos + 1], NULL, 0) & 0xff);
+        spec_ptr = &spec;
+    }
     if ((pos = HasArg(argc, argv, "-R")) && pos && pos + 1 < argc) { // target scan, rssi
         spec.rssi = lt_strtos32(argv[pos + 1], NULL, 0);
         spec_ptr = &spec;
     }
-    WiFiPrint(hShell, "scanning for access points... target: %s\n", (spec.ssid)?spec.ssid:"None");
-    iWiFi->ScanAps(spec_ptr, SHL_ScanCallback, LTHANDLE_TO_VOIDPTR(hShell));
+    WiFiPrint(shell, "scanning for access points... target: %s\n", (spec.ssid)?spec.ssid:"None");
+    iWiFi->ScanAps(spec_ptr, SHL_ScanCallback, (void *)shell);
     return LTShellWiFi_OK;
 }
 
-static int SHL_Join(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Join(LTSystemSchell *shell, int argc, const char *argv[]) {
     // Note: typing "join" without args will use prior ApSpec
     SHL_JoinSave = false;
     SHL_ApSpec.options = 0;
     if (argc > 1 && lt_strcmp(argv[argc - 1], "-r") == 0) {
-        WiFiPrint(hShell, "kLTWiFi_JoinOption_Retry enabled\n");
+        WiFiPrint(shell, "kLTWiFi_JoinOption_Retry enabled\n");
         SHL_ApSpec.options |= kLTWiFi_JoinOption_Retry;
         argc--;
     }
@@ -322,66 +337,66 @@ static int SHL_Join(LTShell hShell, int argc, const char *argv[]) {
                 PrintApInfo("JOIN", &SHL_ApSpec);
                 SHL_JoinSave = true;
             } else {
-                WiFiPrint(hShell, "password not valid\n");
+                WiFiPrint(shell, "password not valid\n");
                 return LTShellWiFi_PASSWD_INVALID;
             }
         }
         lt_memset(SHL_ApSpec.bssid.octet, 0, sizeof(SHL_ApSpec.bssid.octet));
         if (argc > 3) {
-            WiFiPrint(hShell, "Setting BSSID %s\n", argv[3]);
+            WiFiPrint(shell, "Setting BSSID %s\n", argv[3]);
             if (!iMacAddress->StringToMacAddress(argv[3], &SHL_ApSpec.bssid)) {
-                WiFiPrint(hShell, "Wrong format: %s, joining without BSSID\n", argv[3]);
+                WiFiPrint(shell, "Wrong format: %s, joining without BSSID\n", argv[3]);
                 lt_memset(SHL_ApSpec.bssid.octet, 0, sizeof(SHL_ApSpec.bssid.octet));
             }
         }
         if (SHL_ApSpec.pass[0] == 0) {
-            WiFiPrint(hShell, "no password specified, open AP assumed\n");
+            WiFiPrint(shell, "no password specified, open AP assumed\n");
             SHL_ApSpec.security = kLTWiFi_ApSecurity_Open;
             SHL_JoinSave = true;
         }
     } else {
-        WiFiPrint(hShell, "rejoin prior AP\n");
+        WiFiPrint(shell, "rejoin prior AP\n");
     }
 
-    if (SHL_ApSpec.ssid[0]) WiFiPrint(hShell, "joining access point \"%s\"...%s \n", SHL_ApSpec.ssid, SHL_ApSpec.pass);
+    if (SHL_ApSpec.ssid[0]) WiFiPrint(shell, "joining access point \"%s\"...%s \n", SHL_ApSpec.ssid, SHL_ApSpec.pass);
     // If no args, rejoin current AP.
     if (SET_RejoinIsSet()) SHL_ApSpec.options |= kLTWiFi_JoinOption_Rejoin;
-    iWiFi->JoinAp(&SHL_ApSpec, SHL_JoinCallback, LTHANDLE_TO_VOIDPTR(hShell));
+    iWiFi->JoinAp(&SHL_ApSpec, SHL_JoinCallback, (void *)shell);
     return LTShellWiFi_OK;
 }
 
-static int SHL_AutoJoin(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_AutoJoin(LTSystemSchell *shell, int argc, const char *argv[]) {
     s8 state = WhatChoice(argc, argv, NULL);
     if (!state) {
-        WiFiPrint(hShell, "autojoin is %s\n", SET_AutoJoinIsSet() ? "on" : "off");
+        WiFiPrint(shell, "autojoin is %s\n", SET_AutoJoinIsSet() ? "on" : "off");
         return LTShellWiFi_OK;
     }
     SET_AutoJoin(state > 0);
-    WiFiPrint(hShell, "autojoin is %s\n", state > 0 ? "on" : "off");
+    WiFiPrint(shell, "autojoin is %s\n", state > 0 ? "on" : "off");
     return LTShellWiFi_OK;
 }
 
-static int SHL_Rejoin(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Rejoin(LTSystemSchell *shell, int argc, const char *argv[]) {
     s8 state = WhatChoice(argc, argv, NULL);
     if (!state) {
-        WiFiPrint(hShell, "rejoin is %s\n", SET_RejoinIsSet() ? "on" : "off");
+        WiFiPrint(shell, "rejoin is %s\n", SET_RejoinIsSet() ? "on" : "off");
         return LTShellWiFi_OK;
     }
     SET_Rejoin(state > 0);
-    WiFiPrint(hShell, "rejoin is %s\n", state > 0 ? "on" : "off");
+    WiFiPrint(shell, "rejoin is %s\n", state > 0 ? "on" : "off");
     return LTShellWiFi_OK;
 }
 
-static int SHL_Disconnect(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Disconnect(LTSystemSchell *shell, int argc, const char *argv[]) {
     bool fake = false;
     if (HasArg(argc, argv, "-f")) fake = true; // non-state machine disconnect (simulates AP disconnect)
     if (!fake) iWiFi->Disconnect();
     else iWiFi->SetOption("disconnect", 0);
-    WiFiPrint(hShell, "disconnected %s\n", fake ? "(fake)" : "");
+    WiFiPrint(shell, "disconnected %s\n", fake ? "(fake)" : "");
     return LTShellWiFi_OK;
 }
 
-static int SHL_Forget(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Forget(LTSystemSchell *shell, int argc, const char *argv[]) {
     LT_UNUSED(argc);
     LT_UNUSED(argv);
 
@@ -399,11 +414,11 @@ static int SHL_Forget(LTShell hShell, int argc, const char *argv[]) {
         status = "settings cleared\n";
     }
 
-    WiFiPrint(hShell, status);
+    WiFiPrint(shell, status);
     return LTShellWiFi_OK;
 }
 
-static int SHL_ForgetAll(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_ForgetAll(LTSystemSchell *shell, int argc, const char *argv[]) {
     LT_UNUSED(argc);
     LT_UNUSED(argv);
 
@@ -413,11 +428,11 @@ static int SHL_ForgetAll(LTShell hShell, int argc, const char *argv[]) {
     CLEAR(SHL_ApPass);
     SHL_ApSpec.pass = SHL_ApPass;
 
-    WiFiPrint(hShell, "all settings cleared\n");
+    WiFiPrint(shell, "all settings cleared\n");
     return LTShellWiFi_OK;
 }
 
-static int SHL_Status(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Status(LTSystemSchell *shell, int argc, const char *argv[]) {
     LT_UNUSED(argc);
     LT_UNUSED(argv);
     LTWiFi_ApInfo ap_info;
@@ -425,13 +440,13 @@ static int SHL_Status(LTShell hShell, int argc, const char *argv[]) {
     if (iWiFi->GetApInfo(&ap_info)) {
         char bssid[20];
         iMacAddress->MacAddressToString(&ap_info.bssid, bssid, ':');
-        SHL_iShell->Print(hShell, "  SSID:      %s\n", ap_info.ssid);
-        SHL_iShell->Print(hShell, "  BSSID:     %s\n", bssid);
-        SHL_iShell->Print(hShell, "  Channel:   %u\n", ap_info.channel);
-        SHL_iShell->Print(hShell, "  Security:  %s\n", ApSecurityStrings[ap_info.security]); // guaranteed in-bounds
-        SHL_iShell->Print(hShell, "  RSSI:      %d dBm\n", ap_info.rssi);
-        SHL_iShell->Print(hShell, "  SNR:       %d dB\n", ap_info.snr);
-        SHL_iShell->Print(hShell, "  Mode:      %s\n", getApModeString(ap_info.mode));
+        shell->API->Print(shell, "  SSID:      %s\n", ap_info.ssid);
+        shell->API->Print(shell, "  BSSID:     %s\n", bssid);
+        shell->API->Print(shell, "  Channel:   %u\n", ap_info.channel);
+        shell->API->Print(shell, "  Security:  %s\n", ApSecurityStrings[ap_info.security]); // guaranteed in-bounds
+        shell->API->Print(shell, "  RSSI:      %d dBm\n", ap_info.rssi);
+        shell->API->Print(shell, "  SNR:       %d dB\n", ap_info.snr);
+        shell->API->Print(shell, "  Mode:      %s\n", getApModeString(ap_info.mode));
     } else {
         /* string of enum LTWiFi_DisconnectReason in LTWiFi.h */
         const char *reason_str[kLTWiFi_DisconnectReason_Max] = {
@@ -449,26 +464,26 @@ static int SHL_Status(LTShell hShell, int argc, const char *argv[]) {
             "ApReceiveDisassoc",
             "Generic"
         };
-        WiFiPrint(hShell, "not connected dcrsn: %s\n", reason_str[iWiFi->GetDiscReason()]);
+        WiFiPrint(shell, "not connected dcrsn: %s\n", reason_str[iWiFi->GetDiscReason()]);
     }
     // Valid even when not connected:
     LTWiFi_Metrics metrics = {};
     iWiFi->GetMetrics(&metrics, sizeof(metrics));
-    SHL_iShell->Print(hShell, "  TX Frames: %lu\n", LT_Pu32(metrics.tx_frame_count));
-    SHL_iShell->Print(hShell, "  RX Frames: %lu\n", LT_Pu32(metrics.rx_frame_count));
+    shell->API->Print(shell, "  TX Frames: %lu\n", LT_Pu32(metrics.tx_frame_count));
+    shell->API->Print(shell, "  RX Frames: %lu\n", LT_Pu32(metrics.rx_frame_count));
     return LTShellWiFi_OK;
 }
 
-static int SHL_SoftAp(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_SoftAp(LTSystemSchell *shell, int argc, const char *argv[]) {
     CLEAR(SHL_SoftApSpec);
     CLEAR(SHL_SoftApPass);
     SHL_SoftApSpec.pass = SHL_SoftApPass;
     if (argc <= 2) {
-        WiFiPrint(hShell, "provide SSID and password\n");
+        WiFiPrint(shell, "provide SSID and password\n");
         return LTShellWiFi_ARG_ERR;
     }
     if (!ValidPassword(argv[2])) {
-        WiFiPrint(hShell, "password not valid\n");
+        WiFiPrint(shell, "password not valid\n");
         return LTShellWiFi_PASSWD_INVALID;
     }
     lt_strncpyTerm(SHL_SoftApSpec.ssid, argv[1], kLTWiFi_Max_Ssid + 1);
@@ -476,18 +491,18 @@ static int SHL_SoftAp(LTShell hShell, int argc, const char *argv[]) {
     SHL_SoftApSpec.security = kLTWiFi_ApSecurity_Wpa2;
     SHL_SoftApSpec.channel = 6;
     if (argc > 3) {
-        if (iWiFi->IsConnected()) WiFiPrint(hShell, "channel ignored when STA is connected\n");
+        if (iWiFi->IsConnected()) WiFiPrint(shell, "channel ignored when STA is connected\n");
         SHL_SoftApSpec.channel = lt_strtou32(argv[3], NULL, 10);
     }
     if (!iWiFi->StartAp(&SHL_SoftApSpec)) {
-        WiFiPrint(hShell, "soft AP failed: \"%s\"\n", SHL_SoftApSpec.ssid);
+        WiFiPrint(shell, "soft AP failed: \"%s\"\n", SHL_SoftApSpec.ssid);
         return LTShellWiFi_SOFTAP_FAIL;
     }
-    WiFiPrint(hShell, "soft AP \"%s\" is up\n", SHL_SoftApSpec.ssid);
+    WiFiPrint(shell, "soft AP \"%s\" is up\n", SHL_SoftApSpec.ssid);
     return LTShellWiFi_OK;
 }
 
-static int SHL_Sniff(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Sniff(LTSystemSchell *shell, int argc, const char *argv[]) {
     int channel = 0; // means don't change channel
     const char *status;
     switch (WhatChoice(argc, argv, NULL)) {
@@ -505,31 +520,31 @@ static int SHL_Sniff(LTShell hShell, int argc, const char *argv[]) {
     }
     SHL_SniffMode = channel >= 0;
     iWiFi->SetOption("sniff", channel);
-    WiFiPrint(hShell, "sniff %s\n", status);
+    WiFiPrint(shell, "sniff %s\n", status);
     return LTShellWiFi_OK;
 }
 
-static int SHL_SetLiIntvl(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_SetLiIntvl(LTSystemSchell *shell, int argc, const char *argv[]) {
     if (argc < 2) {
-        WiFiPrint(hShell, "provide listen interval\n");
+        WiFiPrint(shell, "provide listen interval\n");
         return LTShellWiFi_ARG_ERR;
     }
     u16 li = (u16)lt_strtou32(argv[1], NULL, 10);
     iWiFi->SetOption("listen_interval", li);
-    WiFiPrint(hShell, "listen interval set to %u\n", li);
+    WiFiPrint(shell, "listen interval set to %u\n", li);
     return LTShellWiFi_OK;
 }
 
-static int SHL_GetLiIntvl(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_GetLiIntvl(LTSystemSchell *shell, int argc, const char *argv[]) {
     LT_UNUSED(argc);
     LT_UNUSED(argv);
     u16 li = iWiFi->GetOption("listen_interval");
-    WiFiPrint(hShell, "listen interval is %u\n", li);
+    WiFiPrint(shell, "listen interval is %u\n", li);
     return LTShellWiFi_OK;
 }
 
-static int SHL_Iwpriv(LTShell hShell, int argc, const char *argv[]) {
-    LT_UNUSED(hShell);
+static int SHL_Iwpriv(LTSystemSchell *shell, int argc, const char *argv[]) {
+    LT_UNUSED(shell);
     if (argc < 1) {
         return LTShellWiFi_ARG_ERR;
     }
@@ -540,7 +555,7 @@ static int SHL_Iwpriv(LTShell hShell, int argc, const char *argv[]) {
     return LTShellWiFi_OK;
 }
 
-static int SHL_Channel(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Channel(LTSystemSchell *shell, int argc, const char *argv[]) {
     if (argc > 1 && lt_strcmp(argv[1], "list") == 0) {
         LTString chans = ltstring_create("");
         u32 channels;
@@ -558,7 +573,7 @@ static int SHL_Channel(LTShell hShell, int argc, const char *argv[]) {
             // Trim ','
             chans[lt_strlen(chans) - 1] = '\0';
         }
-        WiFiPrint(hShell, "channel list is %s\n", chans);
+        WiFiPrint(shell, "channel list is %s\n", chans);
         ltstring_destroy(chans);
     } else {
         u32 channel = 0;
@@ -568,49 +583,49 @@ static int SHL_Channel(LTShell hShell, int argc, const char *argv[]) {
         } else {
             channel = iWiFi->GetOption("channel");
         }
-        WiFiPrint(hShell, "channel is %d\n", channel);
+        WiFiPrint(shell, "channel is %d\n", channel);
     }
     return LTShellWiFi_OK;
 }
 
-static int SHL_Info(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Info(LTSystemSchell *shell, int argc, const char *argv[]) {
     LT_UNUSED(argc);
     LT_UNUSED(argv);
     LTWiFi_DriverInfo info;
     if (!iWiFi->GetDeviceInfo(&info)) {
-        WiFiPrint(hShell, "cannot get WiFi info\n");
+        WiFiPrint(shell, "cannot get WiFi info\n");
     } else {
-        SHL_iShell->Print(hShell, "  Vendor:  %s\n", info.vendor);
-        SHL_iShell->Print(hShell, "  Product: %s\n", info.product);
-        SHL_iShell->Print(hShell, "  Version: %s\n", info.version);
-        SHL_iShell->Print(hShell, "  Updated: %s\n", info.updated);
+        shell->API->Print(shell, "  Vendor:  %s\n", info.vendor);
+        shell->API->Print(shell, "  Product: %s\n", info.product);
+        shell->API->Print(shell, "  Version: %s\n", info.version);
+        shell->API->Print(shell, "  Updated: %s\n", info.updated);
         char str[20];
         iMacAddress->MacAddressToString(&info.mac_address, str, ':');
-        SHL_iShell->Print(hShell, "  MACAddr: %s\n", str);
+        shell->API->Print(shell, "  MACAddr: %s\n", str);
     }
     return LTShellWiFi_OK;
 }
 
-static int SHL_GetMac(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_GetMac(LTSystemSchell *shell, int argc, const char *argv[]) {
     LT_UNUSED(argc);
     LT_UNUSED(argv);
     LTMacAddress mac;
     iWiFi->GetMacAddress(&mac); // ignore return
     char str[20];
     iMacAddress->MacAddressToString(&mac, str, ':');
-    WiFiPrint(hShell, "MACAddr: %s\n", str);
+    WiFiPrint(shell, "MACAddr: %s\n", str);
     return LTShellWiFi_OK;
 }
 
-static int SHL_SetMac(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_SetMac(LTSystemSchell *shell, int argc, const char *argv[]) {
     LTMacAddress mac;
     if (argc < 2 || !iMacAddress->StringToMacAddress(argv[1], &mac)) {
-        WiFiPrint(hShell, "provide a MAC address in the form 11:22:33:44:55\n");
+        WiFiPrint(shell, "provide a MAC address in the form 11:22:33:44:55\n");
         return LTShellWiFi_OK;
     }
-    if (iWiFi->SetMacAddress(&mac)) WiFiPrint(hShell, "MAC address set to: %s\n", argv[1]);
+    if (iWiFi->SetMacAddress(&mac)) WiFiPrint(shell, "MAC address set to: %s\n", argv[1]);
     else {
-        WiFiPrint(hShell, "could not set MAC address\n");
+        WiFiPrint(shell, "could not set MAC address\n");
         return -1;
     }
     return LTShellWiFi_OK;
@@ -618,7 +633,7 @@ static int SHL_SetMac(LTShell hShell, int argc, const char *argv[]) {
 
 static void SET_AutoBoot(char *command); // forward
 
-static int SHL_AutoBoot(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_AutoBoot(LTSystemSchell *shell, int argc, const char *argv[]) {
     char *command;
     switch (WhatChoice(argc, argv, "mesh")) {
         case kChoiceOff:   command = NULL; break;
@@ -629,11 +644,11 @@ static int SHL_AutoBoot(LTShell hShell, int argc, const char *argv[]) {
             break;
     }
     SET_AutoBoot(command);
-    WiFiPrint(hShell, "autoboot using \"%s\"\n", command);
+    WiFiPrint(shell, "autoboot using \"%s\"\n", command);
     return LTShellWiFi_OK;
 }
 
-static int SHL_Debug(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Debug(LTSystemSchell *shell, int argc, const char *argv[]) {
     switch (WhatChoice(argc, argv, "verbose")) {
         case kChoiceOn:   SHL_DebugMode = 0x1; break;
         case kChoiceOther: SHL_DebugMode = 0x3; break;
@@ -650,15 +665,15 @@ static int SHL_Debug(LTShell hShell, int argc, const char *argv[]) {
     if (HasArg(argc, argv, "status"))  SHL_DebugMode |= 0x400;
 
     iWiFi->SetOption("debug_mode", SHL_DebugMode);
-    WiFiPrint(hShell, "debug %s [0x%x]\n", SHL_DebugMode ? "enabled" : "disabled", SHL_DebugMode);
+    WiFiPrint(shell, "debug %s [0x%x]\n", SHL_DebugMode ? "enabled" : "disabled", SHL_DebugMode);
     return LTShellWiFi_OK;
 }
 
-static int SHL_Reset(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Reset(LTSystemSchell *shell, int argc, const char *argv[]) {
     LT_UNUSED(argc);
     LT_UNUSED(argv);
     iWiFi->Reset();
-    WiFiPrint(hShell, "driver reset...\n");
+    WiFiPrint(shell, "driver reset...\n");
     return LTShellWiFi_OK;
 }
 
@@ -671,6 +686,8 @@ static const LTSystemShell_CommandDesc WiFi_Commands[] = {
                                             "\t\t-T target scan, scan -S <ssid>\n"
                                             "\t\t-C target scan, scan -C <1,2,3,...>\n"
                                             "\t\t-R target scan, scan -R <RSSI>\n"
+                                            "\t\t-P passive scan (beacons only, no probe request)\n"
+                                            "\t\t-D per-channel dwell ms, scan -D <40..255> (default 40)\n"
                                             "\t\t-r repeat scan\n"
                                             "\t\t-p show probes/beacons",            NULL },
     { "join",               SHL_Join,       "join <ssid> [<pass>] [bssid] [-r]\n"
@@ -693,14 +710,14 @@ static const LTSystemShell_CommandDesc WiFi_Commands[] = {
     { NULL,         NULL,           NULL,                                    NULL }
 };
 
-static int SHL_Help(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_Help(LTSystemSchell *shell, int argc, const char *argv[]) {
     LT_UNUSED(argc);
     LT_UNUSED(argv);
-    for (int n = 0; WiFi_Commands[n].pCommand; n++) {
-        SHL_iShell->Print(hShell, "  %-10s - %s\n", WiFi_Commands[n].pCommand,
-            WiFi_Commands[n].pDescription);
+    for (int n = 0; WiFi_Commands[n].name; n++) {
+        shell->API->Print(shell, "  %-10s - %s\n", WiFi_Commands[n].name,
+            WiFi_Commands[n].desc);
     }
-    SHL_iShell->Print(hShell,
+    shell->API->Print(shell,
         "Examples:\n"
         "  wifi scan (and wait a few seconds)\n"
         "  wifi join <ssid> <password>\n"
@@ -708,45 +725,45 @@ static int SHL_Help(LTShell hShell, int argc, const char *argv[]) {
         "  wifi autojoin on/off\n"
         "  wifi autoboot on/off/mesh/ip"
     );
-    SHL_iShell->Print(hShell,
+    shell->API->Print(shell,
         "  wifi mesh \"dev: light state: off\"\n"
         "  wifi list\n"
         "  wifi send 1 \"hello world\"\n"
         "  wifi ping 3 100\n"
         "  wifi ping -f 3\n"
     );
-    SHL_iShell->Print(hShell,
+    shell->API->Print(shell,
         "  wifi rejoin on/off\n"
         "  wifi getmac\n"
         "  wifi setmac 00:11:22:33:44:55 (Warning: do only once!)\n"
         "  wifi channel list\n"
         "  get  wifi* (to see wifi settings)\n"
     );
-    SHL_iShell->Print(hShell,
+    shell->API->Print(shell,
         " wifi set-listen-interval <interval>\n"
         " wifi get-listen-interval\n"
     );
     return LTShellWiFi_OK;
 }
 
-static int SHL_WiFi(LTShell hShell, int argc, const char *argv[]) {
+static int SHL_WiFi(LTSystemSchell *shell, int argc, const char *argv[]) {
     int cmd = 0;
     if (argc > 1) {
-        for (int n = 0; WiFi_Commands[n].pCommand; n++) {
-            if (lt_strcmp(WiFi_Commands[n].pCommand, argv[1]) == 0) {
+        for (int n = 0; WiFi_Commands[n].name; n++) {
+            if (lt_strcmp(WiFi_Commands[n].name, argv[1]) == 0) {
                 cmd = n;
                 break;
             }
         }
     }
-    return WiFi_Commands[cmd].pCommandProc(hShell, argc-1, argv+1);
+    return WiFi_Commands[cmd].proc(shell, argc-1, argv+1);
 }
 
-static void LTShell_Help(LTShell hShell, int argc, const char ** argv) {
+static void LTShell_Help(LTSystemSchell *shell, int argc, const char ** argv) {
     /* This LTShell Help proc is so "help wifi" works in addition to "wifi help".
        It prints usage and calls the regular SHL_Help */
-    SHL_iShell->Print(hShell, "usage: wifi <command> [args]\nCommands:\n");
-    (void)SHL_Help(hShell, argc, argv);
+    shell->API->Print(shell, "usage: wifi <command> [args]\nCommands:\n");
+    (void)SHL_Help(shell, argc, argv);
 }
 
 static const LTSystemShell_CommandDesc SHL_Commands[] = {
@@ -763,24 +780,31 @@ static void SHL_ExitThread(void) {
 }
 
 static void SHL_Quit(void) {
-    if (SHL_Library) {
-        SHL_Library->UnregisterCommands(SHL_Commands);
-        lt_closelibrary(SHL_Library);
-        iThread->Destroy(SHL_Thread); // zero ok
+    LTSystemSchell *shell = LTSystemSchellConsole_GetConsoleShell();
+    if (shell) {
+        LTSystemShell_CommandTable table = {
+            .commands    = SHL_Commands,
+            .numCommands = sizeof(SHL_Commands) / sizeof(SHL_Commands[0])
+        };
+        shell->API->UnregisterCommands(shell, &table);
     }
+    iThread->Destroy(SHL_Thread); // zero ok
 }
 
 static bool SHL_Init(void) {
-    SHL_Library = lt_openlibrary(LTSystemShell);
-    if (!SHL_Library) return false;
+    LTSystemSchell *shell = LTSystemSchellConsole_GetConsoleShell();
+    if (!shell) return false;
 
     SHL_Thread = pCore->CreateThread("ShellWiFiStatus");
     if (!SHL_Thread) return false;
     iThread->SetStackSize(SHL_Thread, 1536);
     iThread->Start(SHL_Thread, SHL_InitThread, SHL_ExitThread);
 
-    SHL_iShell = lt_getlibraryinterface(ILTShell, SHL_Library);
-    SHL_Library->RegisterCommands(SHL_Commands, sizeof(SHL_Commands) / sizeof(SHL_Commands[0]));
+    LTSystemShell_CommandTable table = {
+        .commands    = SHL_Commands,
+        .numCommands = sizeof(SHL_Commands) / sizeof(SHL_Commands[0])
+    };
+    shell->API->RegisterCommands(shell, &table);
 
     CLEAR(SHL_ApSpec);
     CLEAR(SHL_ApPass);

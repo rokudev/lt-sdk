@@ -14,8 +14,21 @@
  * TODO: __riscv_float_abi_soft / __riscv_float_abi_single - and Hard FP lazy context switch
  */
 
-/* Kernel ABI version */
+/* Kernel ABI version. Builds with hardware FP stack a larger trap frame, which the
+ * crashdump decoder must know about, so they report a distinct ABI version. */
+#if defined(__riscv_flen)
+#define LTK_ABI_VERSION     "RISC_V.2"
+#else
 #define LTK_ABI_VERSION     "RISC_V.1"
+#endif
+
+/* The trap handler stacks integer and FP context in one frame, so LTKStackFrame
+ * must match the stack pointer adjustment in LTKArchRISC_V_Vectors.S. */
+LT_STATIC_ASSERT(sizeof(LTKStackFrame) == LTK_ARCH_RISC_V_STACK_PTR_ADJ, "LTKStackFrame must cover the whole trap frame");
+LT_STATIC_ASSERT((LTK_ARCH_RISC_V_STACK_PTR_ADJ % 8) == 0, "Trap frame must keep the stack 8-byte aligned");
+#if defined(__riscv_flen)
+LT_STATIC_ASSERT(LTK_FRAME_WORD(FCSR) < sizeof(LTKStackFrame) / 4, "Saved FCSR must lie inside the trap frame");
+#endif
 
 /*****************
  * Configuration */
@@ -385,6 +398,8 @@ _LTKInitThread(LTKThread * pThread, u8 nPriority, void * pEntry, s32 nArg,
     pStackFrame->nRegister[LTK_FRAME_WORD(RA)]      = (u32)_LTKThreadExit;
 #if defined(__riscv_flen)
     pStackFrame->nRegister[LTK_FRAME_WORD(MSTATUS)] = LTK_ARCH_RISC_V_START_MSTATUS_FP;
+    // The first FP context restore writes this slot to FCSR, which needs a valid rounding mode.
+    pStackFrame->nRegister[LTK_FRAME_WORD(FCSR)]    = 0;
 #else
     pStackFrame->nRegister[LTK_FRAME_WORD(MSTATUS)] = LTK_ARCH_RISC_V_START_MSTATUS;
 #endif
@@ -393,10 +408,6 @@ _LTKInitThread(LTKThread * pThread, u8 nPriority, void * pEntry, s32 nArg,
     for (; pFill >= (u32 *)pStackBottom; pFill--) {
         *pFill = kLTKStackFillValue;
     }
-#if defined(__riscv_flen)
-    // Initialize the saved FCSR slot that the first FP context restore reads.
-    *(u32 *)((u8 *)pStackFrame + LTK_ARCH_RISC_V_FCSR_FRAME_OFFSET) = 0;
-#endif
     // Initialize context and state
     pThread->pStack           = (u8 *)pStackFrame;
     pThread->nCycleCount      = 0;

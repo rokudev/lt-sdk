@@ -40,14 +40,29 @@ static u32 s_nNumDeviceUnits = 0;
 
 /*******************************************************************************
  * Legacy support - maintain separate instances for crypto, efuse and entropy */
-static LTDriverCryptoAes128Cbc *s_pAesCbc = NULL;
-static LTDriverCryptoEntropy *s_pEntropy = NULL;
+static LTDriverCryptoAes128Cbc *s_pLibAesCbc = NULL;
+static LTDriverCryptoEntropy *s_pLibEntropy = NULL;
 static LTDeviceEfuse *s_pLibEfuse = NULL;
 static ILTDriverEfuseDeviceUnit *s_iEfuse = NULL;
 
 /*******************************************************************************
+ * The chip ID carries a 5 bit platform number in its upper bits, which has to
+ * come off before the sequential part of the ID can be range checked:        */
+#define kChipIdSequenceMask 0x07FFFFFFu
+
+/*******************************************************************************
+ * Chip IDs below this are provisioned with the development keys.  Platforms
+ * that need a different limit set "devKeyChipIdLimit" in their
+ * LTDeviceAuthentication config section; BlueRidge does, because test parts
+ * were built past this limit before the range was settled on.               */
+#define kDefaultDevKeyChipIdLimit 0x200u
+
+static u32 s_devKeyChipIdLimit = kDefaultDevKeyChipIdLimit;
+
+/*******************************************************************************
  * Some needed forward declarations:                                          */
 static bool LTDeviceAuthentication_IsSecureDevice(void);
+static u32  LTDeviceAuthentication_GetChipID(void);
 
 /*******************************************************************************
  * The implementations of our functionality:                                  */
@@ -59,12 +74,12 @@ static bool AES_Encode_ECB(const u8 *keyPtr, const u8 *input, u8 *output, LT_SIZ
     }
 
     // Fallback to direct crypto driver
-    if (!s_pAesCbc) return false;
+    if (!s_pLibAesCbc) return false;
 
     // IV == {0} on a CBC operation is equivalent to an ECB operation
     const u8 iv[AES128_CBC_IV_LENGTH] = {0};
 
-    if (s_pAesCbc->API->Encrypt(keyPtr, iv, input, dataLen, output) != kLTSystemCrypto_Result_Ok)
+    if (s_pLibAesCbc->API->Encrypt(keyPtr, iv, input, dataLen, output) != kLTSystemCrypto_Result_Ok)
         return false;
 
     return true;
@@ -78,12 +93,12 @@ static bool AES_Decode_ECB(const u8 *keyPtr, const u8 *input, u8 *output, LT_SIZ
     }
 
     // Fallback to direct crypto driver
-    if (!s_pAesCbc) return false;
+    if (!s_pLibAesCbc) return false;
 
     // IV == {0} on a CBC operation is equivalent to an ECB operation
     const u8 iv[AES128_CBC_IV_LENGTH] = {0};
 
-    if (s_pAesCbc->API->Decrypt(keyPtr, iv, input, dataLen, output) != kLTSystemCrypto_Result_Ok)
+    if (s_pLibAesCbc->API->Decrypt(keyPtr, iv, input, dataLen, output) != kLTSystemCrypto_Result_Ok)
         return false;
 
     return true;
@@ -153,10 +168,10 @@ static bool LTDeviceAuthentication_AuthDecode(u8 const in[kLTAuthenticationKeyBy
 }
 
 static void LTDeviceAuthentication_GetRandom16(u8 data[kLTAuthenticationKeyBytes]) {
-    if (!data || !s_pEntropy) return;
+    if (!data || !s_pLibEntropy) return;
 
     u8 buf[32] = {0};
-    if (s_pEntropy->API->GetEntropy(buf, sizeof(buf))) {
+    if (s_pLibEntropy->API->GetEntropy(buf, sizeof(buf))) {
         lt_memcpy(data, buf, kLTAuthenticationKeyBytes);
     }
 }
@@ -347,8 +362,18 @@ static bool LTDeviceAuthentication_IsUsingDevKeys(void) {
         return s_iAuth->IsUsingDevKeys();
     }
 
-    // Default to false (not using DEV keys)
-    return false;
+    // A secure part is running the development keys when the sequential portion
+    // of its chip ID falls below the platform's limit.  This mirrors how the
+    // host picks the development master key when deriving AES_KEY1, so that the
+    // flag reported here matches the keys the host will actually use.
+    u32 chipID = LTDeviceAuthentication_GetChipID();
+
+    // An unsecure part, or one whose chip ID could not be read, has no keys to
+    // report on.  GetChipID() already returns 0xffffffff unless the part is
+    // secure and the field could be read.
+    if (chipID == 0 || chipID == 0xffffffff) return false;
+
+    return (chipID & kChipIdSequenceMask) < s_devKeyChipIdLimit;
 }
 
 static u32 LTDeviceAuthentication_GetChipID(void) {
@@ -395,12 +420,12 @@ static LTDeviceUnit LTDeviceAuthenticationImpl_CreateDeviceUnitHandle(u32 nDevic
 /*******************************************************************************
  * Library startup and shutdown:                                              */
 static void LTDeviceAuthenticationImpl_LibFini(void) {
-    if (s_pAesCbc) lt_destroyobject(s_pAesCbc);
-    if (s_pEntropy) lt_destroyobject(s_pEntropy);
+    if (s_pLibAesCbc) lt_destroyobject(s_pLibAesCbc);
+    if (s_pLibEntropy) lt_destroyobject(s_pLibEntropy);
     if (s_pLibEfuse) lt_closelibrary(s_pLibEfuse);
     ShutDownDriver();
-    s_pAesCbc = NULL;
-    s_pEntropy = NULL;
+    s_pLibAesCbc = NULL;
+    s_pLibEntropy = NULL;
     s_iEfuse = NULL;
     s_pLibEfuse = NULL;
     s_iAuth = NULL;
@@ -415,6 +440,19 @@ static void LTDeviceAuthenticationImpl_LibFini(void) {
  * will be used instead                                                       */
 static bool LTDeviceAuthenticationImpl_LibInit(void) {
     LTLOG("init.begin", NULL);
+
+    // Pick up this platform's development key chip ID limit, if it overrides
+    // the default.  Absent (or zero) leaves the default in place.
+    LTDeviceConfig *pDeviceConfig = lt_openlibrary(LTDeviceConfig);
+    if (pDeviceConfig) {
+        u32 section = pDeviceConfig->GetDeviceSection("LTDeviceAuthentication");
+        if (section) {
+            s64 limit = pDeviceConfig->ReadInteger(section, "devKeyChipIdLimit");
+            if (limit > 0) s_devKeyChipIdLimit = (u32)limit;
+        }
+        lt_closelibrary(pDeviceConfig);
+    }
+    LTLOG("init.devkey.limit", "devKeyChipIdLimit:0x%lx", LT_Pu32(s_devKeyChipIdLimit));
 
     // Attempt to open the authentication driver
     if ((s_pDriver = LTDeviceConfig_OpenDriverLibForDevice("LTDeviceAuthentication", 0))) {
@@ -464,17 +502,17 @@ static bool LTDeviceAuthenticationImpl_LibInit(void) {
     LT_GetCore()->DestroyHandle(hEfuseUnit);
 
     // Try to open AES CBC crypto driver for fallback
-    s_pAesCbc = lt_createobject_typed(LTDriverCryptoAes128Cbc, LTHardwareCryptoAes128Cbc);
+    s_pLibAesCbc = lt_createobject_typed(LTDriverCryptoAes128Cbc, LTHardwareCryptoAes128Cbc);
 
-    if (!s_pAesCbc) {
+    if (!s_pLibAesCbc) {
         LTLOG("init.fail.no_aes_crypto", "Failed to create AES CBC crypto driver");
         LTDeviceAuthenticationImpl_LibFini();
         return false;
     }
 
     // Try to open entropy driver
-    s_pEntropy = lt_createobject(LTDriverCryptoEntropy);
-    if (!s_pEntropy) {
+    s_pLibEntropy = lt_createobject(LTDriverCryptoEntropy);
+    if (!s_pLibEntropy) {
         LTLOG("init.fail.no_entropy", "Failed to create entropy driver");
         LTDeviceAuthenticationImpl_LibFini();
         return false;

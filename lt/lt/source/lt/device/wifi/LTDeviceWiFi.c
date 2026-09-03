@@ -164,6 +164,7 @@ static const char *DEV_ApSecurityStrings[kLTWiFi_ApSecurity_Max] = { LTWiFi_Secu
 #define SETTINGS_KEY_CHANNEL  SETTINGS_PREFIX "channel"
 #define SETTINGS_KEY_AUTOJOIN SETTINGS_PREFIX "autojoin"
 #define SETTINGS_KEY_REJOIN   SETTINGS_PREFIX "rejoin"
+#define SETTINGS_KEY_COUNTRY  SETTINGS_PREFIX "country"
 
 /// @todo put in system config for dynamic changes
 #define METRICS_SAMPLING_PERIOD 10
@@ -305,6 +306,8 @@ struct WSM_Input {
     LTThread caller_thread;     // only dealloc WSM_Input when NULL
     LTEvent event;              // used to trigger callback
     LTWiFi_VendorIE scan_vendor_ie; // probe-request vendor IE for WS_ScanStart (length 0 = none)
+    LTWiFi_ScanFrameCallback *scan_frame_cb; // raw Beacon/Probe Resp sink for WS_ScanStart (NULL = none)
+    void *scan_frame_ctx;
     union {
         LTWiFi_ScanSpec scan_spec;
         LTWiFi_ApInfo   join_spec;
@@ -328,7 +331,7 @@ enum {
     WiFiConfig_StateMachineStackSize = 1536,
     WiFiConfig_StartTimeoutSeconds = 2,
     WiFiConfig_CheckDriverSeconds = 2,
-    WiFiConfig_ScanTimeoutSeconds = 10,
+    WiFiConfig_ScanTimeoutSeconds = 15,
     WiFiConfig_JoinTimeoutSeconds = 9,
     WiFiConfig_LinkCheckSeconds = 4,
 };
@@ -392,11 +395,12 @@ static void WSM_InitVars(void) {
 /** Forward references ********************************************************/
 
 static WSM_Input *WSM_CreateInput(u8 state);
-static void WSM_PostRequest(WSM_Input *request);
+static bool WSM_PostRequest(WSM_Input *request);
 static void WSM_GotTimer(void * pClientData);
 static void WSM_FreeInput(LTThread_ReleaseReason releaseReason, void *pClientData);
 static void WSM_ProcessInput(void *data);
 static bool API_LoadApSettings(LTWiFi_ApInfo *ap);
+static void DEV_PushCountryCode(void);
 
 /** Misc Utilities ************************************************************/
 
@@ -716,15 +720,17 @@ static WSM_Input *WSM_PopInput(WSM_Queue *queue) {
  * WSM_PostRequest -- Submit an API-created state request to the state machine.
  * If the request includes a callback, it will be called per the details
  * of the API. For example, callback on scan results and scan done.
+ * Returns false when the request was dropped (shutdown, bad state, or the WSM
+ * thread refused the queue entry); no callback of any kind follows a drop.
  */
-static void WSM_PostRequest(WSM_Input *request) {
+static bool WSM_PostRequest(WSM_Input *request) {
     if (!WSM_Thread || request->state >= WS_MaxState) {
         FREE(request);
-        return;
+        return false;
     }
     LTLOG_LEVEL(kLogDebug, "wsm.pst", "WSM PostRequest(%s)", WSM_StateNames_[request->state]);
     request->caller_thread = iThread->GetCurrentThread();
-    iThread->QueueTaskProc(WSM_Thread, WSM_ProcessInput, WSM_FreeInput, request);
+    return iThread->QueueTaskProc(WSM_Thread, WSM_ProcessInput, WSM_FreeInput, request);
 }
 
 /**
@@ -924,6 +930,7 @@ static void WSM_DoNext(WSM_Input *input) {
             INFO_GUARD(DRV_WiFi->GetDriverInfo(DRV_Unit, &DRV_Info));
             // if MAC_Library->IsZero(&DRV_Info.mac_address) indicate problem !!!
             LTLOG("wsm.sta.mac", "STA MAC: %s", MacToStr(&DRV_Info.mac_address));
+            DEV_PushCountryCode();
             iEvent->NotifyEvent(WSM_StatEvent, kLTDeviceWiFi_Status_Up, DRV_Unit);
             WSM_JoinSpec.pass = WSM_JoinPass;
             if (API_LoadApSettings(&WSM_JoinSpec)) {
@@ -1014,7 +1021,8 @@ static void WSM_DoNext(WSM_Input *input) {
             WSM_ScanActive = true;
             WSM_ScanEvent = WSM_ThisRequest.event;
             //LTLOG("event", "------scan event set %lx------", WSM_ScanEvent);
-            if (WSM_ThisRequest.scan_vendor_ie.length > 0 && DRV_WiFi->ScanWithVendorIE) {
+            if ((WSM_ThisRequest.scan_vendor_ie.length > 0 || WSM_ThisRequest.scan_frame_cb)
+                && DRV_WiFi->ScanWithVendorIE) {
                 // Probe-request vendor IE attached (find-host): run the scan via
                 // the driver's vendor-IE path. Routing it through the WSM (rather
                 // than a direct driver call) means the result callback is later
@@ -1022,8 +1030,10 @@ static void WSM_DoNext(WSM_Input *input) {
                 // per-channel find-host sweep can safely start the next scan from
                 // that callback without re-entering the driver's event thread.
                 LTWiFi_ScanWithIE swie;
-                swie.scan     = WSM_ThisRequest.scan_spec;
-                swie.vendorIE = WSM_ThisRequest.scan_vendor_ie;
+                swie.scan          = WSM_ThisRequest.scan_spec;
+                swie.vendorIE      = WSM_ThisRequest.scan_vendor_ie;
+                swie.frameCallback = WSM_ThisRequest.scan_frame_cb;
+                swie.frameCtx      = WSM_ThisRequest.scan_frame_ctx;
                 DRV_WiFi->ScanWithVendorIE(DRV_Unit, &swie, WSM_Scan_DriverCB);
             } else {
                 DRV_WiFi->ScanStart(DRV_Unit, &WSM_ThisRequest.scan_spec, WSM_Scan_DriverCB);
@@ -1133,7 +1143,12 @@ static void WSM_DoNext(WSM_Input *input) {
             break;
 
         case WS_JoinCheck: {
-            if (IS_TIMEOUT) {
+            /* Pull the driver's latest status before checking the timeout --
+             * otherwise a join that just succeeded this same tick reads as
+             * stale (still Authenticating) and a timeout at the same poll
+             * clobbers it into Failed before the callback below can land. */
+            DRV_WiFi->JoinCheck(DRV_Unit);
+            if (IS_TIMEOUT && LTAtomic_Load(&WSM_JoinStatus) < kLTWiFi_JoinStatus_Failed) {
                 LTAtomic_Store(&WSM_JoinStatus, kLTWiFi_JoinStatus_Failed);
             }
             // Sequence through the connection states:
@@ -1180,7 +1195,6 @@ static void WSM_DoNext(WSM_Input *input) {
                 LTAtomic_Store(&WSM_LastJoinStatus, LTAtomic_Load(&WSM_JoinStatus));
                 iEvent->NotifyEvent(WSM_JoinEvent, WSM_JoinStatus, WSM_CallbackData);
             }
-            DRV_WiFi->JoinCheck(DRV_Unit); // nudge driver if necessary
             return; // wait for state timer (even for JoinDone case it's more stable)
         }
 
@@ -1344,6 +1358,25 @@ static bool API_GetMacAddress(LTMacAddress *mac) {
     return true;
 }
 
+static void DEV_PushCountryCode(void) {
+    char cc[8] = "US";
+    if (DEV_OpenSettings()) {
+        LTString cc_setting = ltstring_create("");
+        if (SET_Library->GetStringValue(SETTINGS_KEY_COUNTRY, &cc_setting) && cc_setting[0]) {
+            lt_strncpyTerm(cc, cc_setting, sizeof(cc));
+        }
+        ltstring_destroy(cc_setting);
+    }
+    if (!DRV_WiFi->SetOption(DRV_Unit, "country_code", cc)) {
+        LTLOG("cc.unsup", "driver does not support country_code option");
+        return;
+    }
+    char readback[8] = {0};
+    if (DRV_WiFi->GetOption(DRV_Unit, "country_code", readback) && lt_strcmp(readback, cc) != 0) {
+        LTLOG("cc.mismatch", "set=%s readback=%s", cc, readback);
+    }
+}
+
 static bool API_SetMacAddress(LTMacAddress *mac) {
     if (!LTAtomic_Load(&WSM_DriverUp)) return false;
     bool result = false;
@@ -1403,6 +1436,14 @@ static u32 API_GetOption(char const *option) {
     u32 value = 0;
     if (DRV_WiFi && DRV_WiFi->GetOption(DRV_Unit, option, &value)) return value;
     return 0;
+}
+
+// Regulatory channel plan straight from the driver; DFS channels are included,
+// so a caller that transmits during discovery must stay passive on them until
+// it has heard a beacon.
+static bool API_GetChannelPlan(LTWiFi_ChannelPlan *plan) {
+    if (!plan || !DRV_WiFi || !DRV_WiFi->GetChannelPlan) return false;
+    return DRV_WiFi->GetChannelPlan(DRV_Unit, plan);
 }
 
 static void API_OnStatusChange(LTDeviceWiFi_StatusCallback func, LTThread_ClientDataReleaseProc *clientDataReleaseProc, void * clientData) {
@@ -1494,8 +1535,14 @@ static bool API_SaveApSettings(LTWiFi_ApInfo *ap) {
 
     bool bResult = false;
     if (!ap) {
-        // ap == NULL: Delete all wifi/* settings
+        // ap == NULL: Delete all wifi/* settings, but preserve the provisioned
+        // regulatory country -- forgetting the host credential must not move
+        // the device back to the US default plan.
+        LTString cc = ltstring_create("");
+        bool haveCc = SET_Library->GetStringValue(SETTINGS_KEY_COUNTRY, &cc) && cc[0];
         bResult = SET_Library->DeleteSettingsWithPrefix(SETTINGS_PREFIX);
+        if (haveCc && !SET_Library->SetStringValue(SETTINGS_KEY_COUNTRY, cc)) bResult = false;
+        ltstring_destroy(cc);
     } else if (ap->ssid[0] == '\0') {
         // ap->ssid == "": Delete wifi/{ssid,pass,security}
         bResult = (SET_Library->DeleteSetting(SETTINGS_KEY_SSID)
@@ -1527,17 +1574,73 @@ static bool API_SaveApSettings(LTWiFi_ApInfo *ap) {
     return bResult;
 }
 
+
+/* Deferred end-of-scan marker for a scan rejected before it reached the WSM.
+ * Runs from the API caller's own task queue, so delivery cannot recurse into
+ * a callback that immediately rescans. */
+typedef struct { LTDeviceWiFi_ScanCallback *cb; void *data; } WSM_ScanDoneCtx;
+
+static void WSM_ScanDoneProc(void *pClientData) {
+    WSM_ScanDoneCtx *ctx = (WSM_ScanDoneCtx *)pClientData;
+    ctx->cb(NULL, ctx->data);
+}
+
+static void WSM_ScanDoneRelease(LTThread_ReleaseReason releaseReason, void *pClientData) {
+    LT_UNUSED(releaseReason);
+    FREE(pClientData);
+}
+
+/* Queue the empty end-of-scan marker to the caller's own task queue: inline
+ * delivery can recurse when the callback rescans on the marker.  Falls back
+ * to inline delivery only when the deferral itself fails. */
+static void WSM_ScanDoneDeferred(LTDeviceWiFi_ScanCallback *callback, void *callback_data) {
+    WSM_ScanDoneCtx *ctx;
+    if (ALLOC(ctx)) {
+        ctx->cb   = callback;
+        ctx->data = callback_data;
+        if (iThread->QueueTaskProc(iThread->GetCurrentThread(),
+                                   WSM_ScanDoneProc, WSM_ScanDoneRelease, ctx)) {
+            return;
+        }
+        /* the release proc already freed ctx */
+    }
+    callback(NULL, callback_data);
+}
+
 static void API_ScanAps(LTWiFi_ScanSpec *spec, LTDeviceWiFi_ScanCallback *callback, void *callback_data){
     WSM_Input *req = WSM_CreateInput(WS_ScanStart); // req is cleared
+    if (!req) {
+        /* ScanAps is void: the terminal marker is the caller's only signal,
+         * so even this allocation failure must fire it (as the paths below do). */
+        if (callback) WSM_ScanDoneDeferred(callback, callback_data);
+        return;
+    }
     if (spec) req->scan_spec = *spec; // copy spec
+    LTEvent event = 0;
     if (callback) {
         // Create an event used for the callback. It is created and registered
         // here, but because ScanAps is async, the unregister and destroy must
         // be part of the callback mechanism. See ScanEventProc().
-        req->event = pCore->CreateEvent(&WSM_ScanEventArgs, WSM_ScanEventProc, WSM_ScanEventCompleteProc, NULL, NULL);
-        iEvent->RegisterForEvent(req->event, callback, NULL, callback_data, false);
+        event = pCore->CreateEvent(&WSM_ScanEventArgs, WSM_ScanEventProc, WSM_ScanEventCompleteProc, NULL, NULL);
+        if (!event) {
+            /* A zero event still posts, but the WSM then treats the scan as a
+             * false alarm and never sends the terminal callback. */
+            FREE(req);
+            WSM_ScanDoneDeferred(callback, callback_data);
+            return;
+        }
+        iEvent->RegisterForEvent(event, callback, NULL, callback_data, false);
+        req->event = event;
     }
-    WSM_PostRequest(req);
+    if (WSM_PostRequest(req) || !event) return;
+    // The request never reached the WSM (req is already freed): no scan
+    // notification will fire, so the completion proc that normally
+    // unregisters and destroys the event never runs.  Do it here, and deliver
+    // the terminal marker -- ScanAps is void, so the marker is the only way
+    // the caller can learn the scan died.
+    iEvent->UnregisterFromEvent(event, WSM_ScanEventProc);
+    iEvent->Destroy(event);
+    WSM_ScanDoneDeferred(callback, callback_data);
 }
 
 static void API_JoinAp(LTWiFi_ApInfo *ap, LTDeviceWiFi_JoinCallback *callback, void *callback_data) {
@@ -1681,9 +1784,9 @@ static bool API_SetAutoRfOff(bool enable, u32 timeout_ms)
     return DRV_WiFi->SetAutoRfOff(DRV_Unit, enable, timeout_ms);
 }
 
-static void API_ScanWithVendorIE(LTWiFi_ScanWithIE const *params, LTDeviceWiFi_ScanCallback *cb, void *callback_data)
+static bool API_ScanWithVendorIE(LTWiFi_ScanWithIE const *params, LTDeviceWiFi_ScanCallback *cb, void *callback_data)
 {
-    if (!DRV_WiFi || !DRV_WiFi->ScanWithVendorIE || !params) return;
+    if (!DRV_WiFi || !DRV_WiFi->ScanWithVendorIE || !params) return false;
 
     // Route through the WSM exactly like API_ScanAps, additionally carrying the
     // probe-request vendor IE. The IE and the scan_spec's channel buffer must
@@ -1693,14 +1796,32 @@ static void API_ScanWithVendorIE(LTWiFi_ScanWithIE const *params, LTDeviceWiFi_S
     // the event below), so a per-channel sweep can advance from the result
     // callback without re-entering the driver's scan-done event thread.
     WSM_Input *req = WSM_CreateInput(WS_ScanStart); // req is cleared
-    if (!req) return;
+    if (!req) return false;
     req->scan_spec      = params->scan;
     req->scan_vendor_ie = params->vendorIE;
+    req->scan_frame_cb  = params->frameCallback;
+    req->scan_frame_ctx = params->frameCtx;
+    LTEvent event = 0;
     if (cb) {
-        req->event = pCore->CreateEvent(&WSM_ScanEventArgs, WSM_ScanEventProc, WSM_ScanEventCompleteProc, NULL, NULL);
-        iEvent->RegisterForEvent(req->event, cb, NULL, callback_data, false);
+        event = pCore->CreateEvent(&WSM_ScanEventArgs, WSM_ScanEventProc, WSM_ScanEventCompleteProc, NULL, NULL);
+        if (!event) {
+            /* See API_ScanAps: a zero event never fires the terminal callback.
+             * This entry point may simply reject instead. */
+            FREE(req);
+            return false;
+        }
+        iEvent->RegisterForEvent(event, cb, NULL, callback_data, false);
+        req->event = event;
     }
-    WSM_PostRequest(req);
+    if (WSM_PostRequest(req)) return true;
+    // The request never reached the WSM (req is already freed): no scan
+    // notification will fire, so the completion proc that normally
+    // unregisters and destroys the event never runs.  Do it here.
+    if (event) {
+        iEvent->UnregisterFromEvent(event, WSM_ScanEventProc);
+        iEvent->Destroy(event);
+    }
+    return false;
 }
 /*******************************************************************************
  * Library Standard Functions
@@ -1793,4 +1914,5 @@ define_LTDEVICE_LIBRARY_ROOT_INTERFACE(LTDeviceWiFi, LTDeviceWiFiImpl_Run, 1024)
     .TxMgmtFrame                = API_TxMgmtFrame,
     .SetAutoRfOff               = API_SetAutoRfOff,
     .ScanWithVendorIE           = API_ScanWithVendorIE,
+    .GetChannelPlan             = API_GetChannelPlan,
 LTLIBRARY_DEFINITION;
