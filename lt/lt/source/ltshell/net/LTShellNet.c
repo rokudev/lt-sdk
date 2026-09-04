@@ -17,14 +17,15 @@
 #include <lt/net/monitor/LTNetMonitor.h>
 #include <lt/net/core/LTNetCoreDriver.h>
 #include <lt/net/iperf3/LTNetIperf3.h>
-#include <lt/system/shell/LTSystemShell.h>
+#include <lt/net/speed/LTNetSpeed.h>
+#include <lt/system/schell/LTSystemSchell.h>
 #include <lt/system/settings/LTSystemSettings.h>
 #include <lt/device/config/LTDeviceConfig.h>
 #include <lt/device/wifi/LTDeviceWiFi.h>
 
 DEFINE_LTLOG_SECTION("shell.net");
 
-#define PS(x...) lt_gethandleinterface(ILTShell, hShell)->Print(hShell, x)
+#define PS(x...) shell->API->Print(shell, x)
 
 /*******************************************************************************
  * Static Variables
@@ -32,17 +33,18 @@ DEFINE_LTLOG_SECTION("shell.net");
 
 static struct Statics {
     LTCore        *core;
-    LTSystemShell *shell;
     LTNetCore     *netCore;
     LTNetMonitor  *netMonitor;
     LTNetEcho     *netEcho;
     LTNetIperf3   *netIperf;
     LTLibrary     *selfLib;
+    LTTransport   hTransport;
+    LTNetSpeed    *netSpeed;
 } S;
 
 /** Forward Declarations ******************************************************/
 
-static int LTShellNet_Help(LTShell hShell, int argc, const char *argv[]);
+static int LTShellNet_Help(LTSystemSchell *shell, int argc, const char *argv[]);
 
 /** Utility Functions *********************************************************/
 
@@ -56,7 +58,7 @@ static u16 HasArg(int argc, const char *argv[], const char *pattern) {
 
 /** Command Functions *********************************************************/
 
-static int LTShellNet_AutoBoot(LTShell hShell, int argc, const char *argv[]) { LT_UNUSED(argc); LT_UNUSED(argv);
+static int LTShellNet_AutoBoot(LTSystemSchell *shell, int argc, const char *argv[]) { LT_UNUSED(argc); LT_UNUSED(argv);
     // Note: This will clobber any other shell boot cmd
     LTSystemSettings *lib = lt_openlibrary(LTSystemSettings);
     if (!lib) return -1;
@@ -67,13 +69,13 @@ static int LTShellNet_AutoBoot(LTShell hShell, int argc, const char *argv[]) { L
 }
 
 typedef struct {
-    LTShell hShell;
+    LTSystemSchell *shell;
     char    hostName[1];
 } DnsLookup;
 
 static void OnDnsEvent(LTSocket hSocket, LTSocket_Event event, void *clientData) {
     DnsLookup  *pDnsLookup = clientData;
-    LTShell     hShell = pDnsLookup->hShell;
+    LTSystemSchell *shell = pDnsLookup->shell;
     const char *hostName = pDnsLookup->hostName;
 
     switch (event) {
@@ -109,7 +111,7 @@ static void OnDnsEvent(LTSocket hSocket, LTSocket_Event event, void *clientData)
    lt_free(pDnsLookup);
 }
 
-static int LTShellNet_Host(LTShell hShell, int argc, const char *argv[]) {
+static int LTShellNet_Host(LTSystemSchell *shell, int argc, const char *argv[]) {
     const LT_SIZE sockSpecMax = 256;
     char *sockSpec = lt_malloc(sockSpecMax);
     if (!sockSpec) {
@@ -127,7 +129,7 @@ static int LTShellNet_Host(LTShell hShell, int argc, const char *argv[]) {
             ret++;
             break;
         }
-        pDnsLookup->hShell = hShell;
+        pDnsLookup->shell = shell;
         lt_memcpy(pDnsLookup->hostName, hostName, hostNameLen + 1);
 
         lt_snprintf(sockSpec, sockSpecMax, "dns host: %s", hostName);
@@ -145,7 +147,7 @@ static int LTShellNet_Host(LTShell hShell, int argc, const char *argv[]) {
     return ret;
 }
 
-static int LTShellNet_Status(LTShell hShell, int argc, const char *argv[]) { LT_UNUSED(argc); LT_UNUSED(argv);
+static int LTShellNet_Status(LTSystemSchell *shell, int argc, const char *argv[]) { LT_UNUSED(argc); LT_UNUSED(argv);
     char buff[80] = {};
     S.netCore->GetTransportSpec(0, buff, sizeof(buff));
     PS("Config: %s\n", buff);
@@ -167,7 +169,7 @@ static int LTShellNet_Status(LTShell hShell, int argc, const char *argv[]) { LT_
 }
 
 static void OnPingEvent(LTHandle hPing, u16 id, u16 count, void *data) { LT_UNUSED(hPing);
-    LTShell hShell = VOIDPTR_TO_LTHANDLE(data);
+    LTSystemSchell *shell = (LTSystemSchell *)data;
     static LTTime TimeSent;
     if (!id) {
         if (count == 1) PS("\n"); // avoid collision with shell prompt
@@ -180,7 +182,7 @@ static void OnPingEvent(LTHandle hPing, u16 id, u16 count, void *data) { LT_UNUS
     }
 }
 
-static int LTShellNet_Ping(LTShell hShell, int argc, const char *argv[]) {
+static int LTShellNet_Ping(LTSystemSchell *shell, int argc, const char *argv[]) {
     if (!S.netEcho) S.netEcho = lt_openlibrary(LTNetEcho);
     if (!S.netEcho) {
         PS("Error: LTNetEcho did not open\n");
@@ -201,11 +203,114 @@ static int LTShellNet_Ping(LTShell hShell, int argc, const char *argv[]) {
         msec = lt_strtou32(argv[n+1], NULL, 10);
     }
     if (dest) PS("Ping %s\n", dest);
-    S.netEcho->Ping(0, dest, 1234, count, msec, NULL, 0, OnPingEvent, LTHANDLE_TO_VOIDPTR(hShell));
+    S.netEcho->Ping(0, dest, 1234, count, msec, NULL, 0, OnPingEvent, (void *)shell);
     return 0;
 }
 
-static int LTShellNet_WD(LTShell hShell, int argc, const char *argv[]) { LT_UNUSED(hShell); LT_UNUSED(argc); LT_UNUSED(argv);
+static struct SpeedData {
+    LTSocket  hSocket;
+    char     *sockSpec;
+    char     *httpReq;
+    bool      reqSent;
+    char     *dataBuf;
+    u32       dataSize;
+    u32       totalBytes;
+    LTTime    timeZero;
+    s32       count;
+    u32       kbps;
+} SD;
+
+static void OnSpeedEvent(LTSocket socket, LTSocket_Event event, void *clientData) {
+    LTSystemSchell *shell = (LTSystemSchell *)clientData;
+    // PS("=== Event: socket: H%04lx event: 0x%lx\n", LT_Pu32(socket), LT_Pu32(event));
+    ILTSocket *pSocket = lt_gethandleinterface(ILTSocket, socket);
+    switch (event) {
+        case kLTSocket_Event_WriteReady:
+            if (SD.httpReq) {
+                if (SD.reqSent) break;
+                SD.reqSent = true;
+                pSocket->WriteSocket(socket, SD.httpReq, lt_strlen(SD.httpReq));
+            }
+            break;
+        case kLTSocket_Event_ReadReady:
+            if (!SD.dataBuf) break;
+            if (LTTime_IsZero(SD.timeZero)) SD.timeZero = S.core->GetKernelTime();
+            s32 len = 0;
+            for(s32 n = 1; n > 0 && SD.dataSize-len-1 > 0; len += n) { // leaves space for terminator
+                n = pSocket->ReadSocket(socket, SD.dataBuf + len, SD.dataSize - len - 1);
+            }
+            SD.dataBuf[len] = 0;
+            //S.core->ConsoleStompString(SD.dataBuf);
+            u32 usec = (u32)LTTime_GetMicroseconds(LTTime_Subtract(S.core->GetKernelTime(), SD.timeZero));
+            SD.totalBytes += len;
+            u32 kbps = (u64)SD.totalBytes * 8000 / usec;
+            if (kbps > 999999) kbps = 999999; // avoid nonsense
+            PS("bytes: %6lu msec:%5lu.%03lu kbps:%6lu\n", LT_Pu32(SD.totalBytes), LT_Pu32(usec)/1000, LT_Pu32(usec)%1000, LT_Pu32(kbps));
+            if (usec > 5 * 1000000) {
+                lt_free(SD.dataBuf);
+                SD.dataBuf = NULL;
+                S.core->DestroyHandle(socket);
+                PS("Test done\n");
+            }
+            break;
+        case kLTSocket_Event_Connected:
+            PS("Connected\n");
+            break;
+        case kLTSocket_Event_Disconnected:
+            PS("Disconnected\n");
+            lt_free(SD.dataBuf);
+            SD.dataBuf = NULL;
+            S.core->DestroyHandle(socket);
+            PS("Test done\n");
+            break;
+        case kLTSocket_Event_SocketReady:
+        case kLTSocket_Event_DnsResolved:
+            break;
+        default:
+            PS("=== Odd Event: socket: H%04lx event: 0x%lx\n", LT_Pu32(socket), LT_Pu32(event));
+            break;
+    }
+}
+
+static int LTShellNet_Speed(LTSystemSchell *shell, int argc, const char *argv[]) { LT_UNUSED(shell);
+    if (HasArg(argc, argv, "-h")) {
+        PS("Usage: speed [-u | -h]\n");
+        PS("  speed    : simple TCP RX speed test\n");
+        PS("  speed -u : simple UDP TX speed test\n");
+        PS("  speed -h : help - this text\n");
+        return 0;
+    }
+    if (HasArg(argc, argv, "-u")) {
+        if (!S.netSpeed) S.netSpeed = lt_openlibrary(LTNetSpeed);
+        if (!S.netSpeed) {
+            PS("Error: LTNetspeed did not open\n");
+            return -1;
+        }
+        // Run LinkSpeed 1000ms 5 times and average the results
+        u32 kbps = 0;
+        for (int count = 0; count < 5 ; count++) {
+            kbps += S.netSpeed->LinkSpeed(1000, 0, true, NULL, NULL);
+        }
+        kbps /= 5;
+        PS("LinkSpeed: %3lu.%03lu Mbps\n", LT_Pu32(kbps/1000), LT_Pu32(kbps%1000));
+        return 0;
+    } else {
+        SD = (struct SpeedData) { // also zeros unspecified fields
+            .sockSpec  = "tcp host: image.roku.com port: 80",
+            .httpReq   = "GET /Znctd2lmaS00/test200MB.db HTTP/1.1\r\nHost: image.roku.com:80\r\nConnection: close\r\n\r\n",
+            .dataSize = 10000
+        };
+    }
+    if (!(SD.dataBuf = lt_malloc(SD.dataSize))) return -1;
+    lt_memset(SD.dataBuf, 0, SD.dataSize);
+    if (!S.netCore->OpenSocket(0, SD.sockSpec, OnSpeedEvent, (void *)shell)) {
+        lt_free(SD.dataBuf);
+        return -2;
+    }
+    return 0;
+}
+
+static int LTShellNet_WD(LTSystemSchell *shell, int argc, const char *argv[]) { LT_UNUSED(shell); LT_UNUSED(argc); LT_UNUSED(argv);
     LTDeviceWiFi  *wifi = lt_openlibrary(LTDeviceWiFi);
     if (!wifi) return -1;
     // This method of disconnect is for testing purposes only. It is done here to provide
@@ -215,7 +320,14 @@ static int LTShellNet_WD(LTShell hShell, int argc, const char *argv[]) { LT_UNUS
     return 0;
 }
 
-static int LTShellNet_Iperf(LTShell hShell, int argc, const char *argv[]) {
+static volatile bool s_iperfDone;
+static volatile bool s_iperfError;
+static void IperfClientCallback(const char *report, void *clientData) {
+    LT_UNUSED(clientData);
+    if (lt_strncmp(report, "results", 7) == 0) s_iperfDone = true;
+    if (lt_strncmp(report, "Error:", 6) == 0) s_iperfError = true;
+}
+static int LTShellNet_Iperf(LTSystemSchell *shell, int argc, const char *argv[]) {
     if (!S.netIperf) S.netIperf = lt_openlibrary(LTNetIperf3);
     if (!S.netIperf) {
         PS("Error: LTNetIperf3 did not open\n");
@@ -283,7 +395,19 @@ static int LTShellNet_Iperf(LTShell hShell, int argc, const char *argv[]) {
         PS("Running iPerf3 %s client, port %ld\n",
            params.udp ? "udp" : "tcp",
            LT_Pu32(params.port ? params.port : kLTNetIperf3_Default_Port));
-        S.netIperf->RunClient(ipaddr, &params, NULL, NULL);
+        s_iperfDone = false;
+        s_iperfError = false;
+        S.netIperf->RunClient(ipaddr, &params, IperfClientCallback, NULL);
+        /* Wait for test to complete — Yield processes socket events */
+        ILTThread *iThread = lt_getlibraryinterface(ILTThread, S.core);
+        u32 timeout = (params.time ? params.time : 10) + 5;
+        for (u32 i = 0; i < timeout * 10 && !s_iperfDone && !s_iperfError; i++) {
+            iThread->Yield();
+            iThread->Sleep(LTTime_Milliseconds(100));
+        }
+        if (s_iperfDone) PS("iperf3 client done\n");
+        else if (s_iperfError) PS("iperf3 client error\n");
+        else PS("iperf3 client timeout\n");
     } else {
         PS("Usage: iperf3 {-c <ipaddr> | -s} [-u | -p port | -t time | -b bitrate]\n");
         PS("When invoked with '-c', provide server IP address.\n");
@@ -299,8 +423,40 @@ static int LTShellNet_Iperf(LTShell hShell, int argc, const char *argv[]) {
     }
     return 0;
 }
-static int LTShellNet_LwipStat(LTShell hShell, int argc, const char *argv[]) {
-    LT_UNUSED(hShell); LT_UNUSED(argc); LT_UNUSED(argv);
+static int LTShellNet_Open(LTSystemSchell *shell, int argc, const char *argv[]) {
+    LT_UNUSED(argc); LT_UNUSED(argv);
+    if (S.hTransport) {
+        char spec[128] = {};
+        S.netCore->GetTransportSpec(S.hTransport, spec, (u16)sizeof(spec));
+        PS("Transport already open: %s\n", spec);
+        return 0;
+    }
+    S.hTransport = S.netCore->OpenTransport(NULL, NULL, NULL);
+    if (!S.hTransport) {
+        PS("Error: cannot open default transport\n");
+        return -1;
+    }
+    PS("Transport opened, waiting for DHCP...\n");
+    ILTThread *iThread = lt_getlibraryinterface(ILTThread, S.core);
+    char spec[128];
+    /* Poll for DHCP completion: 150 iterations x 100 ms = 15 s timeout */
+    for (int i = 0; i < 150; i++) {
+        iThread->Yield();
+        iThread->Sleep(LTTime_Milliseconds(100));
+        spec[0] = 0;
+        S.netCore->GetTransportSpec(S.hTransport, spec, (u16)sizeof(spec));
+        if (lt_strstr(spec, "gw:")) {
+            PS("Transport up: %s\n", spec);
+            return 0;
+        }
+    }
+    /* Keep transport open — it may still be initializing and DHCP can complete later */
+    PS("DHCP timeout (transport remains open)\n");
+    return -1;
+}
+
+static int LTShellNet_LwipStat(LTSystemSchell *shell, int argc, const char *argv[]) {
+    LT_UNUSED(shell); LT_UNUSED(argc); LT_UNUSED(argv);
     LTDeviceConfig *deviceConfig = lt_openlibrary(LTDeviceConfig);
     if (!deviceConfig) {
         return 0;
@@ -322,6 +478,7 @@ static const LTSystemShell_CommandDesc NetCommands[] = {
     { "help",       LTShellNet_Help,     "list of net commands",               NULL },
     { "autoboot",   LTShellNet_AutoBoot, "enable LTShellNet autoboot",         NULL },
     { "host",       LTShellNet_Host,     "host hostname [hostname ...]",       NULL },
+    { "open",       LTShellNet_Open,     "open transport and wait for DHCP",    NULL },
     { "status",     LTShellNet_Status,   "print network details and metrics",  NULL },
     { "metrics",    LTShellNet_Status,   "print network details and metrics",  NULL },
     { "ping",       LTShellNet_Ping,     "ping [<ip>] [-c <count>] [-i msec]", NULL },
@@ -331,32 +488,32 @@ static const LTSystemShell_CommandDesc NetCommands[] = {
     { }
 };
 
-static int LTShellNet_Help(LTShell hShell, int argc, const char *argv[]) { LT_UNUSED(argc); LT_UNUSED(argv);
-    for (int n = 0; NetCommands[n].pCommand; n++) {
-        PS("  %-10s - %s\n", NetCommands[n].pCommand, NetCommands[n].pDescription);
+static int LTShellNet_Help(LTSystemSchell *shell, int argc, const char *argv[]) { LT_UNUSED(argc); LT_UNUSED(argv);
+    for (int n = 0; NetCommands[n].name; n++) {
+        PS("  %-10s - %s\n", NetCommands[n].name, NetCommands[n].desc);
     }
     return 0;
 }
 
 
-static int LTShellNet_Net(LTShell hShell, int argc, const char *argv[]) {
+static int LTShellNet_Net(LTSystemSchell *shell, int argc, const char *argv[]) {
     int cmd = 0;
     if (argc > 1) {
-        for (int n = 0; NetCommands[n].pCommand; n++) {
-            if (0 == lt_strcmp(NetCommands[n].pCommand, argv[1])) {
+        for (int n = 0; NetCommands[n].name; n++) {
+            if (0 == lt_strcmp(NetCommands[n].name, argv[1])) {
                 cmd = n;
                 break;
             }
         }
     }
-    return NetCommands[cmd].pCommandProc(hShell, argc-1, argv+1);
+    return NetCommands[cmd].proc(shell, argc-1, argv+1);
 }
 
-static void LTShell_Help(LTShell hShell, int argc, const char ** argv) {
+static void LTShell_Help(LTSystemSchell *shell, int argc, const char ** argv) {
     /* This LTShell Help proc is so "help net" works in addition to "net help".
        It prints usage and calls the regular LTShellNet_Help */
     PS("usage: net <command> [args]\nCommands:\n");
-    (void)LTShellNet_Help(hShell, argc, argv);
+    (void)LTShellNet_Help(shell, argc, argv);
 }
 
 static const LTSystemShell_CommandDesc LTShellNet_Commands[] = {
@@ -368,12 +525,19 @@ static const LTSystemShell_CommandDesc LTShellNet_Commands[] = {
  ******************************************************************************/
 
 static void LTShellNetImpl_LibFini(void) {
+    if (S.hTransport) { S.core->DestroyHandle(S.hTransport); S.hTransport = 0; }
     lt_closelibrary(S.netMonitor); // null okay
     lt_closelibrary(S.netEcho);    // null okay
     lt_closelibrary(S.netCore);    // null okay
-    if (S.shell) {
-        S.shell->UnregisterCommands(LTShellNet_Commands);
-        lt_closelibrary(S.shell);
+    {
+        LTSystemSchell *sh = LTSystemSchellConsole_GetConsoleShell();
+        if (sh) {
+            LTSystemShell_CommandTable table = {
+                .commands    = LTShellNet_Commands,
+                .numCommands = sizeof(LTShellNet_Commands) / sizeof(LTShellNet_Commands[0])
+            };
+            sh->API->UnregisterCommands(sh, &table);
+        }
     }
     S = (struct Statics) {};
 }
@@ -385,9 +549,15 @@ static bool LTShellNetImpl_LibInit(void) {
     const char *reason;
     do {
         reason = "no shell";
-        if (!(S.shell = lt_openlibrary(LTSystemShell))) break;
-        S.shell->RegisterCommands(LTShellNet_Commands, sizeof(LTShellNet_Commands) / sizeof(LTShellNet_Commands[0]));
-
+        LTSystemSchell *sh = LTSystemSchellConsole_GetConsoleShell();
+        if (!sh) break;
+        {
+            LTSystemShell_CommandTable table = {
+                .commands    = LTShellNet_Commands,
+                .numCommands = sizeof(LTShellNet_Commands) / sizeof(LTShellNet_Commands[0])
+            };
+            sh->API->RegisterCommands(sh, &table);
+        }
         reason = "no LTNetCore";
         if (!(S.netCore = lt_openlibrary(LTNetCore))) break;
 

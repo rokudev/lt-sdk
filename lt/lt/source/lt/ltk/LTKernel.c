@@ -142,12 +142,15 @@ bool LTKThreadInitializeAndRun(void * pInstance, u8 nPriority, u32 nStackSize,
                                   const char * pName, void (* pThreadProc)(void * pClientData),
                                   void * pClientData) {
     bool bSuccess = false;
-    u8 * pStackBottom = LTKAlloc(nStackSize);
+    u32 nAllocatedStackSize = nStackSize + LTK_ARCH_THREAD_STACK_RESERVE;
+    if (nAllocatedStackSize < nStackSize) return false;
+    u8 * pStackBottom = LTKAlloc(nAllocatedStackSize);
     if (pStackBottom) {
         LTKThread * pThread = (LTKThread *)pInstance;
         pThread->pInstanceData = pThread;
         pThread->pName = pName;
-        if (InitAndRunThread(pThread, nPriority, pThreadProc, pClientData, pStackBottom, (LT_SIZE)nStackSize)) {
+        if (InitAndRunThread(pThread, nPriority, pThreadProc, pClientData, pStackBottom,
+                                (LT_SIZE)nAllocatedStackSize)) {
             bSuccess = true;
         } else {
             LTKFree(pStackBottom);

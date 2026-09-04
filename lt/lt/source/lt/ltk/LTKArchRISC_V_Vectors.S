@@ -1,7 +1,6 @@
 /******************************************************************************
  * lt/source/lt/ltk/LTKArchRISC_V_Vectors.S                     LTK MicroKernel
  *
- *
  * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
  * If a copy of the MPL was not distributed with this file, you can obtain one at
  * https://mozilla.org/MPL/2.0/.
@@ -46,7 +45,8 @@ _LTK_nTrapNestingCounter:
     .type     _LTKMachineTrapHandler, @function
     .balign   64, 0
 _LTKMachineTrapHandler:
-    /* Save Context */
+    /* Save Context: integer and FP context occupy one frame, so the saved stack
+     *   pointer is the thread's true low-water mark for _LTKStackCheck(). */
     addi      sp, sp, -LTK_ARCH_RISC_V_STACK_PTR_ADJ
     sw        a0, LTK_FRAME(A0)(sp)
     sw        a1,    4(sp)
@@ -79,42 +79,41 @@ _LTKMachineTrapHandler:
     sw        a0, LTK_FRAME(MSTATUS)(sp)
     sw        ra, LTK_FRAME(RA)(sp)
 #if defined(__riscv_flen)
-    addi                       sp, sp, -LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
-    LTK_ARCH_RISC_V_FP_STORE   f0,   1*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f1,   2*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f2,   3*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f3,   4*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f4,   5*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f5,   6*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f6,   7*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f7,   8*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f8,   9*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f9,  10*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f10, 11*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f11, 12*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f12, 13*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f13, 14*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f14, 15*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f15, 16*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f16, 17*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f17, 18*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f18, 19*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f19, 20*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f20, 21*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f21, 22*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f22, 23*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f23, 24*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f24, 25*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f25, 26*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f26, 27*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f27, 28*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f28, 29*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f29, 30*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f30, 31*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_STORE   f31, 32*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f0,  LTK_FP_FRAME(0)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f1,  LTK_FP_FRAME(1)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f2,  LTK_FP_FRAME(2)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f3,  LTK_FP_FRAME(3)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f4,  LTK_FP_FRAME(4)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f5,  LTK_FP_FRAME(5)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f6,  LTK_FP_FRAME(6)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f7,  LTK_FP_FRAME(7)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f8,  LTK_FP_FRAME(8)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f9,  LTK_FP_FRAME(9)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f10, LTK_FP_FRAME(10)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f11, LTK_FP_FRAME(11)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f12, LTK_FP_FRAME(12)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f13, LTK_FP_FRAME(13)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f14, LTK_FP_FRAME(14)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f15, LTK_FP_FRAME(15)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f16, LTK_FP_FRAME(16)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f17, LTK_FP_FRAME(17)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f18, LTK_FP_FRAME(18)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f19, LTK_FP_FRAME(19)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f20, LTK_FP_FRAME(20)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f21, LTK_FP_FRAME(21)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f22, LTK_FP_FRAME(22)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f23, LTK_FP_FRAME(23)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f24, LTK_FP_FRAME(24)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f25, LTK_FP_FRAME(25)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f26, LTK_FP_FRAME(26)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f27, LTK_FP_FRAME(27)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f28, LTK_FP_FRAME(28)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f29, LTK_FP_FRAME(29)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f30, LTK_FP_FRAME(30)(sp)
+    LTK_ARCH_RISC_V_FP_STORE   f31, LTK_FP_FRAME(31)(sp)
+    /* t0 was saved with the integer context above, so frcsr may clobber it */
     frcsr                      t0
-    sw                         t0,  33*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    addi                       sp, sp, LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
+    sw                         t0,  LTK_FRAME(FCSR)(sp)
 #endif
     mv        a0, sp
 
@@ -153,7 +152,7 @@ SystemCall:
     addi      t0, t0, 4
 
 Dispatch:
-    /* Interrupts remain disabled upon entering dispatcher, and shall be disabled after exit. */
+    /* Interrupts remain disabled upon entering dispatcher, and shall be disabled after exit. */ 
     sw        t0, LTK_FRAME(MEPC)(a0)
     call      _LTKDispatcher
 
@@ -169,42 +168,40 @@ Restore:
 
     /* Restore Context */
 #if defined(__riscv_flen)
-    addi                      sp, sp, -LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
-    LTK_ARCH_RISC_V_FP_LOAD   f0,   1*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f1,   2*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f2,   3*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f3,   4*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f4,   5*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f5,   6*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f6,   7*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f7,   8*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f8,   9*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f9,  10*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f10, 11*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f11, 12*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f12, 13*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f13, 14*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f14, 15*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f15, 16*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f16, 17*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f17, 18*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f18, 19*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f19, 20*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f20, 21*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f21, 22*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f22, 23*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f23, 24*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f24, 25*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f25, 26*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f26, 27*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f27, 28*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f28, 29*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f29, 30*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f30, 31*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    LTK_ARCH_RISC_V_FP_LOAD   f31, 32*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    lw                        t0,  33*LTK_ARCH_RISC_V_FP_REG_SIZE(sp)
-    fscsr                     t0
-    addi                      sp, sp, LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
+    LTK_ARCH_RISC_V_FP_LOAD    f0,  LTK_FP_FRAME(0)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f1,  LTK_FP_FRAME(1)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f2,  LTK_FP_FRAME(2)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f3,  LTK_FP_FRAME(3)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f4,  LTK_FP_FRAME(4)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f5,  LTK_FP_FRAME(5)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f6,  LTK_FP_FRAME(6)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f7,  LTK_FP_FRAME(7)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f8,  LTK_FP_FRAME(8)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f9,  LTK_FP_FRAME(9)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f10, LTK_FP_FRAME(10)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f11, LTK_FP_FRAME(11)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f12, LTK_FP_FRAME(12)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f13, LTK_FP_FRAME(13)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f14, LTK_FP_FRAME(14)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f15, LTK_FP_FRAME(15)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f16, LTK_FP_FRAME(16)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f17, LTK_FP_FRAME(17)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f18, LTK_FP_FRAME(18)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f19, LTK_FP_FRAME(19)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f20, LTK_FP_FRAME(20)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f21, LTK_FP_FRAME(21)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f22, LTK_FP_FRAME(22)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f23, LTK_FP_FRAME(23)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f24, LTK_FP_FRAME(24)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f25, LTK_FP_FRAME(25)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f26, LTK_FP_FRAME(26)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f27, LTK_FP_FRAME(27)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f28, LTK_FP_FRAME(28)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f29, LTK_FP_FRAME(29)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f30, LTK_FP_FRAME(30)(sp)
+    LTK_ARCH_RISC_V_FP_LOAD    f31, LTK_FP_FRAME(31)(sp)
+    lw                         t0,  LTK_FRAME(FCSR)(sp)
+    fscsr                      t0
 #endif
     lw        a0, LTK_FRAME(MSTATUS)(sp)
     csrw      mstatus, a0
