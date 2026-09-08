@@ -143,6 +143,7 @@ bool LTKThreadInitializeAndRun(void * pInstance, u8 nPriority, u32 nStackSize,
                                   void * pClientData) {
     bool bSuccess = false;
     u32 nAllocatedStackSize = nStackSize + LTK_ARCH_THREAD_STACK_RESERVE;
+    // Guard against u32 wraparound when the architecture reserve is added.
     if (nAllocatedStackSize < nStackSize) return false;
     u8 * pStackBottom = LTKAlloc(nAllocatedStackSize);
     if (pStackBottom) {
