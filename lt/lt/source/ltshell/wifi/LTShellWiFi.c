@@ -263,14 +263,9 @@ static void /*LTDeviceWiFi_JoinCallback*/ SHL_JoinCallback(LTWiFi_JoinStatus sta
 static int SHL_Scan(LTShell hShell, int argc, const char *argv[]) {
     LTWiFi_ScanSpec spec = {};
     LTWiFi_ScanSpec *spec_ptr = NULL;
-    // ScanAps copies the spec shallowly, so spec.ssid / spec.channel are still
-    // read on the WiFi state-machine thread after this frame returns and must
-    // not be stack buffers. Static is safe: the shell runs one scan at a time.
-    static char target_ssid[256];
-    static u8 target_channels[16];
+    char target_ssid[256] = {0, };
+    u8 target_channels[16] = {0, };
     int pos = 0;
-    lt_memset(target_ssid, 0, sizeof(target_ssid));
-    lt_memset(target_channels, 0, sizeof(target_channels));
     SHL_ScanRepeat = 1;
     SHL_ScanProbes = false;
     if (HasArg(argc, argv, "-r")) SHL_ScanRepeat = 4;    // repeat a few times
