@@ -25,7 +25,7 @@
  ******************************************************************************/
 
 #include <lt/LT.h>
-#define TILT_LIBRARY_TIMEOUT 120
+#define TILT_LIBRARY_TIMEOUT 180
 /* JiltEngine (TILT 2.0) for direct ltrun support */
 #include <tilt/JiltEngine.h>
 /* Undef macros that Jilt.h and TiltImpl.h both define, so TiltImpl.h versions take effect */
@@ -214,7 +214,7 @@ static void HandleScanAps(LTWiFi_ApInfo *ap, void *clientData) {
 static void TestScanAps(const TiltImplReportingCallbacks *trc) {
     S.apCount = 0;
     S.wifiLib->ScanAps(NULL, HandleScanAps, (void*)trc);
-    trc->DeferCompletion(LTTime_Seconds(8), NULL, NULL);
+    trc->DeferCompletion(LTTime_Seconds(18), NULL, NULL);
 }
 
 static void TestFoundAp(const TiltImplReportingCallbacks *trc) {

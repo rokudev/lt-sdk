@@ -85,6 +85,10 @@ typedef union {
   #error "LT_LTKERNEL_ARCHITECTURE must be defined in platform Makefile.config"
 #endif
 
+#ifndef LTK_ARCH_THREAD_STACK_RESERVE
+  #define LTK_ARCH_THREAD_STACK_RESERVE    0
+#endif
+
 /****************
  * Kernel Style *
  *  Style 1 - The scheduler is always invoked on interrupt return; unmaskable service calls are used

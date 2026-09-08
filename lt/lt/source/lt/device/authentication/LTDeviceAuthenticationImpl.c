@@ -46,8 +46,23 @@ static LTDeviceEfuse *s_pLibEfuse = NULL;
 static ILTDriverEfuseDeviceUnit *s_iEfuse = NULL;
 
 /*******************************************************************************
+ * The chip ID carries a 5 bit platform number in its upper bits, which has to
+ * come off before the sequential part of the ID can be range checked:        */
+#define kChipIdSequenceMask 0x07FFFFFFu
+
+/*******************************************************************************
+ * Chip IDs below this are provisioned with the development keys.  Platforms
+ * that need a different limit set "devKeyChipIdLimit" in their
+ * LTDeviceAuthentication config section; BlueRidge does, because test parts
+ * were built past this limit before the range was settled on.               */
+#define kDefaultDevKeyChipIdLimit 0x200u
+
+static u32 s_devKeyChipIdLimit = kDefaultDevKeyChipIdLimit;
+
+/*******************************************************************************
  * Some needed forward declarations:                                          */
 static bool LTDeviceAuthentication_IsSecureDevice(void);
+static u32  LTDeviceAuthentication_GetChipID(void);
 
 /*******************************************************************************
  * The implementations of our functionality:                                  */
@@ -347,8 +362,18 @@ static bool LTDeviceAuthentication_IsUsingDevKeys(void) {
         return s_iAuth->IsUsingDevKeys();
     }
 
-    // Default to false (not using DEV keys)
-    return false;
+    // A secure part is running the development keys when the sequential portion
+    // of its chip ID falls below the platform's limit.  This mirrors how the
+    // host picks the development master key when deriving AES_KEY1, so that the
+    // flag reported here matches the keys the host will actually use.
+    u32 chipID = LTDeviceAuthentication_GetChipID();
+
+    // An unsecure part, or one whose chip ID could not be read, has no keys to
+    // report on.  GetChipID() already returns 0xffffffff unless the part is
+    // secure and the field could be read.
+    if (chipID == 0 || chipID == 0xffffffff) return false;
+
+    return (chipID & kChipIdSequenceMask) < s_devKeyChipIdLimit;
 }
 
 static u32 LTDeviceAuthentication_GetChipID(void) {
@@ -415,6 +440,19 @@ static void LTDeviceAuthenticationImpl_LibFini(void) {
  * will be used instead                                                       */
 static bool LTDeviceAuthenticationImpl_LibInit(void) {
     LTLOG("init.begin", NULL);
+
+    // Pick up this platform's development key chip ID limit, if it overrides
+    // the default.  Absent (or zero) leaves the default in place.
+    LTDeviceConfig *pDeviceConfig = lt_openlibrary(LTDeviceConfig);
+    if (pDeviceConfig) {
+        u32 section = pDeviceConfig->GetDeviceSection("LTDeviceAuthentication");
+        if (section) {
+            s64 limit = pDeviceConfig->ReadInteger(section, "devKeyChipIdLimit");
+            if (limit > 0) s_devKeyChipIdLimit = (u32)limit;
+        }
+        lt_closelibrary(pDeviceConfig);
+    }
+    LTLOG("init.devkey.limit", "devKeyChipIdLimit:0x%lx", LT_Pu32(s_devKeyChipIdLimit));
 
     // Attempt to open the authentication driver
     if ((s_pDriver = LTDeviceConfig_OpenDriverLibForDevice("LTDeviceAuthentication", 0))) {
