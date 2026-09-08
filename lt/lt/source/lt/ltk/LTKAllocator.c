@@ -109,7 +109,12 @@ u32 LTKHeapScrubLTMemoryRegionFlags(u32 nFlags) {
         nFlags &= ~(kLTMemoryRegionFlags_Malloc | kLTMemoryRegionFlags_MallocFromRegion); // can't malloc noinit regions
         nFlags |= kLTMemoryRegionFlags_NoStackMalloc;
     }
-    if (nFlags & kLTMemoryRegionFlags_Malloc) nFlags |= kLTMemoryRegionFlags_MallocFromRegion; // any region we can malloc we can malloc from region
+    if (nFlags & kLTMemoryRegionFlags_Malloc) {
+	nFlags |= kLTMemoryRegionFlags_MallocFromRegion; // any region we can malloc we can malloc from region
+    }
+    else {
+	nFlags |= kLTMemoryRegionFlags_NoStackMalloc; // only stack malloc if we can do regular malloc
+    }
     return nFlags;
 }
 
