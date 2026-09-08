@@ -1001,6 +1001,15 @@ typedef     LTHandle   LTDeviceUnit;
             LTMemoryRegion  */
 typedef u32 LTMemoryRegion;
 
+typedef_LTENUM_SIZED(LTMemoryRegionFlags, u32) {
+    kLTMemoryRegionFlags_Malloc            = (1 << 0),     /**< available to lt_malloc */
+    kLTMemoryRegionFlags_MallocFromRegion  = (1 << 1),     /**< available to lt_malloc_from_region (implied by kLTCore_MemoryRegionFlags_Malloc) */
+    kLTMemoryRegionFlags_NoStackMalloc     = (1 << 2),     /**< prevents regions available to lt_malloc from being used for thread stacks */
+    kLTMemoryRegionFlags_SRAM              = (1 << 3),     /**< indicates region is in SRAM (fast) */
+    kLTMemoryRegionFlags_External          = (1 << 4),     /**< indicates region is in external DRAM or PSRAM */
+    kLTMemoryRegionFlags_NoInit            = (1 << 5)      /**< uninitialized memory that survives software/watchdog reboot (excluded from all mallocs) */
+};
+
 /* ______________________________________________
  * LTLibrary name string length/size constants */
 enum {
@@ -2583,4 +2592,5 @@ typedef struct LTLibrary_MacroCreateObjectParms {
  *  18-Mar-23   augustus    made GetLibraryExtrinsicName only be a member of LTLIBRARY_ROOT_INTERFACEs; added GetResourceTree() impl
  *  05-Apr-26   augustus    use LT_GetCore()->GetLTCoreLibraryBuildVersion() for LTLibrary's GetLibraryBuildVersion on systems with LT_NO_DYNAMIC_LOADER to save space
  *  27-Apr-26   augustus    added LTMemoryRegion
+ *  25-Aug-26   augustus    added LTMemoryRegionFlags
  */

@@ -1,6 +1,6 @@
 /*******************************************************************************
  *
- * Esp32DriverWiFi: LT WiFi driver for Esp32
+ * Esp32s3DriverWiFi: LT WiFi driver for Esp32-S3
  * -----------------------------------------
  *
  * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -15,7 +15,7 @@
 #include <lt/utility/macaddress/LTUtilityMacAddress.h>
 #include <lt/device/wifi/LTDriverWiFi.h>
 #include <lt/device/wifi/LTDriverWiFiUtil.h>
-#include "../esp32-lt-os-adapter/Esp32_LTOSAdapter.h"
+#include "../../esp32-lt-os-adapter/Esp32_LTOSAdapter.h"
 
 typedef LT_SIZE size_t;
 #undef  va_list
@@ -32,7 +32,7 @@ typedef LT_SIZE size_t;
 #define _VA_LIST_
 #include <espidf_wifi.h>
 /* Do not include LTDeviceWiFi.h to provide isolation from upper WiFi layers */
-DEFINE_LTLOG_SECTION("esp32.drv.wifi");
+DEFINE_LTLOG_SECTION("esp32s3.drv.wifi");
 
 // #define DBLOG(...) LTLOG(__VA_ARGS__)
 #define DBLOG(...)
@@ -93,7 +93,7 @@ static LTWiFi_DisconnectReason DriverWiFi_GetDiscReasonCode(LTDeviceUnit h_unit)
 
 /** Utility Functions *********************************************************/
 
-static LTWiFi_ApSecurity Esp32ToLtSecurity(wifi_auth_mode_t authmode, wifi_cipher_type_t pairwise_cipher,  wifi_cipher_type_t group_cipher)
+static LTWiFi_ApSecurity Esp32s3ToLtSecurity(wifi_auth_mode_t authmode, wifi_cipher_type_t pairwise_cipher,  wifi_cipher_type_t group_cipher)
 {
     LT_UNUSED(group_cipher);
     LTWiFi_ApSecurity retApSec = kLTWiFi_ApSecurity_Unknown;
@@ -172,12 +172,12 @@ typedef struct WiFiUnit {
     u32             rxFrameCount;
 } WiFiUnit;
 
-static WiFiUnit s_Esp32WiFiUnit;
+static WiFiUnit s_Esp32s3WiFiUnit;
 /** Unit Functions ************************************************************/
 
 WiFiUnit *CreateWiFiUnit(void)
 {
-    WiFiUnit *unit = &s_Esp32WiFiUnit;
+    WiFiUnit *unit = &s_Esp32s3WiFiUnit;
     if (!unit->is_hardware_up) {
         CLEAR(unit);
     } else {
@@ -197,8 +197,8 @@ void DestroyWiFiUnit(WiFiUnit *unit)
 
 // Get rid of unit handles in this driver - we don't use them and they just present more failure surface
 // In fact, the LTDriverWiFi should be modified to take a data pointer, not a handle.
-#define GET_UNIT(wu, hu) LT_UNUSED(hu); WiFiUnit *wu = &s_Esp32WiFiUnit;
-#define GET_UNIT_RETURN(wu, hu, code) LT_UNUSED(hu); LT_UNUSED(code); WiFiUnit *wu = &s_Esp32WiFiUnit;
+#define GET_UNIT(wu, hu) LT_UNUSED(hu); WiFiUnit *wu = &s_Esp32s3WiFiUnit;
+#define GET_UNIT_RETURN(wu, hu, code) LT_UNUSED(hu); LT_UNUSED(code); WiFiUnit *wu = &s_Esp32s3WiFiUnit;
 
 /*******************************************************************************
  * API Functions
@@ -208,7 +208,7 @@ void DestroyWiFiUnit(WiFiUnit *unit)
 
 static void Roku_GetChipInfo(char **id, u8 *cver)
 {
-    *id = "Esp32";
+    *id = "Esp32s3";
     *cver = 1;
 }
 static bool esp_wifi_is_up(void)
@@ -485,7 +485,7 @@ void Esp32_ScanResult_STA_CB(unsigned int ap_num, wifi_ap_record_t *ap_list_buff
         CLEAR(&ap);
         ap.rssi = ap_list_buffer[bss_count].rssi;
         ap.channel = ap_list_buffer[bss_count].primary;
-        ap.security = Esp32ToLtSecurity(ap_list_buffer[bss_count].authmode, ap_list_buffer[bss_count].pairwise_cipher, ap_list_buffer[bss_count].group_cipher);
+        ap.security = Esp32s3ToLtSecurity(ap_list_buffer[bss_count].authmode, ap_list_buffer[bss_count].pairwise_cipher, ap_list_buffer[bss_count].group_cipher);
         lt_strncpyTerm(ap.ssid, (const char *)ap_list_buffer[bss_count].ssid, sizeof(ap.ssid)-1);
         lt_memcpy(ap.bssid.octet, ap_list_buffer[bss_count].bssid, 6);
         //LTLOG_DEBUG("scan.cb", "ssid %s channel %d rssi %d", ap.ssid, (int)ap.channel, ap.rssi);
@@ -699,7 +699,7 @@ static bool DriverWiFi_GetApInfo(LTDeviceUnit h_unit, LTWiFi_ApInfo *ap)
     ap->rssi = ap_info.rssi;
     ap->channel = ap_info.primary;
     ap->pass = NULL;
-    ap->security = Esp32ToLtSecurity(ap_info.authmode, ap_info.pairwise_cipher, ap_info.group_cipher);
+    ap->security = Esp32s3ToLtSecurity(ap_info.authmode, ap_info.pairwise_cipher, ap_info.group_cipher);
     lt_memcpy(&ap->ssid, ap_info.ssid, lt_strlen((const char *)ap_info.ssid) + 1);
     lt_memcpy(&ap->bssid, ap_info.bssid, sizeof(ap->bssid));
     return true;
@@ -898,7 +898,7 @@ static LTWiFi_DisconnectReason DriverWiFi_GetDiscReasonCode(LTDeviceUnit h_unit)
  * LTDriverWiFi Hidden Library Interface
  ******************************************************************************/
 
-define_LTDEVICE_DRIVER_IMPLEMENTATION(LTDriverWiFi, Esp32DriverWiFi);
+define_LTDEVICE_DRIVER_IMPLEMENTATION(LTDriverWiFi, Esp32s3DriverWiFi);
 /*
 *   This special macro is defined in LTTypes.h.  It provides a declaration
 *   of a  hidden library root interface of type LTDriverLibrary which carries the
@@ -917,7 +917,7 @@ define_LTDEVICE_DRIVER_IMPLEMENTATION(LTDriverWiFi, Esp32DriverWiFi);
 *
 */
 
-static bool Esp32DriverWiFiImpl_LibInit(void)
+static bool Esp32s3DriverWiFiImpl_LibInit(void)
 {
     pCore = LT_GetCore();
     if (!(MAC_Library = lt_openlibrary(LTUtilityMacAddress))) return false;
@@ -926,13 +926,13 @@ static bool Esp32DriverWiFiImpl_LibInit(void)
     return true;
 }
 
-static void Esp32DriverWiFiImpl_LibFini(void)
+static void Esp32s3DriverWiFiImpl_LibFini(void)
 {
     lt_closelibrary(MAC_Library);       // null okay
     LTEsp32OSAdapter_LibFini();
 }
 
-static u32 Esp32DriverWiFiImpl_GetNumDeviceUnits(void)
+static u32 Esp32s3DriverWiFiImpl_GetNumDeviceUnits(void)
 {
     return 1; /* this driver library only knows how to control one physical WiFi hardware block */
 }
@@ -942,7 +942,7 @@ static LTDriverWiFi s_LTDriverWiFi;
    by the macro define_LTLIBRARY_INTERFACE(LTDriverWiFi).  The variable name has to be s_LTDriverWiFi because
    that is what the macro defines. */
 
-static LTDeviceUnit Esp32DriverWiFiImpl_CreateDeviceUnitHandle(u32 nDeviceUnitNumber)
+static LTDeviceUnit Esp32s3DriverWiFiImpl_CreateDeviceUnitHandle(u32 nDeviceUnitNumber)
 {
     /* Units are not the same as unit handles.  Multiple handles can exist for the same unit.
        In practice, LTDeviceWiFi is our only client and probably will only call us once per
@@ -965,14 +965,14 @@ static LTDeviceUnit Esp32DriverWiFiImpl_CreateDeviceUnitHandle(u32 nDeviceUnitNu
 }
 
 // DestroyDeviceUnitHandle() not needed because handle interface provides the destroy.
-static void Esp32DriverWiFi_OnDestroyHandle(LTHandle h_unit)
+static void Esp32s3DriverWiFi_OnDestroyHandle(LTHandle h_unit)
 {
     GET_UNIT(unit, h_unit);
     DriverWiFi_SetDriverState(h_unit,kLTWiFi_DriverState_Down);
     DestroyWiFiUnit(unit);
 }
 
-define_LTLIBRARY_INTERFACE(LTDriverWiFi, Esp32DriverWiFi_OnDestroyHandle)
+define_LTLIBRARY_INTERFACE(LTDriverWiFi, Esp32s3DriverWiFi_OnDestroyHandle)
     .GetDriverInfo       = DriverWiFi_GetDriverInfo,
     .SetDriverState      = DriverWiFi_SetDriverState,
     .GetDriverState      = DriverWiFi_GetDriverState,

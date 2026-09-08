@@ -81,6 +81,9 @@ Sizes below are measured from release builds for the ESP32 (`iot.indoor_plug` pr
 | Library infrastructure | `Esp32DriverCrypto.o` | 1,052 |
 | **Esp32DriverCrypto total** | | **11,154** |
 
+The ESP32-S3 has its own `Esp32s3DriverCrypto`, built from the same software crypto
+sources plus its own AES/SHA/RSA engine files; the sizes above are the ESP32 build.
+
 ### Combined total (ESP32)
 
 | Library | Bytes |

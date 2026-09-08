@@ -126,15 +126,7 @@ void _LTKInitialize(const LTCoreBSP * pBSP, LTCoreBSP_LTCoreLogFunction *ltCoreL
     LTKHeapInitialize();
     for (u32 nRegion = 0; nRegion < pBSP->pLTHeapConfig->nRegions; nRegion++) {
         const LTCoreBSP_HeapRegion * pR = &pBSP->pLTHeapConfig->pRegions[nRegion];
-        u32 idx = LTKHeapAddRegionEx(pR->pRegionBuffer, pR->nSizeInBytes, pR->bExclusive);
-        if (pR->bExclusive && idx >= LTK_MAX_HEAP_REGIONS) {
-            /* Exclusive region was dropped because the slot table is full.  The block is
-             * not added to the free list either, so this memory is permanently unreachable.
-             * Fail fast at boot rather than letting a hardware DMA failure surface later. */
-            LTK_LTLOG_STOMP_REDALERT("heap.region", "exclusive heap region dropped: slot table full (max=%u)",
-                                     (unsigned)LTK_MAX_HEAP_REGIONS);
-            LT_ASSERT(0);
-        }
+        LTKHeapAddRegion(pR->pRegionBuffer, pR->nSizeInBytes, pR->nFlags);
     }
 }
 
@@ -142,7 +134,7 @@ bool LTKThreadInitializeAndRun(void * pInstance, u8 nPriority, u32 nStackSize,
                                   const char * pName, void (* pThreadProc)(void * pClientData),
                                   void * pClientData) {
     bool bSuccess = false;
-    u8 * pStackBottom = LTKAlloc(nStackSize);
+    u8 * pStackBottom = LTKAllocStack(nStackSize);
     if (pStackBottom) {
         LTKThread * pThread = (LTKThread *)pInstance;
         pThread->pInstanceData = pThread;

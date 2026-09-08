@@ -15,6 +15,8 @@
 #define LTK_ALIGN_PTR(val, mask)       (((LT_SIZE)(val) + (mask)) & ~((LT_SIZE)(mask)))
 #define LTK_ALIGN_PTR_DOWN(val, mask)  (((LT_SIZE)(val)) & ~((LT_SIZE)(mask)))
 
+DEFINE_LTK_LTLOG_SECTION("ltk");
+
 enum {
     kChunkAlignment  = 8,              /**< Alignment of memory returned from allocator */
     kCanaryValue     = 0xe711dead,
@@ -61,7 +63,7 @@ static LTKHeap s_heap;
 typedef struct {
     u8   *pStart;
     u8   *pEnd;          /**< One past last valid byte */
-    bool  bExclusive;    /**< Skipped by default LTKAlloc walk */
+    u32   nFlags;       /**< determines if skipped by default LTKAlloc walk / LTKAllockStack */
 } LTKHeapRegionInfo;
 static LTKHeapRegionInfo s_regions[LTK_MAX_HEAP_REGIONS];
 static u32               s_nRegions = 0;
@@ -102,11 +104,46 @@ static void AddBlockToFreeList(LTKList_Node * pNodeToAdd, u32 nSize) {
     LTKList_InsertBefore(pNode, pNodeToAdd);
 }
 
-static u32 LTKHeapAddRegionInternal(u8 * pHeapRegion, u32 nSizeInBytes, bool bExclusive) {
+u32 LTKHeapScrubLTMemoryRegionFlags(u32 nFlags) {
+    if (nFlags & kLTMemoryRegionFlags_NoInit) {
+        nFlags &= ~(kLTMemoryRegionFlags_Malloc | kLTMemoryRegionFlags_MallocFromRegion); // can't malloc noinit regions
+        nFlags |= kLTMemoryRegionFlags_NoStackMalloc;
+    }
+    if (nFlags & kLTMemoryRegionFlags_Malloc) nFlags |= kLTMemoryRegionFlags_MallocFromRegion; // any region we can malloc we can malloc from region
+    return nFlags;
+}
+
+static bool IsExclusiveByFlags(u32 nFlags) {
+    return ((nFlags & kLTMemoryRegionFlags_MallocFromRegion) && (0 == (nFlags & kLTMemoryRegionFlags_Malloc)));
+}
+
+bool LTKHeap_IsExclusiveByPtr(const void * p) {
+    u32 r = LTKHeap_FindRegion(p);
+    return (r < LTK_MAX_HEAP_REGIONS) && IsExclusiveByFlags(s_regions[r].nFlags);
+}
+
+void LTKHeapAddRegion(u8 * pHeapRegion, u32 nSizeInBytes, u32 nFlags) {
+    nFlags = LTKHeapScrubLTMemoryRegionFlags(nFlags); // scrub the flags
+    if (0 == (nFlags & kLTMemoryRegionFlags_MallocFromRegion)) {
+        /* not allocating this region, either by lt_malloc or lt_malloc_from_region;
+           add it to our regions array, but don't create heap links for it or add it to
+           the free list */
+        LTKMutexLock(&s_heap.mutex);
+        if (s_nRegions < LTK_MAX_HEAP_REGIONS) {
+            s_regions[s_nRegions].pStart     = pHeapRegion;
+            s_regions[s_nRegions].pEnd       = pHeapRegion + nSizeInBytes;
+            s_regions[s_nRegions].nFlags     = nFlags;
+            s_nRegions++;
+        }
+        LTKMutexUnlock(&s_heap.mutex);
+        return;
+    }
+
     HeapLink * pLink = (HeapLink *) LTK_ALIGN_PTR(pHeapRegion + sizeof(HeapLink), s_heap.nAlignMask);
     HeapBlock * pBot = (HeapBlock *) (pLink - 1);
     pLink            = (HeapLink *) LTK_ALIGN_PTR_DOWN(pHeapRegion + nSizeInBytes, s_heap.nAlignMask);
     HeapBlock * pTop = (HeapBlock *) (pLink - 1);
+
     /* Initialize implicit links */
     pBot->link.nCanary   = kCanaryValue;
     pBot->link.nSizePrev = 0x1;
@@ -121,37 +158,32 @@ static u32 LTKHeapAddRegionInternal(u8 * pHeapRegion, u32 nSizeInBytes, bool bEx
         slot = s_nRegions;
         s_regions[slot].pStart     = pHeapRegion;
         s_regions[slot].pEnd       = pHeapRegion + nSizeInBytes;
-        s_regions[slot].bExclusive = bExclusive;
+        s_regions[slot].nFlags     = nFlags;
         s_nRegions++;
     }
     /* Add the block to the unified free list, except when the slot table is full and
      * the caller asked for an exclusive region. Doing so in that case would silently
      * leak the exclusivity contract: LTKHeap_FindRegion would return the sentinel for
      * these addresses and LTKAlloc_Internal would treat them as general-purpose memory. */
-    if (slot < LTK_MAX_HEAP_REGIONS || !bExclusive) {
+    if (slot < LTK_MAX_HEAP_REGIONS || ! IsExclusiveByFlags(nFlags)) {
         s_heap.nBytesTotal   += nSizeInBytes;
         s_heap.nBytesFree    += pBot->link.nSize;
         s_heap.nMinBytesFree += pBot->link.nSize;
         AddBlockToFreeList(&pBot->freeLink, pBot->link.nSize);
     }
     LTKMutexUnlock(&s_heap.mutex);
-    return slot;
+
+    if (IsExclusiveByFlags(nFlags) && slot >= LTK_MAX_HEAP_REGIONS) {
+        /* Exclusive region was dropped because the slot table is full.  The block is
+         * not added to the free list either, so this memory is permanently unreachable.
+         * Fail fast at boot rather than letting a hardware DMA failure surface later. */
+        LTK_LTLOG_STOMP_REDALERT("heap.region", "exclusive heap region dropped: slot table full (max=%u)",
+                                 (unsigned)LTK_MAX_HEAP_REGIONS);
+        LT_ASSERT(0);
+    }
 }
 
-void LTKHeapAddRegion(u8 * pHeapRegion, u32 nSizeInBytes) {
-    (void)LTKHeapAddRegionInternal(pHeapRegion, nSizeInBytes, false);
-}
-
-u32 LTKHeapAddRegionEx(u8 * pHeapRegion, u32 nSizeInBytes, bool bExclusive) {
-    return LTKHeapAddRegionInternal(pHeapRegion, nSizeInBytes, bExclusive);
-}
-
-bool LTKHeap_IsExclusiveByPtr(const void * p) {
-    u32 r = LTKHeap_FindRegion(p);
-    return (r < LTK_MAX_HEAP_REGIONS) && s_regions[r].bExclusive;
-}
-
-static void * LTKAlloc_Internal(LT_SIZE nSize, bool wantRegion, u32 targetRegion) {
+static void * LTKAlloc_Internal(LT_SIZE nSize, bool forStack, bool wantRegion, u32 targetRegion) {
     if (nSize < kMinPayloadSize) nSize = kMinPayloadSize;
     nSize = LTK_ALIGN32(nSize + sizeof(HeapLink), s_heap.nAlignMask);
     LTKMutexLock(&s_heap.mutex);
@@ -164,10 +196,16 @@ static void * LTKAlloc_Internal(LT_SIZE nSize, bool wantRegion, u32 targetRegion
             LT_ASSERT(pBlock->link.nCanary == kCanaryValue);
             if (pBlock->link.nSize >= nSize) {
                 u32 r = LTKHeap_FindRegion(pBlock);
+                if (forStack) {
+                    if (r >= LTK_MAX_HEAP_REGIONS) break;
+                    if ((s_regions[r].nFlags & kLTMemoryRegionFlags_NoStackMalloc) || IsExclusiveByFlags(s_regions[r].nFlags)) continue;
+                    break;
+                }
                 if (wantRegion) {
                     if (r == targetRegion) break;
-                } else if (r >= LTK_MAX_HEAP_REGIONS || !s_regions[r].bExclusive) {
-                    break;
+                }
+                else {
+                    if (r >= LTK_MAX_HEAP_REGIONS || ! IsExclusiveByFlags(s_regions[r].nFlags)) break;
                 }
             }
         }
@@ -251,7 +289,7 @@ void * LTKReAlloc(void * _pBlock, LT_SIZE nNewSize) {
         // it into a non-exclusive region. Detect and fail in that case; per realloc
         // semantics the caller still owns the original block.
         u32 srcRegion = LTKHeap_FindRegion(_pBlock);
-        if (srcRegion < LTK_MAX_HEAP_REGIONS && s_regions[srcRegion].bExclusive) {
+        if (srcRegion < LTK_MAX_HEAP_REGIONS && IsExclusiveByFlags(s_regions[srcRegion].nFlags)) {
             _pBlock = NULL;
         } else {
             u8 * pNewBlock = LTKAlloc(nNewSize);
@@ -270,8 +308,12 @@ void * LTKReAlloc(void * _pBlock, LT_SIZE nNewSize) {
     return _pBlock;
 }
 
+void * LTKAllocStack(LT_SIZE nSize) {
+    return LTKAlloc_Internal(nSize, true, false, 0);
+}
+
 void * LTKAlloc(LT_SIZE nSize) {
-    return LTKAlloc_Internal(nSize, false, 0);
+    return LTKAlloc_Internal(nSize, false, false, 0);
 }
 
 void * LTKAllocFromRegion(LTMemoryRegion region, LT_SIZE nSize) {
@@ -285,7 +327,7 @@ void * LTKAllocFromRegion(LTMemoryRegion region, LT_SIZE nSize) {
      * Translate to the internal 0-based slot, then bounds-check. */
     u32 slot = (u32)region - 1;
     if (slot >= s_nRegions) return NULL;
-    return LTKAlloc_Internal(nSize, true, slot);
+    return LTKAlloc_Internal(nSize, false, true, slot);
 }
 
 void LTKFree(void * _pBlock) {

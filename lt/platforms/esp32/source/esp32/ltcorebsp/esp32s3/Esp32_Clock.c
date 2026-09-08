@@ -72,8 +72,27 @@ u32 ESP32_MEM_REGION(IRAM) Esp32_ClockInitialize(void) {
     return Esp32_ClockGetMHz();
 }
 
+/*
+ * Enable the clock the Wi-Fi and BT radios share.  The caller reference counts.
+ * The esp32 gates these bits in DPORT_WIFI_CLK_EN; here the same register sits in
+ * APB_CTRL, which IDF calls SYSTEM_WIFI_CLK_EN_REG.
+ */
+void Esp32_ClockEnableRadioCommonClock(void) {
+    u32 mask = Esp32DisableInterrupts();
+    ESP32_REG(APB_CTRL_WIFI_CLK_EN) |= ESP32_REG_MASK(APB_CTRL_WIFI_CLK, WIFI_BT_COMMON);
+    Esp32EnableInterrupts(mask);
+}
+
+/* Disable the clock the Wi-Fi and BT radios share. */
+void Esp32_ClockDisableRadioCommonClock(void) {
+    u32 mask = Esp32DisableInterrupts();
+    ESP32_REG(APB_CTRL_WIFI_CLK_EN) &= ~ESP32_REG_MASK(APB_CTRL_WIFI_CLK, WIFI_BT_COMMON);
+    Esp32EnableInterrupts(mask);
+}
+
 /*******************************************************************************
  *  LOG
  *******************************************************************************
  *  29-Jul-26   claudius    created
+ *  28-Aug-26   claudius    added Esp32_Clock{Enable,Disable}RadioCommonClock
  */

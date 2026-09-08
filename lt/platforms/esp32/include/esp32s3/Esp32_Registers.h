@@ -182,6 +182,57 @@ enum Esp32_RegisterRTC_CNTL {
     kEsp32_RegisterRTC_CNTL_USB_CONF                  = ESP32_REG_BASE(RTC_CNTL) + 0x120,
     kEsp32_RegisterRTC_CNTL_USB_CONF_USB_RESET_DISABLE_M     = 0x01 << 17,
     kEsp32_RegisterRTC_CNTL_USB_CONF_IO_MUX_RESET_DISABLE_M  = 0x01 << 18,
+
+    /*
+     * Wi-Fi/BT power domain, shared by both radios on this part.  Clearing
+     * WIFI_FORCE_PD powers the domain up and clearing WIFI_FORCE_ISO releases
+     * the isolation cells; the reverse order powers it back down.
+     */
+    kEsp32_RegisterRTC_CNTL_DIG_PWC                   = ESP32_REG_BASE(RTC_CNTL) + 0x90,
+    kEsp32_RegisterRTC_CNTL_DIG_PWC_WIFI_FORCE_PD_M   = 0x01 << 17,
+
+    kEsp32_RegisterRTC_CNTL_DIG_ISO                   = ESP32_REG_BASE(RTC_CNTL) + 0x94,
+    kEsp32_RegisterRTC_CNTL_DIG_ISO_WIFI_FORCE_ISO_M  = 0x01 << 28,
+
+    /*
+     * The RTC slow clock period in microseconds, Q13.19, as measured by
+     * whoever last calibrated it.  Another retention word, RTC_CNTL_STORE1,
+     * aliased RTC_SLOW_CLK_CAL_REG.  Reads as zero if nothing has calibrated.
+     */
+    kEsp32_RegisterRTC_CNTL_STORE1                    = ESP32_REG_BASE(RTC_CNTL) + 0x54,
+
+    /*
+     * The XTAL frequency in MHz, as the ROM bootloader left it.  This is a
+     * plain retention word, RTC_CNTL_STORE4, which the SDK aliases as
+     * RTC_XTAL_FREQ_REG.  Both chips use STORE4, but it sits at 0xb0 on the
+     * esp32 and 0xc0 here.  The value is stored as two identical 16-bit halves.
+     */
+    kEsp32_RegisterRTC_CNTL_STORE4                    = ESP32_REG_BASE(RTC_CNTL) + 0xc0,
+};
+
+/*
+ * Radio clock gating and reset, in the APB_CTRL block (IDF calls the same block
+ * SYSCON here, and names these two registers SYSTEM_WIFI_CLK_EN_REG and
+ * SYSTEM_WIFI_RST_EN_REG).  Wi-Fi and BT share the COMMON clock bits, so
+ * whichever radio comes up second must not clear them.
+ */
+enum Esp32_RegisterAPB_CTRL {
+    kEsp32_RegisterAPB_CTRL_WIFI_CLK_EN               = ESP32_REG_BASE(APB_CTRL) + 0x14,
+    /* The Wi-Fi MAC clock.  The SDK defines SYSTEM_WIFI_CLK_WIFI_EN as 0x0 and
+     * leaves only the bit number in the comment above it, because IDF turns this
+     * on once in esp_perip_clk_init() and never gates it again.  LT has no
+     * equivalent boot-time sweep, so the modem bring-up path has to set it. */
+    kEsp32_RegisterAPB_CTRL_WIFI_CLK_WIFI_MAC_EN_M    = 0x01 << 6,
+    kEsp32_RegisterAPB_CTRL_WIFI_CLK_BT_BASEBAND_EN_M = 0x01 << 11,
+    kEsp32_RegisterAPB_CTRL_WIFI_CLK_BT_LC_EN_M       = (0x01 << 16) | (0x01 << 17),
+    kEsp32_RegisterAPB_CTRL_WIFI_CLK_WIFI_BT_COMMON_M = 0x0078078f,
+
+    kEsp32_RegisterAPB_CTRL_WIFI_RST_EN               = ESP32_REG_BASE(APB_CTRL) + 0x18,
+    /* MODEM_RESET_FIELD_WHEN_PU: WIFIBB, FE, WIFIMAC, BTBB, BTMAC, RW_BTMAC,
+     * RW_BTMAC_REG and BTBB_REG, pulsed after the power domain comes up. */
+    kEsp32_RegisterAPB_CTRL_WIFI_RST_MODEM_WHEN_PU_M  = 0x00002a1f,
+    /* SYSTEM_WIFIMAC_RST, pulsed on its own to reset just the Wi-Fi MAC. */
+    kEsp32_RegisterAPB_CTRL_WIFI_RST_WIFIMAC_M        = 0x01 << 2,
 };
 
 /*
@@ -224,6 +275,14 @@ enum Esp32_RegisterSYSTEM {
 
     kEsp32_RegisterSYSTEM_CORE_1_CONTROL_1            = ESP32_REG_BASE(SYSTEM) + 0x04,
 
+    /*
+     * Source of the radio low power clock.  LPCLK_SEL_XTAL means the divided
+     * main crystal rather than the RTC slow clock, which fixes the light sleep
+     * calibration the Wi-Fi blobs ask for at a known rate.
+     */
+    kEsp32_RegisterSYSTEM_BT_LPCK_DIV_FRAC            = ESP32_REG_BASE(SYSTEM) + 0x2c,
+    kEsp32_RegisterSYSTEM_BT_LPCK_DIV_FRAC_LPCLK_SEL_XTAL_M = 0x01 << 26,
+
     /* CPU clock divider select: 0 -> 80MHz, 1 -> 160MHz, 2 -> 240MHz */
     kEsp32_RegisterSYSTEM_CPU_PER_CONF                = ESP32_REG_BASE(SYSTEM) + 0x10,
     kEsp32_RegisterSYSTEM_CPU_PER_CONF_CPUPERIOD_SEL_S = 0,
@@ -236,6 +295,10 @@ enum Esp32_RegisterSYSTEM {
     kEsp32_RegisterSYSTEM_PERIP_CLK_EN1               = ESP32_REG_BASE(SYSTEM) + 0x1c,
     kEsp32_RegisterSYSTEM_PERIP_RST_EN0               = ESP32_REG_BASE(SYSTEM) + 0x20,
     kEsp32_RegisterSYSTEM_PERIP_RST_EN1               = ESP32_REG_BASE(SYSTEM) + 0x24,
+
+    /* RSA operand memory power gating.  The esp32 spelled this DPORT_RSA_PD_CTRL. */
+    kEsp32_RegisterSYSTEM_RSA_PD_CTRL                 = ESP32_REG_BASE(SYSTEM) + 0x40,
+    kEsp32_RegisterSYSTEM_RSA_PD_MEM_PD_M             = 0x01 << 0,
 
     /*
      * SOC_CLK_SEL: 0 -> XTAL, 1 -> PLL, 2 -> FOSC (RC fast), 3 -> reserved.
@@ -294,6 +357,15 @@ enum Esp32_RegisterEFUSE {
     kEsp32_RegisterEFUSE_RD_REPEAT_DATA1              = ESP32_REG_BASE(EFUSE) + 0x034,
     kEsp32_RegisterEFUSE_SPI_BOOT_CRYPT_CNT_S         = 18,
     kEsp32_RegisterEFUSE_SPI_BOOT_CRYPT_CNT_M         = 0x07u << 18,
+
+    /*
+     * The factory base MAC, EFUSE_RD_MAC_SPI_SYS_0/1.  Word 0 holds the low 32
+     * bits and the low half of word 1 the high 16, most significant byte
+     * first.  Unlike the esp32 there is no MAC CRC beside it - bits 31:16 of
+     * word 1 are SPI_PAD_CONF_0 - so readers must not check one.
+     */
+    kEsp32_RegisterEFUSE_RD_MAC_SPI_SYS_0             = ESP32_REG_BASE(EFUSE) + 0x044,
+    kEsp32_RegisterEFUSE_RD_MAC_SPI_SYS_1             = ESP32_REG_BASE(EFUSE) + 0x048,
 };
 
 /* UART */
@@ -685,6 +757,95 @@ enum Esp32_RegisterUSB_SERIAL_JTAG {
 
     /* The IN and OUT endpoints are both this long */
     kEsp32_RegisterUSB_SERIAL_JTAG_PACKET_SIZE        = 64,
+};
+
+/* Registers for RSA acceleration via Multiple Precision Integer ops.  The four
+ * operand memory blocks sit where the esp32 puts them, but every control register
+ * is renumbered, and operand length replaces the esp32's MODEXP_MODE - LENGTH is
+ * words - 1, where MODEXP_MODE was words/16 - 1. */
+enum Esp32_RegisterRSA {
+    kEsp32_RegisterRSA_MEM_M_BLOCK                    = ESP32_REG_BASE(RSA) + 0x000,
+    /* RB & Z use the same memory block, depending on phase of operation */
+    kEsp32_RegisterRSA_MEM_Z_BLOCK                    = ESP32_REG_BASE(RSA) + 0x200,
+    kEsp32_RegisterRSA_MEM_Y_BLOCK                    = ESP32_REG_BASE(RSA) + 0x400,
+    kEsp32_RegisterRSA_MEM_X_BLOCK                    = ESP32_REG_BASE(RSA) + 0x600,
+    kEsp32_RegisterRSA_M_DASH                         = ESP32_REG_BASE(RSA) + 0x800,
+    kEsp32_RegisterRSA_LENGTH                         = ESP32_REG_BASE(RSA) + 0x804,
+    kEsp32_RegisterRSA_QUERY_CLEAN                    = ESP32_REG_BASE(RSA) + 0x808,
+    kEsp32_RegisterRSA_MODEXP_START                   = ESP32_REG_BASE(RSA) + 0x80c,
+    kEsp32_RegisterRSA_MOD_MULT_START                 = ESP32_REG_BASE(RSA) + 0x810,
+    kEsp32_RegisterRSA_MULT_START                     = ESP32_REG_BASE(RSA) + 0x814,
+    kEsp32_RegisterRSA_QUERY_INTERRUPT                = ESP32_REG_BASE(RSA) + 0x818,
+    kEsp32_RegisterRSA_CLEAR_INTERRUPT                = ESP32_REG_BASE(RSA) + 0x81c,
+    kEsp32_RegisterRSA_CONSTANT_TIME                  = ESP32_REG_BASE(RSA) + 0x820,
+    kEsp32_RegisterRSA_SEARCH_OPEN                    = ESP32_REG_BASE(RSA) + 0x824,
+    kEsp32_RegisterRSA_SEARCH_POS                     = ESP32_REG_BASE(RSA) + 0x828,
+    kEsp32_RegisterRSA_INTERRUPT_ENA                  = ESP32_REG_BASE(RSA) + 0x82c,
+};
+
+/* SHA acceleration registers.  A single engine serving every algorithm, selected
+ * by MODE, replaces the esp32's per-algorithm start/continue/load/busy quads.  The
+ * digest window (H) is separate from the message window (TEXT), and there is no
+ * load step - the digest is readable as soon as BUSY clears. */
+enum Esp32_RegisterSHA {
+    kEsp32_RegisterSHA_MODE                           = ESP32_REG_BASE(SHA) + 0x00,
+    kEsp32_RegisterSHA_T_STRING                       = ESP32_REG_BASE(SHA) + 0x04,
+    kEsp32_RegisterSHA_T_LENGTH                       = ESP32_REG_BASE(SHA) + 0x08,
+    kEsp32_RegisterSHA_BLOCK_NUM                      = ESP32_REG_BASE(SHA) + 0x0c,
+    kEsp32_RegisterSHA_START                          = ESP32_REG_BASE(SHA) + 0x10,
+    kEsp32_RegisterSHA_CONTINUE                       = ESP32_REG_BASE(SHA) + 0x14,
+    kEsp32_RegisterSHA_BUSY                           = ESP32_REG_BASE(SHA) + 0x18,
+    kEsp32_RegisterSHA_DMA_START                      = ESP32_REG_BASE(SHA) + 0x1c,
+    kEsp32_RegisterSHA_DMA_CONTINUE                   = ESP32_REG_BASE(SHA) + 0x20,
+    kEsp32_RegisterSHA_CLEAR_IRQ                      = ESP32_REG_BASE(SHA) + 0x24,
+    kEsp32_RegisterSHA_INT_ENA                        = ESP32_REG_BASE(SHA) + 0x28,
+    kEsp32_RegisterSHA_H                              = ESP32_REG_BASE(SHA) + 0x40,
+    kEsp32_RegisterSHA_TEXT                           = ESP32_REG_BASE(SHA) + 0x80,
+
+    /* MODE values, taken from the ROM's SHA_TYPE (esp32s3/rom/sha.h) */
+    kEsp32_RegisterSHA_MODE_SHA1_V                    = 0,
+    kEsp32_RegisterSHA_MODE_SHA224_V                  = 1,
+    kEsp32_RegisterSHA_MODE_SHA256_V                  = 2,
+    kEsp32_RegisterSHA_MODE_SHA384_V                  = 3,
+    kEsp32_RegisterSHA_MODE_SHA512_V                  = 4,
+};
+
+/* AES acceleration registers.  Separate input and output text windows replace the
+ * esp32's single one, TRIGGER/STATE replace START/IDLE, and the block mode moved
+ * out of MODE into its own register. */
+enum Esp32_RegisterAES {
+    kEsp32_RegisterAES_KEY                            = ESP32_REG_BASE(AES) + 0x00,
+    kEsp32_RegisterAES_TEXT_IN                        = ESP32_REG_BASE(AES) + 0x20,
+    kEsp32_RegisterAES_TEXT_OUT                       = ESP32_REG_BASE(AES) + 0x30,
+    kEsp32_RegisterAES_MODE                           = ESP32_REG_BASE(AES) + 0x40,
+    kEsp32_RegisterAES_ENDIAN                         = ESP32_REG_BASE(AES) + 0x44,
+    kEsp32_RegisterAES_TRIGGER                        = ESP32_REG_BASE(AES) + 0x48,
+    kEsp32_RegisterAES_STATE                          = ESP32_REG_BASE(AES) + 0x4c,
+    kEsp32_RegisterAES_IV                             = ESP32_REG_BASE(AES) + 0x50,
+    kEsp32_RegisterAES_DMA_ENABLE                     = ESP32_REG_BASE(AES) + 0x90,
+    kEsp32_RegisterAES_BLOCK_MODE                     = ESP32_REG_BASE(AES) + 0x94,
+    kEsp32_RegisterAES_BLOCK_NUM                      = ESP32_REG_BASE(AES) + 0x98,
+    kEsp32_RegisterAES_INC_SEL                        = ESP32_REG_BASE(AES) + 0x9c,
+    kEsp32_RegisterAES_AAD_BLOCK_NUM                  = ESP32_REG_BASE(AES) + 0xa0,
+    kEsp32_RegisterAES_BIT_VALID_NUM                  = ESP32_REG_BASE(AES) + 0xa4,
+    kEsp32_RegisterAES_CONTINUE                       = ESP32_REG_BASE(AES) + 0xa8,
+    kEsp32_RegisterAES_INT_CLR                        = ESP32_REG_BASE(AES) + 0xac,
+    kEsp32_RegisterAES_INT_ENA                        = ESP32_REG_BASE(AES) + 0xb0,
+    kEsp32_RegisterAES_DMA_EXIT                       = ESP32_REG_BASE(AES) + 0xb8,
+
+    /* STATE values, from hal/aes_ll.h.  DONE applies to DMA operation only, and
+     * holds until DMA_EXIT is written. */
+    kEsp32_RegisterAES_STATE_IDLE_V                   = 0,
+    kEsp32_RegisterAES_STATE_BUSY_V                   = 1,
+    kEsp32_RegisterAES_STATE_DONE_V                   = 2,
+
+    /* BLOCK_MODE values, for DMA operation */
+    kEsp32_RegisterAES_BLOCK_MODE_ECB_V               = 0,
+    kEsp32_RegisterAES_BLOCK_MODE_CBC_V               = 1,
+    kEsp32_RegisterAES_BLOCK_MODE_OFB_V               = 2,
+    kEsp32_RegisterAES_BLOCK_MODE_CTR_V               = 3,
+    kEsp32_RegisterAES_BLOCK_MODE_CFB8_V              = 4,
+    kEsp32_RegisterAES_BLOCK_MODE_CFB128_V            = 5,
 };
 
 /*

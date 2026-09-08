@@ -61,8 +61,8 @@ static const LTCoreBSP_ArmCortexM_SystemConfig LTSystemConfig = {
     .pSecurityContainer = NULL,
     .bUseExternalClockRef = false
 };
-static LTCoreBSP_HeapRegion s_heapRegion = { heapBuffer, sizeof(heapBuffer), false };
-static const LTCoreBSP_LTHeapConfig LTHeapConfig = { 1, &s_heapRegion };
+static LTCoreBSP_HeapRegion s_heapRegion = { heapBuffer, sizeof(heapBuffer), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
+static const LTCoreBSP_LTHeapConfig LTHeapConfig = { &s_heapRegion, 1 };
 
 /*____________________________
   UART char rx ISR callback */

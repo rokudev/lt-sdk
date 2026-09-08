@@ -12,7 +12,7 @@
  ******************************************************************************/
 
 #include <lt/core/LTCore.h>
-#include <lt/utility/byteops/LTUtilityByteOps.h>
+//#include <lt/utility/byteops/LTUtilityByteOps.h>
 #include <lt/device/identity/LTDeviceIdentity.h>
 #include <lt/core/LTThread.h>
 #include <lt/system/crypto/LTSystemCrypto.h>
@@ -20,6 +20,8 @@
 #include <esp32/Esp32_Irq.h>
 #include <esp32/Esp32_Registers.h>
 #include "Esp32_LTOSAdapter.h"
+#include "Esp32_LTOSAdapterOsi.h"
+#include "Esp32s3_LTOSAdapter.h"
 
 DEFINE_LTLOG_SECTION("esp32.adpt");
 
@@ -195,6 +197,16 @@ uint8_t g_phy_access_ref;
 
 u32 *g_phy_digital_regs_mem = NULL;
 
+/* Size of that block, from SOC_PHY_DIG_REGS_MEM_SIZE in the IDF soc_caps.h.  It
+ * is 21 words on both the esp32 and the esp32s3.  LT has no soc_caps.h.
+ */
+
+#define ESP32_PHY_DIG_REGS_MEM_SIZE (21 * 4)
+
+/* Whether g_phy_digital_regs_mem holds a saved copy yet */
+
+static bool g_is_phy_reg_stored = false;
+
 /* Indicate PHY is calibrated or not */
 
 bool g_is_phy_calibrated = false;
@@ -225,7 +237,9 @@ extern esp_err_t    esp_wifi_deinit(void);
 extern int          esp_wifi_adapter_init(int *p_wifi_ref_cnt);
 
 /* ESP32 ROM constant, defined in third-party/vendor-sdk/esp-idf-v4.4/components/esp_rom/esp32/ld/esp32.rom.ld */
+#if CONFIG_IDF_TARGET_ESP32
 extern u32 g_ticks_per_us_pro;
+#endif
 
 /*
 -------------------------------------------------------------------------------
@@ -271,7 +285,9 @@ static void *           lt_malloc_internal(size_t size);
 static int64_t          lt_timer_get_time(void);
 static void             esp_free(void * ptr);
 static void             DispatchAndKillTimer(void * pClientData);
+#if CONFIG_IDF_TARGET_ESP32
 static xt_handler       esp_ble_set_isr(s32 n, xt_handler f, void *arg) ;
+#endif
 static void IRAM_ATTR   interrupt_disable(void);
 static void IRAM_ATTR   interrupt_restore(void);
 static void IRAM_ATTR   lt_task_yield(void);
@@ -299,18 +315,25 @@ static s32              lt_task_create_pinned_to_core(void * entry,
                                                         void * task_handle,
                                                         u32    coreID);
 static bool IRAM_ATTR   is_in_isr_wrapper(void);
+/* Reached only through g_osi_funcs, so esp32 only. */
+#if CONFIG_IDF_TARGET_ESP32
 static s32 IRAM_ATTR    cause_sw_intr_to_core_wrapper(s32 coreID, s32 nIntr);
+#endif  /* CONFIG_IDF_TARGET_ESP32 */
 static void *           esp_malloc(u32 size);
 static s32 IRAM_ATTR    read_mac_wrapper(u8 mac[6]);
 static void IRAM_ATTR   srand_wrapper(u32 seed);
 static s32              lt_rand_stub(void);
+#if CONFIG_IDF_TARGET_ESP32
 static u32 IRAM_ATTR    btdm_lpcycles_2_us(u32 cycles);
 static u32 IRAM_ATTR    btdm_us_2_lpcycles(u32 us);
 static bool             btdm_sleep_check_duration(u32 * pSlotCnt);
+#endif  /* CONFIG_IDF_TARGET_ESP32 */
 bool                    coex_bt_wakeup_request(void);
 void                    coex_bt_wakeup_request_end(void);
+#if CONFIG_IDF_TARGET_ESP32
 static s32 IRAM_ATTR    coex_bt_request_wrapper(u32 event, u32 latency, u32 duration);
 static s32              coex_bt_release_wrapper(u32 event);
+#endif  /* CONFIG_IDF_TARGET_ESP32 */
 static void             esp_ble_helper_handler0(void);
 static void             esp_ble_helper_handler1(void);
 static void             esp_ble_helper_handler2(void);
@@ -318,12 +341,14 @@ static void             esp_ble_helper_handler3(void);
 static s32 IRAM_ATTR    queue_recv_from_isr_wrapper(void * pQueue,
                                                     void * pItem,
                                                     void * pHptw);
+#if CONFIG_IDF_TARGET_ESP32
 static void             xt_ints_on_wrapper(u32 mask);
 static s32              coex_register_bt_cb_wrapper(coex_func_cb_t cb);
 static s32              coex_schm_register_btdm_callback_wrapper(void *callback);
 static s32              coex_wifi_channel_get_wrapper(u8 *primary,
                                                       u8 *secondary);
 static s32              coex_register_wifi_channel_change_callback_wrapper(void *cb);
+#endif  /* CONFIG_IDF_TARGET_ESP32 */
 static s32              lt_task_create(void * entry, const char * name,
                                         u32 stack_depth, void *param,
                                         u32 prio, void * task_handle);
@@ -434,6 +459,16 @@ static int              esp_nvs_get_u8(uint32_t handle, const char *key,
 static void             esp_evt_work_cb(void * data);
 static void             esp_evt_work_complete_cb(LTThread_ReleaseReason, void * data);
 static inline void      phy_digital_regs_load(void);
+static inline void      phy_digital_regs_store(void);
+
+/*
+ * Radio clock gate, implemented in the per chip BSP because the register moved
+ * from DPORT to APB_CTRL on the esp32s3 while this file is built against the
+ * esp32 register map for both parts.  Declared here rather than by including
+ * Esp32_Clock.h, which would drag in the other part's register map.
+ */
+void                    Esp32_ClockEnableRadioCommonClock(void);
+void                    Esp32_ClockDisableRadioCommonClock(void);
 
 static void FreeHandleList(LTList *handleList);
 
@@ -480,13 +515,15 @@ static handler_irq_info g_irq_info[] = {
 
 static int g_num_irq = sizeof(g_irq_info) / sizeof(g_irq_info[0]);
 
-/* number of fractional bit for g_btdm_lpcycle_us */
+/* The esp32 BLE controller's low power clock period, in micro seconds and in
+ * the fixed point the second value counts fractional bits of.  Both are read
+ * only by the btdm_*_lpcycles converters in g_osi_funcs; the esp32s3 controller
+ * keeps its own pair in Esp32s3DriverBleController.c. */
 
+#if CONFIG_IDF_TARGET_ESP32
 static const DRAM_ATTR u8 g_btdm_lpcycle_us_frac = LT_ESP32_RTC_CLK_CAL_FRACT;
-
-/* measured average low power clock period in micro seconds */
-
 static const DRAM_ATTR u32 g_btdm_lpcycle_us = 2 << (g_btdm_lpcycle_us_frac);
+#endif  /* CONFIG_IDF_TARGET_ESP32 */
 
 static u8 wifi_mac_address[6] = {0};
 
@@ -548,10 +585,12 @@ struct time_adpt {
 
 coex_adapter_funcs_t g_coex_adapter_funcs = {
     ._version = COEX_ADAPTER_VERSION,
+#if CONFIG_IDF_TARGET_ESP32
     ._spin_lock_create = esp_spin_lock_create,
     ._spin_lock_delete = esp_spin_lock_delete,
     ._int_enable = esp_wifi_int_restore,
     ._int_disable = esp_wifi_int_disable,
+#endif
     ._task_yield_from_isr = lt_task_yield_from_isr,
     ._semphr_create = lt_sem_create,
     ._semphr_delete = lt_sem_delete,
@@ -562,13 +601,23 @@ coex_adapter_funcs_t g_coex_adapter_funcs = {
     ._is_in_isr = wifi_is_in_isr,
     ._malloc_internal =  lt_malloc_internal,
     ._free = esp_free,
+#if CONFIG_IDF_TARGET_ESP32
+    /* The esp32s3 coex blob drives its timers through esp_timer instead. */
     ._timer_disarm = lt_timer_disarm,
     ._timer_done = lt_timer_done,
     ._timer_setfn = lt_timer_setfn,
     ._timer_arm_us = lt_timer_arm_us,
+#endif
     ._esp_timer_get_time = lt_timer_get_time,
     ._magic = COEX_ADAPTER_MAGIC,
 };
+
+/* The esp32 BLE controller's OSI table.  Esp32DriverBleController.c registers
+ * it; the esp32s3 controller has its own in Esp32s3DriverBleController.c,
+ * assembled from the same primitives but with a different layout and its own
+ * dynamic interrupt line allocation. */
+
+#if CONFIG_IDF_TARGET_ESP32
 
 const struct osi_funcs_t g_osi_funcs = {
   ._magic                                      = OSI_MAGIC_VALUE,
@@ -624,6 +673,7 @@ const struct osi_funcs_t g_osi_funcs = {
   ._coex_wifi_channel_get                      = coex_wifi_channel_get_wrapper,
   ._coex_register_wifi_channel_change_callback = coex_register_wifi_channel_change_callback_wrapper,
 };
+#endif  /* CONFIG_IDF_TARGET_ESP32 */
 
 /* Wi-Fi OS adapter data */
 /* NOTE: non-static here to match the vendor header, also probably used directly by binaries */
@@ -684,8 +734,11 @@ wifi_osi_funcs_t g_wifi_osi_funcs = {
     ._wifi_apb80m_release = wifi_apb80m_release,
     ._phy_disable = esp32_phy_disable,
     ._phy_enable = esp32_phy_enable,
+#if CONFIG_IDF_TARGET_ESP32
+    /* The esp32s3 folds the common clock into _phy_enable/_disable. */
     ._phy_common_clock_enable = esp32_phy_enable_clock,
     ._phy_common_clock_disable = esp32_phy_disable_clock,
+#endif
     ._phy_update_country_info = wifi_phy_update_country_info,
     ._read_mac = esp_wifi_read_mac,
     ._timer_arm = lt_timer_arm,
@@ -714,6 +767,9 @@ wifi_osi_funcs_t g_wifi_osi_funcs = {
     ._get_random = lt_get_random,
     ._get_time = lt_get_time,
     ._random = (long unsigned int (*)(void))lt_rand_stub,
+#if !CONFIG_IDF_TARGET_ESP32
+    ._slowclk_cal_get = Esp32s3_SlowClkCalGet,
+#endif
     ._log_write = lt_log_write,
     ._log_writev = lt_log_writev,
     ._log_timestamp = lt_log_timestamp,
@@ -756,6 +812,11 @@ static LTAtomic              s_referenceCount       = { 0 };
 static LTCore               *s_core                 = NULL;
 static ILTThread            *s_iThread              = NULL;
 static LTMutex              *s_mutex_WiFiApi        = NULL;
+
+/* Serialises esp32_phy_enable()/esp32_phy_disable().  IDF guards the same pair
+ * with a mutex, not a critical section: the region runs a full RF calibration.
+ */
+static LTMutex              *s_mutex_Phy            = NULL;
 
 typedef struct {
     LTList_Node node;
@@ -854,6 +915,7 @@ void LTEsp32OSAdapter_LibInit(void) {
     if (LTAtomic_FetchAdd(&s_referenceCount, 1) == 0) {
         s_core = LT_GetCore();
         s_mutex_WiFiApi = lt_createobject(LTMutex);
+        s_mutex_Phy     = lt_createobject(LTMutex);
         s_iThread = lt_getlibraryinterface(ILTThread, s_core);
         LTList_Init(&g_threads);
         LTList_Init(&g_timers);
@@ -865,7 +927,9 @@ void LTEsp32OSAdapter_LibFini(void) {
     if (LTAtomic_FetchSubtract(&s_referenceCount, 1) == 1) {
         FreeHandleList(&g_threads);
         lt_destroyobject(s_mutex_WiFiApi);
+        lt_destroyobject(s_mutex_Phy);
         s_mutex_WiFiApi = NULL;
+        s_mutex_Phy     = NULL;
         s_iThread = NULL;
         s_core    = NULL;
     }
@@ -1515,13 +1579,44 @@ enum esp32_rtc_xtal_freq_e IRAM_ATTR esp32_rtc_clk_xtal_freq_get(void)
 {
     /* We may have already written XTAL value into RTC_XTAL_FREQ_REG */
 
+#if CONFIG_IDF_TARGET_ESP32
     u32 xtal_freq_reg = ESP32_REG(RTC_CNTL_XTAL_FREQ);
+#else
+    u32 xtal_freq_reg = Esp32s3_XtalFreqRegRead();
+#endif
 
     if (!esp32_clk_val_is_valid(xtal_freq_reg)) {
         return RTC_XTAL_FREQ_AUTO;
     }
 
     return (xtal_freq_reg & ~RTC_DISABLE_ROM_LOG) & UINT16_MAX;
+}
+
+/****************************************************************************
+ * Name: lt_map_external_irq
+ *
+ * Description:
+ *   Point a peripheral interrupt source at a CPU interrupt line.  The esp32s3
+ *   moved the mux out of DPORT into INTERRUPT_CORE0/1, and its register header
+ *   cannot be included here, so that part goes through Esp32s3_LTOSAdapter.c -
+ *   which also rejects a line the level 1 dispatcher could not reach.
+ *
+ * Returned Value:
+ *   true if the source was routed, false if nothing was written
+ *
+ ****************************************************************************/
+
+static bool lt_map_external_irq(s32 cpu_no, u32 intr_source, u32 intr_num)
+{
+#if CONFIG_IDF_TARGET_ESP32
+    if (cpu_no != 0) {
+        return false;
+    }
+    Esp32MapExternalToCPUIrq(0, (Esp32_ExternalIrq)intr_source, (Esp32_IrqNumber)intr_num);
+    return true;
+#else
+    return Esp32s3_MapRadioIrq(cpu_no, intr_source, intr_num);
+#endif
 }
 
 /****************************************************************************
@@ -1570,6 +1665,7 @@ static void esp_set_isr(int32_t n, void *f, void *arg)
  *
  ****************************************************************************/
 
+#if CONFIG_IDF_TARGET_ESP32
 static xt_handler esp_ble_set_isr(s32 n, xt_handler f, void *arg)
 {
 
@@ -1590,6 +1686,7 @@ static xt_handler esp_ble_set_isr(s32 n, xt_handler f, void *arg)
     }
     return NULL;
 }
+#endif  /* CONFIG_IDF_TARGET_ESP32 */
 
 /****************************************************************************
  * Name: interrupt_disable
@@ -2018,12 +2115,14 @@ static bool IRAM_ATTR is_in_isr_wrapper(void) LT_ISR_SAFE
  *
  ****************************************************************************/
 
+#if CONFIG_IDF_TARGET_ESP32
 static s32 IRAM_ATTR cause_sw_intr_to_core_wrapper(s32 coreID, s32 nIntr)
 {
     LT_UNUSED(coreID);
     LT_ESP32_XTHAL_SET_INTSET((1 << nIntr));
     return ESP_OK;
 }
+#endif  /* CONFIG_IDF_TARGET_ESP32 */
 
 /****************************************************************************
  * Name: convert_mac
@@ -2090,6 +2189,11 @@ static s32 convert_mac(u8 mac[6], esp_mac_type_t type) {
 
 static s32 IRAM_ATTR esp_read_efuse_mac(u8 mac[6])
 {
+#if !CONFIG_IDF_TARGET_ESP32
+    /* Different efuse words, and no MAC CRC beside them on the esp32s3. */
+
+    return Esp32s3_ReadEfuseMac(mac);
+#else
     uint32_t regval[2];
     uint8_t *data = (uint8_t *)regval;
     uint8_t crc;
@@ -2108,6 +2212,7 @@ static s32 IRAM_ATTR esp_read_efuse_mac(u8 mac[6])
         return -1;
     }
     return 0;
+#endif
 }
 
 /****************************************************************************
@@ -2221,18 +2326,38 @@ static u32 lt_get_ccount(void) LT_ISR_SAFE
     return res;
 }
 
+/* WDEV_RND is at 0x60035144 on the esp32 and 0x6003507c on the esp32s3, so the
+ * shared esp32 register header cannot supply it for both. */
+
+#if CONFIG_IDF_TARGET_ESP32
+#define LT_ESP32_RANDOM_REG_READ()  ESP32_REG(WDEV_RND)
+#else
+#define LT_ESP32_RANDOM_REG_READ()  Esp32s3_RandomRegRead()
+#endif
+
+/* The CPU clock in MHz, which is also the CPU:APB ratio the sample spacing
+ * below is derived from.  The esp32 reads the ROM's g_ticks_per_us_pro; the
+ * esp32s3 ROM keeps no such global. */
+
+#if CONFIG_IDF_TARGET_ESP32
+#define LT_ESP32_CPU_MHZ()          g_ticks_per_us_pro
+#else
+#define LT_ESP32_CPU_MHZ()          Esp32s3_CpuClockMHzGet()
+#endif
+
 static s32 lt_rand_stub(void) LT_ISR_SAFE
 {
-    u32 cpuToApbFreqRatio = (g_ticks_per_us_pro == 0) ? 1 : g_ticks_per_us_pro / LT_MIN(g_ticks_per_us_pro, (u32)80);
+    u32 nCpuMHz = LT_ESP32_CPU_MHZ();
+    u32 cpuToApbFreqRatio = (nCpuMHz == 0) ? 1 : nCpuMHz / LT_MIN(nCpuMHz, (u32)80);
 
     u32 ccount = 0;
     s32 res = 0;
     do {
         ccount = lt_get_ccount();
-        res ^= ESP32_REG(WDEV_RND);
+        res ^= LT_ESP32_RANDOM_REG_READ();
     } while ((ccount - g_nLastCycleCount) < (cpuToApbFreqRatio * APB_CYCLE_WAIT_NUM));
     g_nLastCycleCount = ccount;
-    return res ^ ESP32_REG(WDEV_RND);
+    return res ^ LT_ESP32_RANDOM_REG_READ();
 }
 
 /****************************************************************************
@@ -2249,6 +2374,7 @@ static s32 lt_rand_stub(void) LT_ISR_SAFE
  *
  ****************************************************************************/
 
+#if CONFIG_IDF_TARGET_ESP32
 static u32 IRAM_ATTR btdm_lpcycles_2_us(u32 cycles)
 {
     u64 us            = (u64)g_btdm_lpcycle_us * cycles;
@@ -2320,6 +2446,7 @@ static s32  coex_register_wifi_channel_change_callback_wrapper(void *cb)
 {
     return (s32)coex_register_wifi_channel_change_callback(cb);
 }
+#endif  /* CONFIG_IDF_TARGET_ESP32 */
 
 #if 0
 static void wrapThreadFunc(void * pClientData)
@@ -2429,7 +2556,7 @@ static bool wifi_env_is_chip(void)
  * Name: wifi_set_intr
  *
  * Description:
- *   Do nothing
+ *   Route one radio interrupt source at one CPU line.
  *
  * Input Parameters:
  *     cpu_no      - The CPU which the interrupt number belongs.
@@ -2447,15 +2574,28 @@ static void wifi_set_intr(int32_t cpu_no, uint32_t intr_source,
 {
     LTLOG_DEBUG("set.intr", "cpu_no=%d, intr_source=%d, intr_num=%u, intr_prio=%d\n",
                 (int)cpu_no, (int)intr_source, (int)intr_num, (int)intr_prio);
+#if CONFIG_IDF_TARGET_ESP32
+    /* The esp32 mux is fixed, so anything else means this table and Esp32_Irq.h
+     * disagree rather than that the blob made a runtime choice. */
+
     LT_ASSERT(cpu_no == 0);
     LT_ASSERT(intr_source == kEsp32_ExternalIrq_WIFIMAC);
     LT_ASSERT(intr_num == kEsp32_IrqNumber_WiFiMAC);
     LT_ASSERT(intr_prio == kEsp32_IrqPriority_WiFiMAC);
-    if (cpu_no == 0 && intr_source == kEsp32_ExternalIrq_WIFIMAC && intr_num == kEsp32_IrqNumber_WiFiMAC && intr_prio == kEsp32_IrqPriority_WiFiMAC) {
-        Esp32MapExternalToCPUIrq(0, kEsp32_ExternalIrq_WIFIMAC, kEsp32_IrqNumber_WiFiMAC);
-    } else {
-        LTLOG_REDALERT("set.intr.fatal", "Unexpected interrupt confioguration");
+    if (cpu_no != 0 || intr_source != kEsp32_ExternalIrq_WIFIMAC ||
+        intr_num != kEsp32_IrqNumber_WiFiMAC || intr_prio != kEsp32_IrqPriority_WiFiMAC) {
+        LTLOG_REDALERT("set.intr.fatal", "Unexpected interrupt configuration");
+        return;
     }
+#else
+    /* The esp32s3 mux is free and the blobs pick their own line numbers, which
+     * lt_map_external_irq() checks are reachable.  intr_prio is a property of
+     * the Xtensa line rather than of the routing, so there is nothing to set;
+     * IDF's set_intr_wrapper() drops it here too. */
+
+    LT_UNUSED(intr_prio);
+#endif
+    lt_map_external_irq(cpu_no, intr_source, intr_num);
 }
 
 static void IRAM_ATTR wifi_clear_intr(uint32_t intr_source,
@@ -2788,9 +2928,7 @@ static void esp32_phy_enable_clock(void)
     LOG_ENTRY_ISR();
     LT_SIZE flags = s_core->Disable();
     if (g_phy_clk_en_cnt == 0) {
-        u32 nValue = ESP32_REG(DPORT_WIFI_CLK_EN);
-        nValue |= ESP32_REG_MASK(DPORT_WIFI_CLK_EN, WIFI_BT_COMMON);
-        ESP32_REG(DPORT_WIFI_CLK_EN) = nValue;
+        Esp32_ClockEnableRadioCommonClock();
     }
     g_phy_clk_en_cnt++;
     s_core->Enable(flags);
@@ -2817,9 +2955,7 @@ static void esp32_phy_disable_clock(void)
     if (g_phy_clk_en_cnt > 0) {
         g_phy_clk_en_cnt--;
         if (g_phy_clk_en_cnt == 0) {
-            u32 nValue = ESP32_REG(DPORT_WIFI_CLK_EN);
-            nValue &= ~ESP32_REG_MASK(DPORT_WIFI_CLK_EN, WIFI_BT_COMMON);
-            ESP32_REG(DPORT_WIFI_CLK_EN) = nValue;
+            Esp32_ClockDisableRadioCommonClock();
         }
     }
     s_core->Enable(flags);
@@ -2841,14 +2977,23 @@ static void esp32_phy_disable_clock(void)
 void esp32_phy_disable(void)
 {
     LOG_ENTRY();
-    LT_SIZE flags = s_core->Disable();
+    s_mutex_Phy->API->Lock(s_mutex_Phy);
 
     g_phy_access_ref--;
 
     if (g_phy_access_ref == 0) {
+        /* Snapshot the digital registers while the RF is still up. */
+
+        phy_digital_regs_store();
+
         /* Disable PHY and RF. */
 
         phy_close_rf();
+#if !CONFIG_IDF_TARGET_ESP32
+        /* Power the PHY temperature sensor down; the esp32 has none. */
+
+        phy_xpd_tsens();
+#endif
 
         /* Disable Wi-Fi/BT common peripheral clock.
          * Do not disable clock for hardware RNG.
@@ -2856,7 +3001,7 @@ void esp32_phy_disable(void)
 
         esp32_phy_disable_clock();
     }
-    s_core->Enable(flags);
+    s_mutex_Phy->API->Unlock(s_mutex_Phy);
 }
 
 /****************************************************************************
@@ -2889,11 +3034,34 @@ void esp32_phy_enable(void)
         }
         lt_memset(cal_data, 0, sizeof(esp_phy_calibration_data_t));
     }
-    LT_SIZE flags = s_core->Disable();
+
+    /* One time internal RAM buffer for the PHY digital register snapshot.  IDF
+     * asks for MALLOC_CAP_DMA and MALLOC_CAP_INTERNAL here.  It lives for as
+     * long as the radio does and is never freed.
+     */
+
+    if (g_phy_digital_regs_mem == NULL) {
+        g_phy_digital_regs_mem = lt_malloc_internal(ESP32_PHY_DIG_REGS_MEM_SIZE);
+        if (g_phy_digital_regs_mem == NULL) {
+            LTLOG("phy.enable.error", "ERROR: Failed to allocate PHY digital register buffer.");
+        }
+    }
+
+    /* A mutex, not an interrupt lock: a full RF calibration runs below and can
+     * take tens of milliseconds.  IDF guards this with _lock_acquire() too.
+     */
+
+    s_mutex_Phy->API->Lock(s_mutex_Phy);
 
     if (g_phy_access_ref == 0) {
         esp32_phy_enable_clock();
         if (g_is_phy_calibrated == false && cal_data) {
+#if !CONFIG_IDF_TARGET_ESP32
+            /* Radio PHY init powers the USB PHY down unless asked not to, and
+             * on the esp32s3 the console is behind USB Serial/JTAG. */
+
+            phy_bbpll_en_usb(true);
+#endif
             register_chipv7_phy(&phy_init_data, cal_data, PHY_RF_CAL_FULL);
             g_is_phy_calibrated = true;
         } else {
@@ -2901,11 +3069,14 @@ void esp32_phy_enable(void)
             phy_digital_regs_load();
         }
 
+#if CONFIG_IDF_TARGET_ESP32
+        /* Not in the esp32s3 blobs, and IDF only calls it for the esp32. */
         coex_bt_high_prio();
+#endif
     }
 
     g_phy_access_ref++;
-    s_core->Enable(flags);
+    s_mutex_Phy->API->Unlock(s_mutex_Phy);
     if (cal_data) {
         lt_free(cal_data);
     }
@@ -2978,6 +3149,7 @@ static void lt_timer_arm(void *ptimer, uint32_t ms, bool repeat)
 static void wifi_reset_mac(void)
 {
     LOG_ENTRY();
+#if CONFIG_IDF_TARGET_ESP32
     LT_SIZE flags = s_core->Disable();
     u32 nValue = ESP32_REG(DPORT_WIFI_RST_EN);
     nValue |= ESP32_REG_MASK(DPORT_WIFI_RST_EN, MAC_RST_EN);
@@ -2989,13 +3161,19 @@ static void wifi_reset_mac(void)
     nValue &= ~ESP32_REG_MASK(DPORT_WIFI_RST_EN, MAC_RST_EN);
     ESP32_REG(DPORT_WIFI_RST_EN) = nValue;
     s_core->Enable(flags);
+#else
+    Esp32s3_WiFiResetMac();
+#endif
 }
 
 /****************************************************************************
  * Name: wifi_clock_enable
  *
  * Description:
- *   Enable Wi-Fi clock
+ *   Enable Wi-Fi clock.  Nothing to do on the esp32s3: IDF turns the MAC clock
+ *   on once in esp_perip_clk_init() and never gates it again, which is why
+ *   SYSTEM_WIFI_CLK_WIFI_EN is 0x0 there.  Esp32s3_WiFiBtPowerDomainOn() sets
+ *   the bit instead, LT having no equivalent boot-time sweep.
  *
  * Input Parameters:
  *   None
@@ -3008,18 +3186,20 @@ static void wifi_reset_mac(void)
 static void wifi_clock_enable(void)
 {
     LOG_ENTRY();
+#if CONFIG_IDF_TARGET_ESP32
     LT_SIZE flags = s_core->Disable();
     u32 nValue = ESP32_REG(DPORT_WIFI_CLK_EN);
     nValue |= ESP32_REG_MASK(DPORT_WIFI_CLK_EN, WIFI_EN);
     ESP32_REG(DPORT_WIFI_CLK_EN) = nValue;
     s_core->Enable(flags);
+#endif
 }
 
 /****************************************************************************
  * Name: wifi_clock_disable
  *
  * Description:
- *   Disable Wi-Fi clock
+ *   Disable Wi-Fi clock.  Nothing to do on the esp32s3; see wifi_clock_enable.
  *
  * Input Parameters:
  *   None
@@ -3032,11 +3212,13 @@ static void wifi_clock_enable(void)
 static void wifi_clock_disable(void)
 {
     LOG_ENTRY();
+#if CONFIG_IDF_TARGET_ESP32
     LT_SIZE flags = s_core->Disable();
     u32 nValue = ESP32_REG(DPORT_WIFI_CLK_EN);
     nValue &= ~ESP32_REG_MASK(DPORT_WIFI_CLK_EN, WIFI_EN);
     ESP32_REG(DPORT_WIFI_CLK_EN) = nValue;
     s_core->Enable(flags);
+#endif
 }
 
 static void wifi_rtc_enable_iso(void)
@@ -3988,6 +4170,24 @@ static void esp_evt_work_complete_cb(LTThread_ReleaseReason reason, void * data)
 }
 
 /****************************************************************************
+ * Name: phy_digital_regs_store
+ *
+ * Description:
+ *   Save the PHY digital registers so that a later enable can restore them
+ *   instead of recalibrating.  Must run while the RF is still up.
+ *
+ ****************************************************************************/
+
+static inline void phy_digital_regs_store(void)
+{
+    LOG_ENTRY();
+    if (g_phy_digital_regs_mem != NULL) {
+        phy_dig_reg_backup(true, g_phy_digital_regs_mem);
+        g_is_phy_reg_stored = true;
+    }
+}
+
+/****************************************************************************
  * Name: phy_digital_regs_load
  *
  * Description:
@@ -3998,7 +4198,7 @@ static void esp_evt_work_complete_cb(LTThread_ReleaseReason reason, void * data)
 static inline void phy_digital_regs_load(void)
 {
     LOG_ENTRY();
-    if (g_phy_digital_regs_mem != NULL) {
+    if (g_is_phy_reg_stored && g_phy_digital_regs_mem != NULL) {
         phy_dig_reg_backup(false, g_phy_digital_regs_mem);
     }
 }
@@ -4104,6 +4304,9 @@ esp_err_t esp_wifi_deinit(void)
         LTLOG_YELLOWALERT("deinit.wifi.error", "Failed to deinitialize Wi-Fi\n");
         return ret;
     }
+#if !CONFIG_IDF_TARGET_ESP32
+    Esp32s3_WiFiBtPowerDomainOff();
+#endif
     UNLOCK_WIFIAPI();
     if (g_hThread_wifi_wrk) {
         s_iThread->Destroy(g_hThread_wifi_wrk);
@@ -4241,6 +4444,13 @@ esp_err_t esp_wifi_init(const wifi_init_config_t * config)
     }
     LOCK_WIFIAPI();
     coex_init();
+#if !CONFIG_IDF_TARGET_ESP32
+    /* The esp32s3 gates the modem behind a power domain that comes up isolated
+     * and in reset.  Without this the PHY never answers and the calibration in
+     * esp32_phy_enable() hangs.  The esp32 has no such domain. */
+
+    Esp32s3_WiFiBtPowerDomainOn();
+#endif
     ret = esp_wifi_init_internal(config);
     if (ret) {
         UNLOCK_WIFIAPI();
@@ -4431,6 +4641,33 @@ int net80211_printf(const char *format, ...)
 }
 
 /****************************************************************************
+ * Name: pp_printf
+ *
+ * Description:
+ *   Output format string and its arguments
+ *
+ * Input Parameters:
+ *   format - format string
+ *
+ * Returned Value:
+ *   0
+ *
+ ****************************************************************************/
+
+int pp_printf(const char *format, ...)
+{
+#ifdef LT_DEBUG_WIRELESS_INFO
+    lt_va_list args;
+    lt_va_start(args, format);
+    LTLOGV("pp", format, args);
+    lt_va_end(args);
+#else
+    LT_UNUSED(format);
+#endif
+    return 0;
+}
+
+/****************************************************************************
  * Name: esp_event_send_internal
  *
  * Description:
@@ -4482,9 +4719,64 @@ void __wrap_intr_matrix_set(s32 cpu_no, u32 intr_source,
     LT_UNUSED(intr_prio);
     LTLOG_DEBUG("wrap_intr_matrix_set", "cpu_no=%lu, intr_source=%lu, intr_num=%lu, intr_prio=%lx\n",
                 LT_Pu32(cpu_no), LT_Pu32(intr_source), LT_Pu32(intr_num), LT_Pu32(intr_prio));
-    if (cpu_no == 0) {
-        Esp32MapExternalToCPUIrq(0, intr_source, intr_num);
-    } else {
+    if (!lt_map_external_irq(cpu_no, intr_source, intr_num)) {
         LTLOG_REDALERT("set.intr.fatal", "Unexpected interrupt configuration");
     }
+}
+
+/****************************************************************************
+ * Name: LTEsp32OSAdapter_GetPrimitives
+ *
+ * Description:
+ *   Publish the LT-backed OS primitives so a per-chip BLE driver can assemble
+ *   its own osi_funcs_t table.  See Esp32_LTOSAdapterOsi.h.
+ *
+ ****************************************************************************/
+
+static const Esp32OSAdapterPrimitives s_osAdapterPrimitives = {
+    .SemCreate              = &lt_sem_create,
+    .SemDelete              = &lt_sem_delete,
+    .SemTake                = &lt_sem_take,
+    .SemGive                = &lt_sem_give,
+    .SemTakeFromIsr         = &lt_sem_take_from_isr,
+    .SemGiveFromIsr         = &lt_sem_give_from_isr,
+
+    .InterruptDisable       = &interrupt_disable,
+    .InterruptRestore       = &interrupt_restore,
+    .TaskYield              = &lt_task_yield,
+    .TaskYieldFromIsr       = &lt_task_yield_from_isr,
+
+    .MutexCreate            = &lt_mutex_create,
+    .MutexDelete            = &lt_mutex_delete,
+    .MutexLock              = &lt_mutex_lock,
+    .MutexUnlock            = &lt_mutex_unlock,
+
+    .QueueCreate            = &lt_queue_create,
+    .QueueDelete            = &lt_queue_delete,
+    .QueueSend              = &lt_queue_send,
+    .QueueSendFromIsr       = &lt_queue_send_from_isr,
+    .QueueRecv              = &lt_queue_recv,
+    .QueueRecvFromIsr       = &queue_recv_from_isr_wrapper,
+
+    .TaskCreatePinnedToCore = &lt_task_create_pinned_to_core,
+    .TaskDelete             = &lt_task_delete,
+    .IsInIsr                = &is_in_isr_wrapper,
+
+    .Malloc                 = &esp_malloc,
+    .MallocInternal         = &lt_malloc_internal,
+    .Free                   = &esp_free,
+
+    .ReadEfuseMac           = &read_mac_wrapper,
+    .Srand                  = &srand_wrapper,
+    .Rand                   = &lt_rand_stub,
+
+    .TimerArm               = &lt_timer_arm,
+    .TimerArmUs             = &lt_timer_arm_us,
+    .TimerDisarm            = &lt_timer_disarm,
+    .TimerDone              = &lt_timer_done,
+    .TimerSetFn             = &lt_timer_setfn,
+};
+
+const Esp32OSAdapterPrimitives *LTEsp32OSAdapter_GetPrimitives(void) {
+    return &s_osAdapterPrimitives;
 }

@@ -10,18 +10,28 @@
 ################################################################################
 
 # source dir and files
+#
+# The software crypto sits at the root of crypto/ and is shared with
+# Esp32s3DriverCrypto; only the files that drive the AES/SHA/RSA peripherals are
+# per chip, under esp32/.
 LT_PROJECT_SOURCE_DIR        := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/crypto
+LT_PROJECT_SOURCE_SUBDIRS    += esp32
+
 LT_PROJECT_SOURCE_FILES      := Esp32DriverCrypto.c
-LT_PROJECT_SOURCE_FILES      += Esp32DriverCryptoEngine.c
-LT_PROJECT_SOURCE_FILES      += Esp32DriverCryptoRandom.c
-LT_PROJECT_SOURCE_FILES      += Esp32DriverCryptoSha256.c
-LT_PROJECT_SOURCE_FILES      += Esp32DriverCryptoBigNum.c
 LT_PROJECT_SOURCE_FILES      += Esp32DriverCryptoHmacSha256.c
-LT_PROJECT_SOURCE_FILES      += Esp32DriverCryptoAesGcm.c
 LT_PROJECT_SOURCE_FILES      += Esp32DriverCrypto25519.c
 LT_PROJECT_SOURCE_FILES      += Esp32DriverCryptoX25519.c
+LT_PROJECT_SOURCE_FILES      += Esp32DriverCryptoBigNumSoft.c
 
-LT_CFLAGS_PLATFORM_INCLUDE   += -I$(LT_PLATFORM_PUBLIC_INCLUDE_DIR)/$(SOC_PLATFORM_NAME)
+LT_PROJECT_SOURCE_FILES      += esp32/Esp32DriverCryptoEngine.c
+LT_PROJECT_SOURCE_FILES      += esp32/Esp32DriverCryptoRandom.c
+LT_PROJECT_SOURCE_FILES      += esp32/Esp32DriverCryptoSha256.c
+LT_PROJECT_SOURCE_FILES      += esp32/Esp32DriverCryptoBigNum.c
+LT_PROJECT_SOURCE_FILES      += esp32/Esp32DriverCryptoAesGcm.c
+
+# reach the shared headers at the root of crypto/ from the esp32/ sources
+LT_PUBLIC_INCLUDE_FLAGS      += -I$(LT_PROJECT_SOURCE_DIR)
+LT_PUBLIC_INCLUDE_FLAGS      += -I$(LT_PLATFORM_PUBLIC_INCLUDE_DIR)/$(SOC_PLATFORM_NAME)
 
 # make
 include $(LT_PROJECT_RULES_MAKEFILE)
@@ -30,3 +40,5 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #   LOG
 ###############################################################################
 #   26-May-22   gallienus   created
+#   27-Aug-26   claudius    hardware files moved down into crypto/esp32, alongside
+#                           the esp32s3 driver sharing the software crypto above

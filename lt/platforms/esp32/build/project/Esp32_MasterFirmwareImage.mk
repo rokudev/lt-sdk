@@ -153,11 +153,23 @@ ESP32_LD_ARG += -specs nosys.specs
 ESP32_LD_ARG += -fno-rtti
 ESP32_LD_ARG += -fno-lto
 
+# The esp32s3 has no prebuilt libwpa_supplicant.a.  IDF ships wpa_supplicant as
+# source and Esp32s3ThirdPartyWPASupplicant builds it, so on that chip it arrives
+# as an LT library like any other - but it has to link the way the esp32's blob
+# does, in with the radio blobs it is mutually recursive with and outside
+# --whole-archive.  Whole-archiving it would drag in the members nothing calls,
+# WPA2-Enterprise among them, and those want a FreeRTOS this image does not have.
+# Held out here and put back beside the blobs below; if the variant links no
+# blobs there is no radio to supplicate for and it drops out of the image.
+ifeq ($(SOC_PLATFORM_NAME),esp32s3)
+    ESP32_WPA_SUPPLICANT_LIB := libEsp32s3ThirdPartyWPASupplicant.a
+endif
+
 ESP32_LD_ARG += $(ESP32_OBJS)
 ESP32_LD_ARG += $(ESP32_IMG3_CMSE_IMPLIB)
 ESP32_LD_ARG += -L $(LT_TARGET_LIB_DIR)
 ESP32_LD_ARG += -Wl,--whole-archive
-ESP32_LD_ARG += $(ESP32_IMAGE_LIBRARIES_L)
+ESP32_LD_ARG += $(filter-out -l$(ESP32_WPA_SUPPLICANT_LIB:lib%.a=%),$(ESP32_IMAGE_LIBRARIES_L))
 ESP32_LD_ARG += -Wl,--no-whole-archive
 
 # Prebuilt Espressif WiFi, PHY and BT blobs.
@@ -175,7 +187,7 @@ ifeq (yes,$(LT_PLATFORM_HAS_WIRELESS_BLOBS))
     # support in ROM and so wants no librtc.a.
     ifeq ($(SOC_PLATFORM_NAME),esp32s3)
         ESP32_WIFI_LIBS := libnet80211.a libcore.a libpp.a libsmartconfig.a libespnow.a \
-                           libphy.a libwpa_supplicant.a
+                           libphy.a
         ESP32_BT_LIBS   := libbtdm_app.a libbtbb.a
     else
         ESP32_WIFI_LIBS := libnet80211.a libcore.a libpp.a libsmartconfig.a libespnow.a \
@@ -183,17 +195,20 @@ ifeq (yes,$(LT_PLATFORM_HAS_WIRELESS_BLOBS))
         ESP32_BT_LIBS   := libbtdm_app.a
     endif
 
-    # libwpa_supplicant.a is not an Espressif binary drop - IDF ships wpa_supplicant as
-    # source and this one was built by Roku, so a fresh vendoring drop does not supply
-    # it.  Check for it rather than let the link fail with a wall of undefined symbols.
+    # The esp32's libwpa_supplicant.a is not an Espressif binary drop - IDF ships
+    # wpa_supplicant as source and that one was built by Roku, so a fresh vendoring
+    # drop does not supply it.  Check for it rather than let the link fail with a
+    # wall of undefined symbols.
     ESP32_MISSING_LIBS := $(strip $(foreach ltlib,$(ESP32_WIFI_LIBS) $(ESP32_BT_LIBS) libcoexist.a, \
                                       $(if $(wildcard $(ESP32_LIB_PATH)/$(ltlib)),,$(ltlib))))
     ifneq (,$(ESP32_MISSING_LIBS))
         $(error Missing prebuilt blob(s) in $(ESP32_LIB_PATH): $(ESP32_MISSING_LIBS))
     endif
 
-    # WiFi
+    # WiFi, then the esp32s3's source built supplicant in the slot the esp32's
+    # prebuilt one occupies - see the note where it is held out of --whole-archive.
     ESP32_LD_ARG += $(foreach ltlib,$(ESP32_WIFI_LIBS),$(ESP32_LIB_PATH)/$(ltlib))
+    ESP32_LD_ARG += $(if $(ESP32_WPA_SUPPLICANT_LIB),$(LT_TARGET_LIB_DIR)/$(ESP32_WPA_SUPPLICANT_LIB))
     # BT coexist
     ESP32_LD_ARG += $(ESP32_LIB_PATH)/libcoexist.a
 

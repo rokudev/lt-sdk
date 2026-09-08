@@ -76,11 +76,6 @@ LT_PROJECT_SOURCE_FILES      += ${NIMBLE_VERSION_DIRNAME}/nimble/host/services/g
 LT_PROJECT_SOURCE_FILES      += ${NIMBLE_VERSION_DIRNAME}/nimble/host/services/gatt/src/ble_svc_gatt.c
 LT_PROJECT_SOURCE_FILES      += ${NIMBLE_VERSION_DIRNAME}/nimble/host/store/ram/src/ble_store_ram.c
 LT_PROJECT_SOURCE_FILES      += ${NIMBLE_VERSION_DIRNAME}/nimble/host/store/config/src/ble_store_config.c
-ifeq ($(LT_BLE_PAIRING_PERSISTENT), 1)
-    LT_PROJECT_SOURCE_FILES  += ${NIMBLE_VERSION_DIRNAME}/nimble/host/store/config/src/ble_store_config_conf_lt_settings.c
-else
-    LT_PROJECT_SOURCE_FILES  += ${NIMBLE_VERSION_DIRNAME}/nimble/host/store/config/src/ble_store_config_conf.c
-endif
 LT_PROJECT_SOURCE_FILES      += ${NIMBLE_VERSION_DIRNAME}/nimble/host/util/src/addr.c
 LT_PROJECT_SOURCE_FILES      += ${NIMBLE_VERSION_DIRNAME}/ext/tinycrypt/src/ecc.c
 LT_PROJECT_SOURCE_FILES      += ${NIMBLE_VERSION_DIRNAME}/ext/tinycrypt/src/ecc_dh.c
@@ -197,7 +192,20 @@ LT_CFLAGS_GENERIC += -DMYNEWT_VAL_BLE_TRANSPORT_ACL_FROM_LL_COUNT=$(MYNEWT_VAL_B
 endif
 
 ifneq ($(strip $(MYNEWT_VAL_BLE_STORE_CONFIG_PERSIST)),)
-LT_CFLAGS_GENERIC += -DMYNEWT_VAL_BLE_STORE_CONFIG_PERSIST
+  LT_CFLAGS_GENERIC += -DMYNEWT_VAL_BLE_STORE_CONFIG_PERSIST=$(MYNEWT_VAL_BLE_STORE_CONFIG_PERSIST)
+  ifeq ($(strip $(MYNEWT_VAL_BLE_STORE_CONFIG_PERSIST)),0)
+      LT_BLE_PAIRING_PERSISTENT := 0
+  else
+      LT_BLE_PAIRING_PERSISTENT := 1
+  endif
+else
+  LT_BLE_PAIRING_PERSISTENT := 0
+endif
+
+ifeq ($(LT_BLE_PAIRING_PERSISTENT), 1)
+    LT_PROJECT_SOURCE_FILES  += ${NIMBLE_VERSION_DIRNAME}/nimble/host/store/config/src/ble_store_config_conf_lt_settings.c
+else
+    LT_PROJECT_SOURCE_FILES  += ${NIMBLE_VERSION_DIRNAME}/nimble/host/store/config/src/ble_store_config_conf.c
 endif
 
 ifneq ($(strip $(MYNEWT_VAL_BLE_STORE_MAX_BONDS)),)
