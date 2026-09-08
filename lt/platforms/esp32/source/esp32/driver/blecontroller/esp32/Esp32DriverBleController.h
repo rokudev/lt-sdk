@@ -14,7 +14,7 @@
 #include <lt/LTTypes.h>
 LT_EXTERN_C_BEGIN
 #include <lt/device/blecontroller/LTDeviceBleController.h>
-#include "../esp32-lt-os-adapter/Esp32_LTOSAdapter.h"
+#include "../../esp32-lt-os-adapter/Esp32_LTOSAdapter.h"
 #define _VA_LIST_DEFINED
 #include <esp_bt.h>
 #include <esp32/Esp32_Irq.h>

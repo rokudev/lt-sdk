@@ -81,25 +81,21 @@ typedef struct {
 
 /** LTCoreBSP_HeapRegion -- Heap region definition for non-hosted BSPs.
  *
- *  Regions are registered in array order; LTKHeapAddRegionEx returns the new
- *  region’s internal slot (0-based, matching pRegions[] position).  Public callers
- *  identify regions via the LTMemoryRegion type, which is *1-based*: LTMemoryRegion N
- *  refers to pRegions[N - 1].  The value 0 is reserved as a sentinel meaning "no
+ *  Regions are registered in array order with calls to LTKHeapAddRegion.
+ *  Regions are surfaced to the client via the LTMemoryRegion type, which is *1-based*.
+ *  LTMemoryRegion N  refers to pRegions[N - 1].  The value 0 is reserved as a sentinel meaning "no
  *  specific region" and routes lt_malloc_from_region back to lt_malloc.  Names are
  *  bound to LTMemoryRegion values via the /memory/regions array in LTDeviceConfig.json
  *  (see LTCore->GetNamedMemoryRegion). */
 typedef struct LTCoreBSP_HeapRegion {
     u8   * pRegionBuffer;      /**< Address of heap region */
     u32    nSizeInBytes;       /**< Size of heap region in bytes */
-    bool   bExclusive;         /**< If true, the region is skipped by default lt_malloc()/LTKAlloc()
-                                *   and reachable only via lt_malloc_from_region(region, ...).  Use for
-                                *   DMA-only RAM that must not absorb general-purpose traffic.  Defaults
-                                *   to false in zero-initialised struct literals. */
+    u32    nFlags;             /**< bitwise combination of LTMemoryRegionFlags */
 } LTCoreBSP_HeapRegion;
 /** LTCoreBSP_LTHeapConfig -- LT heap configuration for non-hosted BSPs */
 typedef struct LTCoreBSP_LTHeapConfig {
-    u8                       nRegions;    /**< Number of non-contiguous heap regions */
     LTCoreBSP_HeapRegion   * pRegions;    /**< Pointer to array of heap region definitions */
+    u8                       nRegions;    /**< Number of non-contiguous heap regions */
 } LTCoreBSP_LTHeapConfig;
 
 /*  TODO: there is no BSP facing way to contribute a heap region after startup.
@@ -121,7 +117,7 @@ typedef struct LTCoreBSP_LTHeapConfig {
  *  LTCoreBSP_Initialize has the same problem.
  *
  *  The kernel side of this already exists and needs nothing new -
- *  LTKHeapAddRegionEx (lt/source/lt/core/LTKernel.h, implemented in
+ *  LTKHeapAddRegion (lt/source/lt/core/LTKernel.h, implemented in
  *  lt/source/lt/ltk/LTKAllocator.c) adds a region at runtime and returns its
  *  slot.  What is missing is a public counterpart a BSP can reach, plus a
  *  defined point in startup at which it is legal to call it.  Note that the slot

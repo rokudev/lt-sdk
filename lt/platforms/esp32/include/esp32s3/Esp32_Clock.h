@@ -137,10 +137,20 @@ Esp32_ClockDisableModuleClock(Esp32_ClockModuleClock clock) {
     Esp32EnableInterrupts(mask);
 }
 
+/*
+ * Gate the clock the Wi-Fi and BT radios share.  Out of line, unlike the rest of
+ * this header, because the Wi-Fi/BLE OS adapter is its only caller and cannot
+ * include this header: the adapter is built against the esp32 register map on
+ * both parts.  The caller reference counts - both radios use these bits.
+ */
+void Esp32_ClockEnableRadioCommonClock(void);
+void Esp32_ClockDisableRadioCommonClock(void);
+
 #endif // #ifndef PLATFORMS_ESP32_INCLUDE_ESP32S3_CLOCK_H
 
 /*******************************************************************************
  *  LOG
  *******************************************************************************
  *  29-Jul-26   claudius    created
+ *  28-Aug-26   claudius    added Esp32_Clock{Enable,Disable}RadioCommonClock
  */

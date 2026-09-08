@@ -100,6 +100,9 @@ typedef_LTObject(LTDeviceKonfig, 1) { /* temporary name */
          *         in the LTHeapConfig struct in the platform variant's LTCoreBSP implementation.
          */
 
+    /* Getting an LTMemoryRegion name */
+    const char * (* GetMemoryRegionName)(LTDeviceKonfig *konfig, LTMemoryRegion region);
+
     /* Enumerating device classes and device units */
     u32          (* GetNumDeviceClasses)(LTDeviceKonfig *konfig);
     const char * (* GetDeviceClassNameAt)(LTDeviceKonfig *konfig, u32 deviceClassIndex);
@@ -337,4 +340,10 @@ LT_EXTERN_C_END
  *         ],
  *     }
  *    _________________________________________________________________________
+ */
+
+/******************************************************************************
+ *  LOG
+ ******************************************************************************
+ *  25-Aug-26   augustus    added GetMemoryRegionName
  */

@@ -290,11 +290,11 @@ static bool LTSystemCrashdumpImpl_LibInit(void) {
         }
         s_crashPartition.offset = crashPartition.entry.nByteOffset;
         s_crashPartition.numSectors = crashPartition.entry.nNumSectors;
-        
-        if (s_pDeviceFlash->GetPartition(s_hFlashDeviceUnitNormalContext, "log", &logPartition)) {
+
+        if (s_pDeviceFlash->GetPartition(s_hFlashDeviceUnitNormalContext, "log", &logPartition) &&
+           (NULL != (s_pSystemLogger = lt_openlibrary(LTSystemLogger)))) {
             s_logPartition.offset = logPartition.entry.nByteOffset;
             s_logPartition.numSectors = logPartition.entry.nNumSectors;
-            LIB_OPEN(LTSystemLogger, s_pSystemLogger);
         } else {
             s_logPartition.offset = 0;
             s_logPartition.numSectors = 0;

@@ -64,6 +64,7 @@ static void LTDeviceKonfigImpl_DestructObject(LTDeviceKonfigImpl *konfig) {
  * forward declarations *
  ************************/
 static s64 LTDeviceKonfigImpl_ReadInteger(LTDeviceKonfigImpl *konfig, u32 configSection, const char *key);
+static const char * LTDeviceKonfigImpl_ReadString(LTDeviceKonfigImpl *konfig, u32 configSection, const char *key);
 
 /********************
  * helper functions *
@@ -111,6 +112,33 @@ bail:
     return false;
 }
 
+static bool MatchObjectIntegerValue(LTDeviceKonfigImpl *konfig, u32 offset, const char *integerKey, s64 integerValue) {
+    LTResourceValue value;
+    return (LT_GetCore()->ReadResourceValue(konfig->tree, offset, integerKey, &value) &&
+            value.type == kLTResourceValueType_Integer && value.integer == integerValue)
+           ? true : false;
+}
+
+static bool GetChildObjectElementWithIntegerKeyAndInteger(LTDeviceKonfigImpl *konfig, u32 offset, const char *key, const char * childNameKey, s64 childIntegerValue, LTResourceValue *pValue, u32 *pIndex) {
+    if (key && *key && childNameKey && *childNameKey) {
+        LTResourceValue value;
+        if (!LT_GetCore()->ReadResourceValue(konfig->tree, offset, key, &value)) goto bail;
+        if (!LT_GetCore()->ReadResourceValue(konfig->tree, value.offset, kLTResourceKey_FirstChild, &value)) goto bail;
+        if (pIndex) *pIndex = 0;
+        while (1) {
+            if (value.type != kLTResourceValueType_Object) goto bail;
+            if (MatchObjectIntegerValue(konfig, value.offset, childNameKey, childIntegerValue)) {
+                if (pValue) *pValue = value;
+                return true;
+            }
+            if (!LT_GetCore()->ReadResourceValue(konfig->tree, value.offset, kLTResourceKey_NextSibling, &value)) goto bail;
+            if (pIndex) *pIndex = *pIndex + 1;
+        }
+    }
+bail:
+    return false;
+}
+
 /*****************
  * api functions *
  *****************/
@@ -120,6 +148,14 @@ static LTMemoryRegion LTDeviceKonfigImpl_GetNamedMemoryRegion(LTDeviceKonfigImpl
            ? (LTMemoryRegion)LTDeviceKonfigImpl_ReadInteger(konfig, value.offset, LTDK_KEY_MEMORY_REGION_REGION)
            : (LTMemoryRegion)0;
 }
+
+static const char * LTDeviceKonfigImpl_GetMemoryRegionName(LTDeviceKonfigImpl *konfig, LTMemoryRegion region) {
+    LTResourceValue value;
+    return GetChildObjectElementWithIntegerKeyAndInteger(konfig, 0, LTDK_KEY_MEMORY_REGIONS, LTDK_KEY_MEMORY_REGION_REGION, (s64)region, &value, NULL)
+           ? LTDeviceKonfigImpl_ReadString(konfig, value.offset, LTDK_KEY_MEMORY_REGION_NAME)
+           : NULL;
+}
+
 
 static u32 LTDeviceKonfigImpl_GetNumDeviceClasses(LTDeviceKonfigImpl *konfig) {
     u32 nNumDeviceClasses = LT_GetCore()->CountResourceChildren(konfig->tree, 0, LTDK_KEY_DEVICE);
@@ -312,6 +348,7 @@ static LTResourceValueType LTDeviceKonfigImpl_ReadValueType(LTDeviceKonfigImpl *
 define_LTObjectImplPublic(LTDeviceKonfig, LTDeviceKonfigImpl,
 
     GetNamedMemoryRegion,
+    GetMemoryRegionName,
 
     GetNumDeviceClasses,
     GetDeviceClassNameAt,
@@ -352,4 +389,5 @@ define_LTObjectLibrary(1, NULL, NULL);
  *  LOG
  ******************************************************************************
  *  30-Aug-22   aurelian    created
+ *  25-Aug-26   augustus    added GetMemoryRegionName
  */

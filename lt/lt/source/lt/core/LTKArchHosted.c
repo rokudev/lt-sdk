@@ -350,16 +350,15 @@ void LTKHeapInitialize(void) {
     LTAtomic_Store(&s_allocationCountMax, 0);
 }
 
-void LTKHeapAddRegion(u8 * pRegionBuffer, u32 nSizeInBytes) {
-    LT_UNUSED(pRegionBuffer);
-    LT_UNUSED(nSizeInBytes);
+u32 LTKHeapScrubLTMemoryRegionFlags(u32 nFlags) {
+    /* hosted os doesn't use regions */
+    return nFlags;
 }
 
-u32 LTKHeapAddRegionEx(u8 * pRegionBuffer, u32 nSizeInBytes, bool bExclusive) {
+void LTKHeapAddRegion(u8 * pRegionBuffer, u32 nSizeInBytes, u32 nFlags) {
     LT_UNUSED(pRegionBuffer);
     LT_UNUSED(nSizeInBytes);
-    LT_UNUSED(bExclusive);
-    return 0;
+    LT_UNUSED(nFlags);
 }
 
 bool LTKHeap_IsExclusiveByPtr(const void * p) {
@@ -388,9 +387,12 @@ void * LTKAlloc(LT_SIZE nBytes) {
     return pMem + 1;
 }
 
+void * LTKAllocStack(LT_SIZE nBytes) {
+    return LTKAlloc(nBytes);
+}
 
 /* Hosted LTK has a single host-malloc backed heap; regions are not modeled
- * (LTKHeapAddRegionEx is a no-op on hosted).  All region values — sentinel,
+ * (LTKHeapAddRegion is a no-op on hosted).  All region values — sentinel,
  * the implicit "default", and any platform-specific named region — fall through
  * to LTKAlloc.  Returning NULL for region != 0/1 would diverge hosted unit tests
  * from on-target behavior, masking real bugs. */

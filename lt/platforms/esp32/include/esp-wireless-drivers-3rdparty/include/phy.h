@@ -69,11 +69,27 @@ void phy_wakeup_init(void);
  */
 void phy_close_rf(void);
 
-#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S2
+/* Roku: was CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S2 here; IDF
+ * v4.4.8 declares this for every target except the esp32, the esp32s3 included.
+ */
+#if !CONFIG_IDF_TARGET_ESP32
 /**
  * @brief Disable PHY temperature sensor.
  */
 void phy_xpd_tsens(void);
+#endif
+
+#if !CONFIG_IDF_TARGET_ESP32
+/**
+ * @brief Keep the USB PHY powered across Wi-Fi/BT PHY init.
+ *
+ * Roku: not in IDF's phy.h, which declares it in esp_private/phy.h instead.
+ * Bringing the radio PHY up otherwise takes the USB PHY down with it, which on
+ * a board consoled through USB Serial/JTAG kills the console.  IDF calls this
+ * under CONFIG_ESP_PHY_ENABLE_USB, defaulted on for a USJ console.  The esp32
+ * has no USB and its libphy.a has no such symbol.
+ */
+void phy_bbpll_en_usb(bool en);
 #endif
 
 /**
