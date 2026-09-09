@@ -157,10 +157,12 @@ static LTDeviceSDCard_SDCardInfo GetSDCardInfo(LTHandle hUnit) {
 
 // Resolve which device path to use and try mounting with filesystem fallbacks.
 // Returns 0 on success, non-zero on failure.
-static int TryMount(const char **outDevicePath) {
+// When devicePath is non-NULL, mount that device directly.
+// When NULL, resolve the device path internally.
+static int TryMount(const char *devicePath) {
     struct stat st = {0};
 
-    // Create the mount point directory if it doesn't exist
+    // Create the mount point directory if it does not exist
     if (stat(MOUNTPOINT, &st) == -1) {
         if (mkdir(MOUNTPOINT, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH) != 0) { // 0755
             LTLOG_YELLOWALERT("mkdir.fail", "Failed to create mount point directory %s: %s", MOUNTPOINT, strerror(errno));
@@ -168,16 +170,9 @@ static int TryMount(const char **outDevicePath) {
         }
     }
 
-    // Check if partition exists first
-    const char *devicePath;
-    if (stat(SDCARD_PART_PATH, &st) == -1) {
-        // No partition, try mounting whole device
-        devicePath = SDCARD_PATH;
-    } else {
-        // Partition exists, try mounting it
-        devicePath = SDCARD_PART_PATH;
+    if (!devicePath) {
+        devicePath = (stat(SDCARD_PART_PATH, &st) == -1) ? SDCARD_PATH : SDCARD_PART_PATH;
     }
-    if (outDevicePath) *outDevicePath = devicePath;
 
     // Try mounting with auto-detect, then vfat, then exfat
     snprintf(s_mntCmd, sizeof(s_mntCmd), "mount %s %s 2>/dev/null", devicePath, MOUNTPOINT);
@@ -200,40 +195,45 @@ static bool FsckSucceeded(int status) {
     return WIFEXITED(status) && WEXITSTATUS(status) < 4;
 }
 
-// Full mount with fsck fallback — used on card insertion and boot.
-// May block for a significant duration on large/corrupt cards.
+// Decode system() wait-status into a human-readable description.
+static const char *FsckExitDesc(int status) {
+    if (status == -1)        return "system() failed";
+    if (WIFSIGNALED(status)) return "killed by signal";
+    if (WIFEXITED(status))   return "exit";
+    return "unknown";
+}
+
+// Full mount with pre-mount fsck — used on card insertion and boot.
+// Runs fsck before mounting to repair corruption that the kernel would
+// otherwise silently ignore (e.g. broken cluster chains, cross-linked
+// clusters, free count mismatch). May block for several seconds on
+// large or corrupt cards.
 static bool Mount_Private(LTDeviceUnit hUnit) {
-    const char *devicePath = NULL;
-    int ret = TryMount(&devicePath);
+    struct stat st = {0};
+    const char *devicePath = (stat(SDCARD_PART_PATH, &st) == -1) ? SDCARD_PATH : SDCARD_PART_PATH;
 
-    if (ret != 0 && devicePath) {
-        // Mount failed — the filesystem may be dirty or corrupt (e.g. from
-        // writes that failed when the card was full). Attempt a non-destructive
-        // filesystem repair and retry the mount.
-        LTLOG_SERVER("mnt.fsck", "Mount failed, attempting fsck on %s", devicePath);
-
-        snprintf(s_mntCmd, sizeof(s_mntCmd), "fsck.vfat -a %s 2>/dev/null", devicePath);
-        int fsckRet = system(s_mntCmd);
-        if (!FsckSucceeded(fsckRet)) {
-            snprintf(s_mntCmd, sizeof(s_mntCmd), "fsck.exfat -a %s 2>/dev/null", devicePath);
-            fsckRet = system(s_mntCmd);
-        }
-
-        if (FsckSucceeded(fsckRet)) {
-            LTLOG_SERVER("mnt.fsck.ok", "fsck succeeded, retrying mount");
-            ret = TryMount(NULL);
-        }
-
-        if (ret != 0) {
-            LTLOG_YELLOWALERT("mnt.fail", "Failed to mount %s", devicePath);
-            return false;
-        }
-    } else if (ret != 0) {
-        LTLOG_YELLOWALERT("mnt.fail", "Failed to mount SD card");
+    // Run fsck before mount — the kernel mounts FAT32 even with cluster
+    // chain corruption, so the old mount-then-fsck-on-failure approach
+    // never triggered fsck for the corruption types that matter.
+    snprintf(s_mntCmd, sizeof(s_mntCmd), "fsck.vfat -a %s 2>/dev/null", devicePath);
+    int fsckRet = system(s_mntCmd);
+    if (!FsckSucceeded(fsckRet)) {
+        snprintf(s_mntCmd, sizeof(s_mntCmd), "fsck.exfat -a %s 2>/dev/null", devicePath);
+        fsckRet = system(s_mntCmd);
+    }
+    if (!FsckSucceeded(fsckRet)) {
+        LTLOG_YELLOWALERT("mnt.fsck.fail", "fsck failed on %s (%s %d), skipping mount",
+            devicePath, FsckExitDesc(fsckRet),
+            WIFEXITED(fsckRet) ? WEXITSTATUS(fsckRet) : -1);
         return false;
     }
 
-    // Notify on successful mount
+    int ret = TryMount(devicePath);
+    if (ret != 0) {
+        LTLOG_YELLOWALERT("mnt.fail", "Failed to mount %s", devicePath);
+        return false;
+    }
+
     s_previousPollInfo.mounted = true;
     NotifySDCardEvent(hUnit);
     return true;
