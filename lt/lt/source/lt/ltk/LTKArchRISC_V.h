@@ -41,15 +41,16 @@ typedef struct {
 } LTKStackFrame;
 
 #if defined(__riscv_flen)
-    #define LTK_ARCH_RISC_V_FP_RESERVE    LTK_ARCH_RISC_V_FP_STACK_PTR_ADJ
+    #define LTK_ARCH_THREAD_STACK_RESERVE    LTK_ARCH_RISC_V_FP_FRAME_SIZE
 #else
-    #define LTK_ARCH_RISC_V_FP_RESERVE    0
+    #define LTK_ARCH_THREAD_STACK_RESERVE    0
 #endif
 
 enum {
-    kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + 128 + LTK_ARCH_RISC_V_FP_RESERVE,
+    /* LTKStackFrame already covers the FP context, so no extra reserve here. */
+    kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + 128,
     /* RISC-V has more expensive stacking requirements than ARM. */
-    kLTK_DefaultThreadStackSize = 512 + 128 + LTK_ARCH_RISC_V_FP_RESERVE
+    kLTK_DefaultThreadStackSize = 512 + 128
 };
 
 LT_INLINE bool InterruptsAreDisabled(void) LT_ISR_SAFE {

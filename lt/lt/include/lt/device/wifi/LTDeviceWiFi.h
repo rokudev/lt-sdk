@@ -460,7 +460,7 @@ struct LTDeviceWiFi {
          * @return true on success
          */
 
-    void (*ScanWithVendorIE)(LTWiFi_ScanWithIE const *params, LTDeviceWiFi_ScanCallback *cb, void *callback_data);
+    bool (*ScanWithVendorIE)(LTWiFi_ScanWithIE const *params, LTDeviceWiFi_ScanCallback *cb, void *callback_data);
         /**<
          * @brief Scan with a vendor IE injected into probe requests.
          *
@@ -469,6 +469,20 @@ struct LTDeviceWiFi {
          * @param[in] params: scan spec + vendor IE
          * @param[in] cb: called for each result, NULL when done
          * @param[in] callback_data: data passed to callback
+         * @return true when the request was accepted (the callback WILL fire,
+         *         ending with the NULL end-of-scan marker); false when it was
+         *         dropped and no callback of any kind follows
+         */
+
+    bool (*GetChannelPlan)(LTWiFi_ChannelPlan *plan);
+        /**<
+         * @brief Report the channels the active regulatory domain permits.
+         *
+         * DFS channels are included; a caller that transmits during discovery
+         * must stay passive on them until it has heard a beacon.
+         *
+         * @param[out] plan: channel list, 2.4 GHz first then 5 GHz
+         * @return true when the plan was filled in
          */
 };
 LT_EXTERN_C_END

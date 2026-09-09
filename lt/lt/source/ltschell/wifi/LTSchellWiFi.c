@@ -256,13 +256,22 @@ static void /*LTDeviceWiFi_JoinCallback*/ SHL_JoinCallback(LTWiFi_JoinStatus sta
 static int SHL_Scan(LTSystemSchell *shell, int argc, const char *argv[]) {
     LTWiFi_ScanSpec spec = {};
     LTWiFi_ScanSpec *spec_ptr = NULL;
-    char target_ssid[256] = {0, };
-    u8 target_channels[16] = {0, };
+    // ScanAps copies the spec shallowly, so spec.ssid / spec.channel are still
+    // read on the WiFi state-machine thread after this frame returns and must
+    // not be stack buffers. Static is safe: the shell runs one scan at a time.
+    static char target_ssid[256];
+    static u8 target_channels[16];
     int pos = 0;
+    lt_memset(target_ssid, 0, sizeof(target_ssid));
+    lt_memset(target_channels, 0, sizeof(target_channels));
     SHL_ScanRepeat = 1;
     SHL_ScanProbes = false;
     if (HasArg(argc, argv, "-r")) SHL_ScanRepeat = 4;    // repeat a few times
     if (HasArg(argc, argv, "-p")) SHL_ScanProbes = true; // show probes
+    if (HasArg(argc, argv, "-P")) {  // passive: listen for beacons, send no probe request
+        spec.options |= kLTWiFi_ScanOption_Passive;
+        spec_ptr = &spec;
+    }
     if ((pos = HasArg(argc, argv, "-S")) && pos && pos + 1 < argc) { // target scan SSID
         lt_strncpyTerm(target_ssid, argv[pos + 1], 256);
         spec.ssid = target_ssid;
@@ -283,6 +292,13 @@ static int SHL_Scan(LTSystemSchell *shell, int argc, const char *argv[]) {
         } while(i < 15);
 
         spec.channel = target_channels;
+        spec_ptr = &spec;
+    }
+    if ((pos = HasArg(argc, argv, "-D")) && pos && pos + 1 < argc) { // per-channel dwell, ms
+        // The 2.4 GHz default dwell (40 ms) is well under a ~100 ms beacon
+        // interval, so use >=120 ms for beacon-only measurements. The driver
+        // floors 5 GHz dwell, so short dwells are not testable there.
+        spec.chan_dwell = (u8)(lt_strtos32(argv[pos + 1], NULL, 0) & 0xff);
         spec_ptr = &spec;
     }
     if ((pos = HasArg(argc, argv, "-R")) && pos && pos + 1 < argc) { // target scan, rssi
@@ -664,6 +680,8 @@ static const LTSystemShell_CommandDesc WiFi_Commands[] = {
                                             "\t\t-T target scan, scan -S <ssid>\n"
                                             "\t\t-C target scan, scan -C <1,2,3,...>\n"
                                             "\t\t-R target scan, scan -R <RSSI>\n"
+                                            "\t\t-P passive scan (beacons only, no probe request)\n"
+                                            "\t\t-D per-channel dwell ms, scan -D <40..255> (default 40)\n"
                                             "\t\t-r repeat scan\n"
                                             "\t\t-p show probes/beacons",            NULL },
     { "join",               SHL_Join,       "join <ssid> [<pass>] [bssid] [-r]\n"
