@@ -1452,6 +1452,7 @@ static s8 CommonDriverBle_GetRSSI(u16 connHandle, s8 *rssi) {
 }
 
 static bool CommonDriverBle_SendPrivVenCommand(const char *cmd, u8* resp, u32 respLen) {
+    if (!S.controller || !S.controller->SendPrivVenCommand) return false;
     P(__FUNCTION__, "Vendor Command = %s\n", cmd);
     u8 hci_buffer[32] = {}; //Max Length 32
     u32 len = 0;
