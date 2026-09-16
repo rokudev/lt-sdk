@@ -1042,7 +1042,7 @@ struct LTCoreApi {
          * to narrow the scope of the key to the subtree that starts at that offset.
          *
          * @param resourceTree the resourceTree to read from
-         * @param offset a tree offset that can be used to specify a subtree for searching or 0 search the whole tree
+         * @param offset a tree offset that can be used to specify a subtree for searching or 0 to search the whole tree
          * @param resourceKey the resource key of the value to find the offset of
          * @return the absolute offset from the start of resourceTree where the internal tree node with specified
          *         resourceKey lives or 0 if the specified resourceKey wasn't found
@@ -1053,8 +1053,8 @@ struct LTCoreApi {
          * Call %CountResourceChildren() to obtain the number of children of the resource value with key resourceKey.
          *
          * @param resourceTree the resourceTree to read from
-         * @param offset a tree offset that can be used to specify a subtree for searching or 0 search the whole tree
-         * @param resourceKey the resource key of the value to find the offset of
+         * @param offset a tree offset that can be used to specify a subtree for searching or 0 to search the whole tree
+         * @param resourceKey the resource key of the value to count the number of children of
          * @return the number of children of the resource value with specified resourceKey.
          */
     const char* (*ResourceTypeToString)(LTResourceValueType type);

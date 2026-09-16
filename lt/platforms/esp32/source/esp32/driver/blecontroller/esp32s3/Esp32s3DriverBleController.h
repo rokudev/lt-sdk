@@ -16,7 +16,7 @@ LT_EXTERN_C_BEGIN
 #include <lt/device/blecontroller/LTDeviceBleController.h>
 #include "../../esp32-lt-os-adapter/Esp32_LTOSAdapterOsi.h"
 #define _VA_LIST_DEFINED
-/* IDF v4.4 builds the esp32s3 against components/bt/include/esp32c3/include, so
+/* IDF builds the esp32s3 against components/bt/include/esp32c3/include, so
  * esp_bt.h under include/esp32s3 is a copy of the c3 header; see the .mk. */
 #include <esp_bt.h>
 #include <esp32s3/Esp32_Irq.h>
@@ -40,9 +40,13 @@ typedef LT_SIZE size_t;
 /****************************************************************************
  * Macros
  ****************************************************************************/
-/* The controller rejects any other value for these two, so they are not tunable. */
-#define ESP32S3_CONTROLLER_TASK_STACK       ESP_TASK_BT_CONTROLLER_STACK
-#define ESP32S3_CONTROLLER_TASK_PRIORITY    ESP_TASK_BT_CONTROLLER_PRIO
+/* btdm_controller_init() forwards these straight to the OSI _task_create hook
+ * (config offsets 8 and 10) and demands it return 1.  The IDF sdkconfig.h
+ * values are 0, and the LT adapter rejects a zero stack depth, so the
+ * controller task never starts and init fails with -9.  Match the esp32
+ * driver, whose controller task has the same footprint. */
+#define ESP32S3_CONTROLLER_TASK_STACK       (3072)
+#define ESP32S3_CONTROLLER_TASK_PRIORITY    (23)
 
 #define LT_ESP32_TR_FAIL LTLOG_REDALERT     ("test", "FILE: %s, LINE#%d, function: %s", __FILE__, __LINE__, __FUNCTION__);
 #define LT_ESP32_BIT(nr)                    (1UL << (nr))
@@ -75,7 +79,7 @@ typedef LT_SIZE size_t;
 typedef void (*btdm_vnd_ol_task_func_t)(void *param);
 
 /*
- * Copied verbatim from ESP-IDF v4.4 components/bt/controller/esp32c3/bt.c, which
+ * Copied verbatim from ESP-IDF v5.3 components/bt/controller/esp32c3/bt.c, which
  * is the controller port the esp32s3 uses.  btdm_osi_funcs_register() checks
  * _magic and _version and rejects anything else, so field order is ABI.  This
  * has nothing in common with the esp32 table in Esp32_LTOSAdapter.h beyond the

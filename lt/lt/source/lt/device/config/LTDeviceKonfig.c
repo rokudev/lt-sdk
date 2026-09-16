@@ -300,6 +300,11 @@ static u32 LTDeviceKonfigImpl_GetDeviceUnitConfigSectionForDeviceOrDriverObject(
             : 0;
 }
 
+static u32 LTDeviceKonfigImpl_GetArraySubObjectSectionByIndex(LTDeviceKonfigImpl *konfig, u32 configSection, const char *arrayKey, u32 nIndex ) {
+    LTResourceValue value;
+    return (GetChildElement(konfig, configSection, arrayKey, nIndex, &value) && value.type == kLTResourceValueType_Object) ? value.offset : 0;
+}
+
 static u32 LTDeviceKonfigImpl_GetArraySubObjectSectionWithName(LTDeviceKonfigImpl *konfig, u32 configSection, const char *arrayKey, const char *name ) {
     LTResourceValue value;
     return (GetChildObjectElementWithNameKeyAndName(konfig, configSection, arrayKey, "name", name, &value, NULL) ? value.offset : 0);
@@ -370,6 +375,7 @@ define_LTObjectImplPublic(LTDeviceKonfig, LTDeviceKonfigImpl,
     GetDeviceUnitConfigSectionByNameAndIndex,
     GetDeviceUnitConfigSectionByIndex,
     GetDeviceUnitConfigSectionForDeviceOrDriverObject,
+    GetArraySubObjectSectionByIndex,
     GetArraySubObjectSectionWithName,
     GetObjectSection,
 
