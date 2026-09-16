@@ -30,7 +30,7 @@
  *****************************************************************************/
 
 /*
- * Modelled on ESP-IDF v4.4 components/bt/controller/esp32c3/bt.c, which is the
+ * Modelled on ESP-IDF v5.3 components/bt/controller/esp32c3/bt.c, which is the
  * controller port IDF builds for the esp32s3 as well.  It is not a variant of
  * the esp32 driver next door: btdm_controller_init() takes one argument instead
  * of two, the DRAM region table and btdm_rf_bb_init_phase2() are gone, memory
@@ -44,6 +44,14 @@
 #include "Esp32s3DriverBleController.h"
 
 DEFINE_LTLOG_SECTION("esp32s3.Ble.Controller");
+
+/* Layout must match the offsets libbtdm_app.a dereferences in
+ * btdm_controller_init; see the provenance note in esp_bt.h. */
+LT_STATIC_ASSERT(sizeof(esp_bt_controller_config_t) == 64, "cfg size 64");
+LT_STATIC_ASSERT(__builtin_offsetof(esp_bt_controller_config_t, version) == 4, "version@4");
+LT_STATIC_ASSERT(__builtin_offsetof(esp_bt_controller_config_t, txpwr_dft) == 30, "txpwr@30");
+LT_STATIC_ASSERT(__builtin_offsetof(esp_bt_controller_config_t, hw_target_code) == 44, "hw_target_code@44");
+LT_STATIC_ASSERT(__builtin_offsetof(esp_bt_controller_config_t, scan_backoff_upperlimitmax) == 52, "scan_backoff@52");
 
 /****************************************************************************
  * Static variables
@@ -60,6 +68,7 @@ static esp_bt_controller_status_t btdm_controller_status = ESP_BT_CONTROLLER_STA
 static wifi_ps_type_t wifi_ps_mode = WIFI_PS_MIN_MODEM;
 /* LT primitives the OSI table is built from, see Esp32_LTOSAdapterOsi.h */
 static const Esp32OSAdapterPrimitives *s_os = NULL;
+static esp_bt_controller_config_t s_btCfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
 
 static void Esp32s3DriverBleController_SendReady(void) {
     LTLOG_DEBUG("advertising", "send to controller ready");
@@ -166,7 +175,13 @@ static void interrupt_handler_set_wrapper(int n, void *fn, void *arg) {
         if (s_bleIrqSlots[i].nCpuIrq == n) {
             s_bleIrqSlots[i].pUserHandler = (void (*)(void *))fn;
             s_bleIrqSlots[i].pArg         = arg;
+            /* SetInterruptVector unmasks the line as it registers, but the
+             * controller has its own _interrupt_on for that and does not call
+             * it until btdm_controller_enable().  Leave the line masked until
+             * then; the RWBLE source already asserts during PHY calibration,
+             * and servicing it that early faults. */
             LT_GetCore()->SetInterruptVector(n, s_bleIrqStubs[i], s_bleIrqPriority[i]);
+            xt_ints_off(1U << n);
             return;
         }
     }
@@ -371,7 +386,7 @@ static void btdm_controller_mem_init(void) {
 }
 
 static int esp32s3_bt_controller_init(void) {
-    esp_bt_controller_config_t btCfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    // esp_bt_controller_config_t btCfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
 
     s_os = LTEsp32OSAdapter_GetPrimitives();
     for (u32 i = 0; i < BLE_IRQ_SLOTS; i++) s_bleIrqSlots[i].nCpuIrq = -1;
@@ -379,10 +394,10 @@ static int esp32s3_bt_controller_init(void) {
     wifi_bt_coexist_init();
     OsiFuncsBuild();
     if (btdm_osi_funcs_register(&s_osiFuncs) != 0) {
-        LTLOG_REDALERT("controller_init", "OSI function table rejected by the controller");
+        //LTLOG_REDALERT("controller_init", "OSI function table rejected by the controller");
         return -1;
     }
-    LTLOG_DEBUG("controller_init", "BT controller compile version [%s]", btdm_controller_get_compile_version());
+    //LTLOG_DEBUG("controller_init", "BT controller compile version [%s]", btdm_controller_get_compile_version());
 
     Esp32s3_WiFiBtPowerDomainOn();
     btdm_controller_mem_init();
@@ -403,13 +418,13 @@ static int esp32s3_bt_controller_init(void) {
 
     coex_init();
 
-    btCfg.controller_task_stack_size = ESP32S3_CONTROLLER_TASK_STACK;
-    btCfg.controller_task_prio       = ESP32S3_CONTROLLER_TASK_PRIORITY;
-    btCfg.magic                      = ESP_BT_CTRL_CONFIG_MAGIC_VAL;
-    btCfg.bluetooth_mode             = ESP_BT_MODE_BLE;
+    s_btCfg.controller_task_stack_size = ESP32S3_CONTROLLER_TASK_STACK;
+    s_btCfg.controller_task_prio       = ESP32S3_CONTROLLER_TASK_PRIORITY;
+    s_btCfg.magic                      = ESP_BT_CTRL_CONFIG_MAGIC_VAL;
+    s_btCfg.bluetooth_mode             = ESP_BT_MODE_BLE;
 
-    if (btdm_controller_init(&btCfg) != 0) {
-        LT_ESP32_TR_FAIL;
+    if (btdm_controller_init(&s_btCfg) != 0) {
+        //LT_ESP32_TR_FAIL;
         return -1;
     }
     LTLOG_DEBUG("controller_init", "The ble controller initialized successfully");
@@ -430,7 +445,7 @@ static int esp32s3_bt_controller_enable(void) {
     esp32_phy_enable();
     coex_enable();
     if (btdm_controller_enable(ESP_BT_MODE_BLE) != 0) {
-        LT_ESP32_TR_FAIL;
+        //LT_ESP32_TR_FAIL;
         return -1;
     }
     coex_pti_v2();
@@ -444,24 +459,24 @@ static bool sControllerInitialized = false;
 static bool Esp32s3DriverBleController_Enable(bool enable) {
     if (enable) {
         if (btdm_controller_status == ESP_BT_CONTROLLER_STATUS_ENABLED) {
-            LTLOG_DEBUG("DriverBleControllerInit", "Controller already enabled");
+            //LTLOG_DEBUG("DriverBleControllerInit", "Controller already enabled");
             return true;
         }
         if (btdm_controller_status != ESP_BT_CONTROLLER_STATUS_IDLE) {
-            LTLOG_REDALERT("DriverBleControllerInit", "Invalid controller status %lx", LT_Pu32(btdm_controller_status));
+            //LTLOG_REDALERT("DriverBleControllerInit", "Invalid controller status %lx", LT_Pu32(btdm_controller_status));
             return false;
         }
 
         if (!sControllerInitialized) {
             if (esp32s3_bt_controller_init() != 0) {
-                LTLOG_REDALERT("DriverBleControllerInit", "Failed to initialize the controller");
+                //LTLOG_REDALERT("DriverBleControllerInit", "Failed to initialize the controller");
                 return false;
             }
             sControllerInitialized = true;
         }
 
         if (esp32s3_bt_controller_enable() != 0) {
-            LTLOG_REDALERT("DriverBleControllerEnable", "Failed to enable the controller");
+            //LTLOG_REDALERT("DriverBleControllerEnable", "Failed to enable the controller");
             return false;
         }
 
@@ -513,7 +528,9 @@ static bool Esp32s3DriverBleControllerImpl_LibInit(void) {
 }
 
 static void Esp32s3DriverBleControllerImpl_LibFini(void) {
-    LTEsp32OSAdapter_LibFini();
+    /* The BT controller task never returns, so tearing down the adapter would
+     * block in DestroyHandle on its thread handle.  The controller is left up
+     * once initialized (see Enable), so there is nothing to release here. */
 }
 
 /*******************************************************************************

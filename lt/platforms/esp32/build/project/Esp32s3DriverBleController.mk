@@ -19,7 +19,7 @@ LT_PROJECT_SOURCE_FILES      += Esp32s3DriverBleController.c
 LT_PUBLIC_INCLUDE_FLAGS      += -I$(LT_PROJECT_SOURCE_DIR)
 LT_PUBLIC_INCLUDE_FLAGS      += -I$(LT_PROJECT_SOURCE_DIR)/../../esp32-lt-os-adapter
 LT_PUBLIC_INCLUDE_FLAGS      += -I$(LT_PLATFORM_PUBLIC_INCLUDE_DIR)/$(BLE_DRV_DIR)/include
-# esp_bt.h under esp32s3/ is a copy of the esp32c3 header, because IDF v4.4's
+# esp_bt.h under esp32s3/ is a copy of the esp32c3 header, because IDF's
 # components/bt builds the esp32s3 against controller/esp32c3 and
 # include/esp32c3/include.  The esp32c3 directory itself must stay off the
 # include path: esp_bt.h pulls in "sdkconfig.h" from its own directory, so

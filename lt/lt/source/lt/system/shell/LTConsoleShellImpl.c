@@ -15,7 +15,7 @@
 #include "LTShellImpl.h"
 
 #define LTSHELL_BOOT_KEYNAME                "ltshell.boot.cmd"
-#define LTSHELL_CONSOLETHREAD_STACKSIZE     1832
+#define LTSHELL_CONSOLETHREAD_STACKSIZE     3072
 #define SHELL_SPECIFIC_CLIENTDATA_KEY       "LTConSh"
 
 DEFINE_LTLOG_SECTION("consoleshell");

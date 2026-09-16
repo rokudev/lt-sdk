@@ -209,6 +209,17 @@ typedef_LTObject(LTDeviceKonfig, 1) { /* temporary name */
     u32          (* GetDeviceUnitConfigSectionForDeviceOrDriverObject)(LTDeviceKonfig *konfig, LTObject *deviceOrDriverObject);
         // returns device unit config section for the device unit being operated by a device or driver object
 
+    u32          ( * GetArraySubObjectSectionByIndex)(LTDeviceKonfig *konfig, u32 configSection, const char *arrayKey, u32 nIndex);
+        // gets the object in the array by index, e.g. [ { ... }, { ... } ] from of array objects with key arrayKey
+        // e.g. for example, to get the object with index 1 from array with key arrayKey:
+        //      if device unit config section contains an array called items: <pre>
+        //         / * items: [ { name: "foo", data: "foodata" }, { name: "bar", data: "bardata" } * /
+        //
+        //          u32 section = konfig->API->GetDeviceUnitConfigSectionForDeviceOrDriverObject(konfig, deviceOrDriverObject);
+        //          u32 secondObjectSectionFromItemsArray = konfig->API->GetArraySubObjectSectionByIndex(konfig, section, "items", 1); / * returns the object at index 1 from items array * /
+        //          const char *dataString = konfig->API->ReadString(konfig, secondObjectSectionFromItemsArray, "data") / * returns "bardata"  * /
+        //      </pre>
+
     u32          ( * GetArraySubObjectSectionWithName)(LTDeviceKonfig *konfig, u32 configSection, const char *arrayKey, const char *name);
         // gets the object with name key name, e.g. { name: <name> }, from of array objects with key arrayKey
         // e.g. for example, to get the object with specific name out of the device unit config section's array with key arrayKey:
@@ -217,7 +228,7 @@ typedef_LTObject(LTDeviceKonfig, 1) { /* temporary name */
         //
         //          u32 section = konfig->API->GetDeviceUnitConfigSectionForDeviceOrDriverObject(konfig, deviceOrDriverObject);
         //          u32 namedFooObjectSectionFromItemsArray = konfig->API->GetArraySubObjectSectionWithName(konfig, section, "items", "foo"); / * returns the object with name:"foo" from items array * /
-        //          const char *dataString = konfig->API->ReadString(konfig, namedFooObjectSectionFromItemsArray, "data") / * returns * / "fooData"
+        //          const char *dataString = konfig->API->ReadString(konfig, namedFooObjectSectionFromItemsArray, "data") / * returns "foodata" * /
         //      </pre>
 
     u32          ( * GetObjectSection)(LTDeviceKonfig *konfig, u32 section, const char *objectKey);

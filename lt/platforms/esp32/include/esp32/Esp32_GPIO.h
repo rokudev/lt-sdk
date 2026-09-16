@@ -20,6 +20,7 @@
  *****************************************************************************/
 enum {
     kEsp32GPIO_NumPins                 = 40,
+    kEsp32GPIO_NumFunctions            = 6,     // IO_MUX function selects per pad
 };
 
 /******************************************************************************
@@ -81,18 +82,29 @@ enum Esp32GPIO_Trigger {
     kEsp32GPIO_Trigger_HighLevel        = 5,
 };
 
+/*
+ * Pad configuration read back from the IO_MUX and GPIO registers
+ */
+typedef struct {
+    Esp32GPIO_Direction direction;      // is the output driver enabled?
+    Esp32GPIO_PullType  pull;
+    Esp32GPIO_Function  func;           // IO_MUX function select
+    bool                bInputEnabled;  // IO_MUX FUN_IE
+} Esp32GPIO_PinConfig;
+
 typedef void (Esp32_IRQCallback)(u8 nPin, bool bPinHigh, void *pClientData);
 
 /******************************************************************************
  * See implementation for more details
  *****************************************************************************/
+bool Esp32GPIO_IsValidPin(u8 nPin);
 bool Esp32GPIO_ConfigPin(u8 nPin,
                          Esp32GPIO_Direction direction,
                          Esp32GPIO_PullType pull,
                          Esp32GPIO_Function func);
 void Esp32GPIO_ConfigOutputType(u8 nPin, Esp32GPIO_OutputType outputType);
 /*
- * Narrow read-modify-write accessors for the two IO_MUX pad fields that
+ * Narrow read-modify-write accessors for the IO_MUX pad fields that
  * Esp32GPIO_ConfigPin() would otherwise overwrite wholesale.  These exist for
  * pads that are driven by a peripheral rather than by the GPIO block - the
  * flash and PSRAM pads, for one - where the rest of ConfigPin's work (output
@@ -101,6 +113,8 @@ void Esp32GPIO_ConfigOutputType(u8 nPin, Esp32GPIO_OutputType outputType);
  */
 void Esp32GPIO_ConfigPinFunction(u8 nPin, Esp32GPIO_Function func);
 void Esp32GPIO_ConfigPinDriveStrength(u8 nPin, u8 nDriveStrength);
+void Esp32GPIO_ConfigPinPull(u8 nPin, Esp32GPIO_PullType pull);
+void Esp32GPIO_ConfigPinInputEnable(u8 nPin, bool bEnable);
 void Esp32GPIO_ConfigMatrixPin(u8 nPin, u8 nSignal, Esp32GPIO_Direction direction, bool bInv);
 void Esp32GPIO_ConfigPinHold(u8 nPin, bool bPinHold);
 void Esp32GPIO_ClearAllPinHolds(void);
@@ -109,6 +123,8 @@ void Esp32GPIO_DetachISR(u8 nPin);
 bool Esp32GPIO_ReadPin(u8 nPin);
 void Esp32GPIO_WritePin(u8 nPin, bool val);
 void Esp32GPIO_ClearPinConfig(u8 nPin);
+void Esp32GPIO_ClearPendingIRQ(u8 nPin);
+bool Esp32GPIO_GetPinConfig(u8 nPin, Esp32GPIO_PinConfig *pConfig);
 
 #endif // #ifndef PLATFORMS_ESP32_INCLUDE_ESP32_ESP32_GPIO_H
 
@@ -116,4 +132,6 @@ void Esp32GPIO_ClearPinConfig(u8 nPin);
  *  LOG
  ******************************************************************************
  *  08-Jul-22   vitellius   created
+ *  08-Sep-26   claudius    added pull, input enable and pad config readback
+ *                          accessors for Esp32DriverGpio
  */

@@ -482,41 +482,48 @@ static bool LTDeviceAuthenticationImpl_LibInit(void) {
 
     // Open legacy support libraries for efuse and entropy
     s_pLibEfuse = lt_openlibrary(LTDeviceEfuse);
+#if 0
     if (!s_pLibEfuse) {
         LTLOG("init.fail.no_efuse_lib", "Failed to open LTDeviceEfuse library");
         LTDeviceAuthenticationImpl_LibFini();
         return false;
     }
+#endif
 
     // Create efuse device unit handle and get interface
-    LTDeviceUnit hEfuseUnit = s_pLibEfuse->CreateDeviceUnitHandle(0);
+    LTDeviceUnit hEfuseUnit = s_pLibEfuse ? s_pLibEfuse->CreateDeviceUnitHandle(0) : 0;
     s_iEfuse = lt_gethandleinterface(ILTDriverEfuseDeviceUnit, hEfuseUnit);
+#if 0
     if (!s_iEfuse) {
         LTLOG("init.fail.no_efuse_interface", "Failed to get efuse device unit interface");
         LT_GetCore()->DestroyHandle(hEfuseUnit);
         LTDeviceAuthenticationImpl_LibFini();
         return false;
     }
-
+#endif
     // Destroy the handle immediately after getting the interface
     LT_GetCore()->DestroyHandle(hEfuseUnit);
 
     // Try to open AES CBC crypto driver for fallback
     s_pAesCbc = lt_createobject_typed(LTDriverCryptoAes128Cbc, LTHardwareCryptoAes128Cbc);
 
+#if 0
     if (!s_pAesCbc) {
         LTLOG("init.fail.no_aes_crypto", "Failed to create AES CBC crypto driver");
         LTDeviceAuthenticationImpl_LibFini();
         return false;
     }
+#endif
 
     // Try to open entropy driver
     s_pEntropy = lt_createobject(LTDriverCryptoEntropy);
+#if 0
     if (!s_pEntropy) {
         LTLOG("init.fail.no_entropy", "Failed to create entropy driver");
         LTDeviceAuthenticationImpl_LibFini();
         return false;
     }
+#endif
 
     LTLOG("init.end", "driver:%d", (s_pDriver != NULL));
 

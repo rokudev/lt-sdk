@@ -18,10 +18,15 @@ else
   LT_NOSTUB_ARG :=
 endif
 
+LT_SMASH_ARG :=
 ifeq (all, $(LT_FLASH))
   LT_SMASH_ARG := --smash
-else
-  LT_SMASH_ARG :=
+endif
+ifeq (erase, $(LT_FLASH))
+  LT_SMASH_ARG := --erase
+endif
+ifeq (info, $(LT_FLASH))
+  LT_SMASH_ARG := --info
 endif
 
 ifeq (help,$(findstring help,$(MAKECMDGOALS)))

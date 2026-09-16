@@ -15,12 +15,18 @@
 #ifndef __ESP_BT_H__
 #define __ESP_BT_H__
 /*
- * Copied verbatim from the esp32c3 header in this tree.  ESP-IDF v4.4 builds
- * components/bt for the esp32s3 from controller/esp32c3 and
+ * ESP-IDF builds components/bt for the esp32s3 from controller/esp32c3 and
  * include/esp32c3/include, so the esp32c3 controller API is the esp32s3 API.
- * It is a copy rather than an include of the esp32c3 file because esp_bt.h
+ * This is a copy rather than an include of the esp32c3 file because esp_bt.h
  * pulls in "sdkconfig.h" from its own directory, and this part needs the
  * esp32s3 sdkconfig.
+ *
+ * Tracked to ESP-IDF v5.3, which is what the esp32s3 libbtdm_app.a in
+ * mastering/lib/esp32s3 was built from: btdm_controller_init() checks
+ * config.version against 0x02404010 and reads fields through
+ * scan_backoff_upperlimitmax.  The esp32c3 copy next door is still v4.4 and
+ * pairs with a different blob, so the two headers are deliberately not in
+ * sync.  hw_target_code and the tx power enum are esp32s3 values, not c3.
  */
 
 #include <stdint.h>
@@ -33,7 +39,7 @@ extern "C" {
 #endif
 
 #define ESP_BT_CTRL_CONFIG_MAGIC_VAL    0x5A5AA5A5
-#define ESP_BT_CTRL_CONFIG_VERSION      0x02104270
+#define ESP_BT_CTRL_CONFIG_VERSION      0x02404010
 
 #define ESP_BT_HCI_TL_MAGIC_VALUE   0xfadebead
 #define ESP_BT_HCI_TL_VERSION       0x00010000
@@ -149,14 +155,66 @@ enum {
 #define BT_CTRL_CODED_AGC_RECORRECT        0
 #endif
 
-#define AGC_RECORRECT_EN       ((BT_CTRL_AGC_RECORRECT_EN << 0) | (BT_CTRL_CODED_AGC_RECORRECT <<1))
+#ifdef CONFIG_BT_CTRL_DUPL_SCAN_CACHE_REFRESH_PERIOD
+#define DUPL_SCAN_CACHE_REFRESH_PERIOD  CONFIG_BT_CTRL_DUPL_SCAN_CACHE_REFRESH_PERIOD
+#else
+#define DUPL_SCAN_CACHE_REFRESH_PERIOD  0
+#endif
+
+#ifdef CONFIG_BT_CTRL_SCAN_BACKOFF_UPPERLIMITMAX
+#define BT_CTRL_SCAN_BACKOFF_UPPERLIMITMAX  CONFIG_BT_CTRL_SCAN_BACKOFF_UPPERLIMITMAX
+#else
+#define BT_CTRL_SCAN_BACKOFF_UPPERLIMITMAX  0
+#endif
+
+/* The esp32s3 always takes the new AGC re-correction path. */
+#define BT_CTRL_AGC_RECORRECT_NEW       1
+
+#ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+#define BT_CTRL_50_FEATURE_SUPPORT  CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+#else
+#define BT_CTRL_50_FEATURE_SUPPORT  0
+#endif
+
+#ifdef CONFIG_BT_BLE_CCA_MODE
+#define BT_BLE_CCA_MODE             CONFIG_BT_BLE_CCA_MODE
+#else
+#define BT_BLE_CCA_MODE             0
+#endif
+
+#ifdef CONFIG_BT_BLE_ADV_DATA_LENGTH_ZERO_AUX
+#define BT_BLE_ADV_DATA_LENGTH_ZERO_AUX  CONFIG_BT_BLE_ADV_DATA_LENGTH_ZERO_AUX
+#else
+#define BT_BLE_ADV_DATA_LENGTH_ZERO_AUX  0
+#endif
+
+#ifdef CONFIG_BT_CTRL_CHAN_ASS_EN
+#define BT_CTRL_CHAN_ASS_EN         CONFIG_BT_CTRL_CHAN_ASS_EN
+#else
+#define BT_CTRL_CHAN_ASS_EN         1
+#endif
+
+#ifdef CONFIG_BT_CTRL_LE_PING_EN
+#define BT_CTRL_LE_PING_EN          CONFIG_BT_CTRL_LE_PING_EN
+#else
+#define BT_CTRL_LE_PING_EN          1
+#endif
+
+#ifdef CONFIG_BT_CTRL_HW_CCA_VAL
+#define BT_CTRL_HW_CCA_VAL          CONFIG_BT_CTRL_HW_CCA_VAL
+#else
+#define BT_CTRL_HW_CCA_VAL          20
+#endif
+
+#define AGC_RECORRECT_EN       ((BT_CTRL_AGC_RECORRECT_EN << 0) | (BT_CTRL_CODED_AGC_RECORRECT <<1) | (BT_CTRL_AGC_RECORRECT_NEW << 2))
 
 
 #define CFG_MASK_BIT_SCAN_DUPLICATE_OPTION    (1<<0)
 
 #define CFG_NASK      CFG_MASK_BIT_SCAN_DUPLICATE_OPTION
 
-#define BLE_HW_TARGET_CODE_ESP32C3_CHIP_ECO0                      (0x01010000)
+/* esp32s3 silicon, not the esp32c3 value the rest of this header came from. */
+#define BLE_HW_TARGET_CODE_CHIP_ECO0                              (0x02010000)
 
 #define BT_CONTROLLER_INIT_CONFIG_DEFAULT() {                              \
     .magic = ESP_BT_CTRL_CONFIG_MAGIC_VAL,                                 \
@@ -183,9 +241,17 @@ enum {
     .normal_adv_size = NORMAL_SCAN_DUPLICATE_CACHE_SIZE,                   \
     .mesh_adv_size = MESH_DUPLICATE_SCAN_CACHE_SIZE,                       \
     .coex_phy_coded_tx_rx_time_limit = CONFIG_BT_CTRL_COEX_PHY_CODED_TX_RX_TLIM_EFF, \
-    .hw_target_code = BLE_HW_TARGET_CODE_ESP32C3_CHIP_ECO0,                \
+    .hw_target_code = BLE_HW_TARGET_CODE_CHIP_ECO0,                        \
     .slave_ce_len_min = SLAVE_CE_LEN_MIN_DEFAULT,                          \
     .hw_recorrect_en = AGC_RECORRECT_EN,                                   \
+    .cca_thresh = BT_CTRL_HW_CCA_VAL,                                      \
+    .scan_backoff_upperlimitmax = BT_CTRL_SCAN_BACKOFF_UPPERLIMITMAX,      \
+    .dup_list_refresh_period = DUPL_SCAN_CACHE_REFRESH_PERIOD,             \
+    .ble_50_feat_supp = BT_CTRL_50_FEATURE_SUPPORT,                        \
+    .ble_cca_mode = BT_BLE_CCA_MODE,                                       \
+    .ble_data_lenth_zero_aux = BT_BLE_ADV_DATA_LENGTH_ZERO_AUX,            \
+    .ble_chan_ass_en = BT_CTRL_CHAN_ASS_EN,                                \
+    .ble_ping_en = BT_CTRL_LE_PING_EN,                                     \
 };
 
 #else
@@ -252,6 +318,14 @@ typedef struct {
     uint32_t hw_target_code;                /*!< hardware target */
     uint8_t slave_ce_len_min;
     uint8_t hw_recorrect_en;
+    uint8_t cca_thresh;                     /*!< cca threshold*/
+    uint16_t scan_backoff_upperlimitmax;    /*!< scan backoff upperlimitmax value */
+    uint16_t dup_list_refresh_period;       /*!< duplicate scan list refresh time */
+    bool ble_50_feat_supp;                  /*!< BLE 5.0 feature support */
+    uint8_t ble_cca_mode;                   /*!< BLE CCA mode */
+    uint8_t ble_data_lenth_zero_aux;        /*!< Config ext adv aux option */
+    uint8_t ble_chan_ass_en;                /*!< BLE channel assessment enable */
+    uint8_t ble_ping_en;                    /*!< BLE ping procedure enable */
 } esp_bt_controller_config_t;
 
 /**
@@ -294,22 +368,22 @@ typedef enum {
  * @brief Bluetooth TX power level(index), it's just a index corresponding to power(dbm).
  */
 typedef enum {
-    ESP_PWR_LVL_N27 = 0,              /*!< Corresponding to -27dbm */
-    ESP_PWR_LVL_N24 = 1,              /*!< Corresponding to -24dbm */
-    ESP_PWR_LVL_N21 = 2,              /*!< Corresponding to -21dbm */
-    ESP_PWR_LVL_N18 = 3,              /*!< Corresponding to -18dbm */
-    ESP_PWR_LVL_N15 = 4,              /*!< Corresponding to -15dbm */
-    ESP_PWR_LVL_N12 = 5,              /*!< Corresponding to -12dbm */
-    ESP_PWR_LVL_N9  = 6,              /*!< Corresponding to  -9dbm */
-    ESP_PWR_LVL_N6  = 7,              /*!< Corresponding to  -6dbm */
-    ESP_PWR_LVL_N3  = 8,              /*!< Corresponding to  -3dbm */
-    ESP_PWR_LVL_N0  = 9,              /*!< Corresponding to   0dbm */
-    ESP_PWR_LVL_P3  = 10,             /*!< Corresponding to  +3dbm */
-    ESP_PWR_LVL_P6  = 11,             /*!< Corresponding to  +6dbm */
-    ESP_PWR_LVL_P9  = 12,             /*!< Corresponding to  +9dbm */
-    ESP_PWR_LVL_P12 = 13,             /*!< Corresponding to  +12dbm */
-    ESP_PWR_LVL_P15 = 14,             /*!< Corresponding to  +15dbm */
-    ESP_PWR_LVL_P18 = 15,             /*!< Corresponding to  +18dbm */
+    ESP_PWR_LVL_N24 = 0,              /*!< Corresponding to -24dbm */
+    ESP_PWR_LVL_N21 = 1,              /*!< Corresponding to -21dbm */
+    ESP_PWR_LVL_N18 = 2,              /*!< Corresponding to -18dbm */
+    ESP_PWR_LVL_N15 = 3,              /*!< Corresponding to -15dbm */
+    ESP_PWR_LVL_N12 = 4,              /*!< Corresponding to -12dbm */
+    ESP_PWR_LVL_N9  = 5,              /*!< Corresponding to  -9dbm */
+    ESP_PWR_LVL_N6  = 6,              /*!< Corresponding to  -6dbm */
+    ESP_PWR_LVL_N3  = 7,              /*!< Corresponding to  -3dbm */
+    ESP_PWR_LVL_N0  = 8,              /*!< Corresponding to   0dbm */
+    ESP_PWR_LVL_P3  = 9,              /*!< Corresponding to  +3dbm */
+    ESP_PWR_LVL_P6  = 10,             /*!< Corresponding to  +6dbm */
+    ESP_PWR_LVL_P9  = 11,             /*!< Corresponding to  +9dbm */
+    ESP_PWR_LVL_P12 = 12,             /*!< Corresponding to  +12dbm */
+    ESP_PWR_LVL_P15 = 13,             /*!< Corresponding to  +15dbm */
+    ESP_PWR_LVL_P18 = 14,             /*!< Corresponding to  +18dbm */
+    ESP_PWR_LVL_P21 = 15,             /*!< Corresponding to  +21dbm */
     ESP_PWR_LVL_INVALID = 0xFF,         /*!< Indicates an invalid value */
 } esp_power_level_t;
 

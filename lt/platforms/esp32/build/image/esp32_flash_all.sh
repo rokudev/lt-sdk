@@ -12,6 +12,8 @@ function usage {
     echo "  --dap                   disable auto-programming features";
     echo "  --dar                   disable auto-reboot after program";
     echo "  --smash                 write boot, prov, and part partitions";
+    echo "  --erase                 erase the entire flash";
+    echo "  --info                  print flash partition configuration";
     echo "  --nostub                do not load/use stub flasher image program";
     echo "  --usbjtag               force the native USB (USB-Serial/JTAG) reset sequence";
     echo "  --nousbjtag             force the classic DTR/RTS auto-reset sequence";
@@ -27,6 +29,8 @@ dap="false"
 extra=""
 release_dir=""
 smash="false"
+erase="false"
+info="false"
 signed="false"
 nostub="false"
 usbjtag=""
@@ -45,7 +49,9 @@ function parse_args {
             -x )                          extra="$2";              shift;;
             program )                     mode="program";          ;;
             --smash )                     smash="true";            ;;
+            --erase )                     erase="true";            ;;
             --nostub )                    nostub="true";           ;;
+            --info )                      info="true";             ;;
             --usbjtag )                   usbjtag="usbjtag";       ;;
             --nousbjtag )                 usbjtag="nousbjtag";     ;;
             --signed )                    signed="true";           ;;
@@ -183,6 +189,21 @@ if [[ "$signed" == "true" ]]; then
 fi
 
 search_path="$LT_PLATFORM_BUILD_PLATFORM_VARIANT_DIR:$LT_PLATFORM_ROOT/build/image:."
+
+if [[ "$info" == "true" ]]; then
+    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $EXTRA_ARG info
+    exit 0
+fi
+
+if [[ "$erase" == "true" ]]; then
+    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $EXTRA_ARG -a all erase
+    exit 0
+fi
+
+if [[ "$info" == "true" ]]; then
+    run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $MID_PROG_ARG $EXTRA_ARG info
+    exit 0
+fi
 
 if [[ "$smash" == "true" ]]; then
     run_rit_verbose $DEV_ARG -c $config_path -p $search_path  $BEG_PROG_ARG $EXTRA_ARG -a boot -f $release_dir/LTBootloader.bin program
