@@ -503,6 +503,12 @@ EXP err_t lwip_tcp_event(void *arg, struct tcp_pcb *pcb, enum lwip_event event, 
 // Append new data to the socket read buffer
 CBK void OnUdpReceive(void *arg, struct udp_pcb *pcb, struct pbuf *pbuf, const ip_addr_t *addr, u16 port) {
     LT_UNUSED(pcb);
+    // Zero-length UDP packets cannot be distinguished from an empty queue by
+    // ReadSocket's size query. Drop them before they can block later packets.
+    if (!pbuf || pbuf->tot_len == 0) {
+        if (pbuf) pbuf_free(pbuf);
+        return;
+    }
     Priv_Sock *sock = (Priv_Sock*)arg;
     LTNetIpv4Endpoint endpoint = {
         .address = addr->addr,
