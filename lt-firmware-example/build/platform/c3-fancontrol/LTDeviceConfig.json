@@ -1,0 +1,45 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+//
+// The flash and watchdog drivers are the C3 specific ones; the esp32 versions
+// are pinned to the esp32 register set and cannot serve this chip.  There is no
+// "memory" section because the part has no PSRAM, so no heap region needs a name.
+//
+// Esp32DriverGpio is shared by all three esp32 variants and takes its pad count
+// and IO_MUX details from include/esp32c3/Esp32_GPIO.h.
+//
+{
+  "config":{
+    "device":[ { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32c3DriverFlash" } ] },
+               { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32c3DriverWatchdog" } ] }
+             ]
+           },
+  "device": [ { "class": "LTDeviceGpio",
+                  "api": "passthru",
+                 "unit": [ {   "name": "GPIO0", "driver": "Esp32DriverGpio",
+                             "config": { "pins": [ { "name": "power_latch",  "pin":  6 },   /* d4 - SDA      */
+                                                   { "name": "fan_power",    "pin":  7 },   /* d5 - SCL      */
+                                                   { "name": "car_running",  "pin":  8 },   /* d8 - SCK      */
+
+                                                   { "name": "d0",           "pin":  2 },   /* A0            */
+                                                   { "name": "d1",           "pin":  3 },   /* A1            */
+                                                   { "name": "d2",           "pin":  4 },   /* A2            */
+                                                   { "name": "d3",           "pin":  5 },   /* A3            */
+                                                   { "name": "d4",           "pin":  6 },   /* SDA           */
+                                                   { "name": "d5",           "pin":  7 },   /* SCL           */
+                                                   { "name": "d6",           "pin": 21 },   /* TX            */
+                                                   { "name": "d7",           "pin": 20 },   /* RX            */
+                                                   { "name": "d8",           "pin":  8 },   /* SCK           */
+                                                   { "name": "d9",           "pin":  9 },   /* MISO          */
+                                                   { "name": "d10",          "pin": 10 },   /* MOSI          */
+                                                   { "name": "boot",         "pin":  9 }    /* BOOT, == d9   */
+                                                ]
+                                       }
+                           }
+                         ]
+               }
+             ]
+}
