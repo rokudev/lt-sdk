@@ -1,0 +1,56 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+//
+// Minimal device set for the c3 variant, mirroring the "minimal" variant.
+// The drivers are the C3 specific ones; the esp32 and esp32s3 versions are
+// pinned to their own register sets and headers and cannot serve this chip.
+//
+// There is no "memory" section here: the part has no PSRAM, so every heap
+// region is on-chip SRAM and none of them needs a name.
+//
+// Esp32DriverGpio is not chip specific - it is the one GPIO driver for all
+// three esp32 variants, and takes its pad count and IO_MUX details from
+// include/esp32c3/Esp32_GPIO.h.  It has a passthru api, so the driver object is
+// the device object and no LTDeviceGpio library is built.
+//
+// The named pins below are the Seeed Studio XIAO ESP32-C3 silkscreen, which is
+// the board this variant was developed against.  Three of the chip's 22 pads are
+// deliberately absent: GPIO18 and GPIO19 are the USB D-/D+ pads that carry the
+// console, and GPIO11..GPIO17 are the in-package SPI flash.  They are still
+// reachable by index - the driver refuses no pad the chip has - but nothing
+// should be given a name that invites driving it.
+//
+{
+  "config":{
+    "device":[ { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32c3DriverFlash" } ] },
+               { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32c3DriverWatchdog" } ] }
+             ]
+           },
+
+  "device": [ { "class": "LTDeviceGpio",
+                  "api": "passthru",
+                 "unit": [ {   "name": "GPIO0", "driver": "Esp32DriverGpio",
+                             "config": { "pins": [ { "name": "d0",   "pin":  2 },   /* A0            */
+                                                   { "name": "d1",   "pin":  3 },   /* A1            */
+                                                   { "name": "d2",   "pin":  4 },   /* A2            */
+                                                   { "name": "d3",   "pin":  5 },   /* A3            */
+                                                   { "name": "d4",   "pin":  6 },   /* SDA           */
+                                                   { "name": "d5",   "pin":  7 },   /* SCL           */
+                                                   { "name": "d6",   "pin": 21 },   /* TX            */
+                                                   { "name": "d7",   "pin": 20 },   /* RX            */
+                                                   { "name": "d8",   "pin":  8 },   /* SCK           */
+                                                   { "name": "d9",   "pin":  9 },   /* MISO          */
+                                                   { "name": "d10",  "pin": 10 },   /* MOSI          */
+                                                   { "name": "boot", "pin":  9 }    /* BOOT, == d9   */
+                                                ]
+                                       }
+                           }
+                         ]
+              }
+            ]
+}

@@ -63,6 +63,7 @@ extern u32   _LTK_nTrapNestingCounter;
  * Prototypes */
 static void IdleThread(void *);
 void _LTKMachineTrapHandler(void);
+void _LTKMachineTrapVectorTable(void);
 static void LTKTimerInterruptHandler(u32 nTickAdvance);
 
 /***********************
@@ -222,11 +223,17 @@ void LTKInitialize(const LTCoreBSP * pBSP, LTCoreBSP_LTCoreLogFunction * pLTCore
     // Ensure stack is aligned to a 16 byte boundary.
     _LTK_pInterruptStackTop = (u8 *)((u32)s_pConfig->pStackTop & 0xfffffff0);
     // Scheduler mode is currently off (tp = 0)
-    // Set machine trap handler with vector mode given by configuration
+    /* Set machine trap handler with vector mode given by configuration.
+     * In vectored mode mtvec.BASE must point at a table of jumps rather than at
+     * the handler; the handler still decodes mcause itself, so the two modes
+     * share everything downstream of the vector. */
+    u32 nBase = (kLTCoreBSP_RISCV_VectorMode_Vectored == s_pConfig->vectorMode)
+                    ? (u32)_LTKMachineTrapVectorTable
+                    : (u32)_LTKMachineTrapHandler;
     asm volatile (
         "li      tp, 0                 \n\
          csrw    mtvec, %0"
-            : : "r"((u32)_LTKMachineTrapHandler + s_pConfig->vectorMode) :
+            : : "r"(nBase + s_pConfig->vectorMode) :
     );
     s_nClockSpeedMHz = s_pConfig->nClockSpeedHz / 1000000;
     LTKList_Init(&s_timerQueue);

@@ -101,6 +101,10 @@ ESP32_ELF_DEPENDENCIES += $(ESP32_IMAGE_LIBRARIES)
 ############################################################################################################
 # Linker arguments:
 
+# The link is driven through gcc, so the RISC-V parts have to be told which
+# architecture and ABI to pick libgcc and the specs files for.  Empty on Xtensa.
+ESP32_LD_ARG += $(SOC_CPU_ARCH_FLAGS)
+
 # we could add -Wl,--size-opt for even more space optimization in exchange for a performance
 # hit of an unknown scale
 ESP32_LD_ARG += -Wl,--relax
@@ -115,9 +119,11 @@ ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).peripherals.ld
 # ROM linker scripts.  Which scripts a ROM offers is not just a matter of name -
 # substituting $(SOC_PLATFORM_NAME) into one part's list would not work for the
 # other - so there is one list per chip.
-ifeq ($(SOC_PLATFORM_NAME),esp32s3)
-  # The esp32s3 has neither eco3, syscalls nor redefined, and offers a single
-  # newlib.ld plus newlib-nano.ld where the esp32 splits newlib three ways.
+ifneq ($(filter $(SOC_PLATFORM_NAME),esp32s3 esp32c3),)
+  # Neither part has eco3, syscalls or redefined, and both offer a single
+  # newlib.ld plus newlib-nano.ld where the esp32 splits newlib three ways.  The
+  # three newlib scripts assign disjoint symbol sets on both parts, so all of
+  # them can be given to the linker together.
   ESP32_LD_ROM_SCRIPTS := rom.ld rom.api.ld rom.libgcc.ld rom.newlib.ld \
                           rom.newlib-nano.ld rom.newlib-time.ld rom.version.ld
 else
@@ -130,11 +136,18 @@ endif
 ESP32_LD_ARG += -L $(ESP32_LD_ROM_SCRIPT_PATH)
 ESP32_LD_ARG += $(foreach ldscript,$(ESP32_LD_ROM_SCRIPTS),-T $(SOC_PLATFORM_NAME).$(ldscript))
 
-# For ROM patch
-ESP32_LD_ARG += -Wl,-wrap,longjmp
+# For ROM patch.  The esp32c3 BSP has no __wrap_longjmp - the ROM's own longjmp
+# needs no patching there, and wrapping it would leave the wrapper undefined.
+ifneq ($(SOC_PLATFORM_NAME),esp32c3)
+  ESP32_LD_ARG += -Wl,-wrap,longjmp
+endif
 
-# Force linker to include these symbols
-ESP32_LD_ARG += -u ld_include_highint_hdl
+# Force linker to include these symbols.  ld_include_highint_hdl is the Xtensa
+# high-level interrupt handler out of the Espressif blobs; the esp32c3 has
+# neither the blobs nor the Xtensa interrupt levels they hook.
+ifneq ($(SOC_PLATFORM_NAME),esp32c3)
+  ESP32_LD_ARG += -u ld_include_highint_hdl
+endif
 ESP32_LD_ARG += -u applicationDescriptor
 
 ESP32_LD_ARG += -Wl,--cref
@@ -148,7 +161,11 @@ ESP32_LD_ARG += -nodefaultlibs
 ESP32_LD_ARG += -nostdlib
 # Wrappers for WiFi binaries use
 ESP32_LD_ARG += -Wl,-wrap,malloc -Wl,-wrap,realloc -Wl,-wrap,free -Wl,-wrap,calloc -Wl,-wrap,gettimeofday -Wl,-wrap,puts -Wl,-wrap,sprintf
-ESP32_LD_ARG += -Wl,-wrap,intr_matrix_set
+# __wrap_intr_matrix_set lives in the Wi-Fi/BLE OS adapter, which a variant with
+# no radio blobs does not build.
+ifneq ($(SOC_PLATFORM_NAME),esp32c3)
+  ESP32_LD_ARG += -Wl,-wrap,intr_matrix_set
+endif
 ESP32_LD_ARG += -specs nosys.specs
 ESP32_LD_ARG += -fno-rtti
 ESP32_LD_ARG += -fno-lto
@@ -381,3 +398,6 @@ $(ESP32_FLASH_ALL): $(LT_PLATFORM_ROOT)/build/image/esp32_flash_all.sh
 #   13-Aug-26   claudius    took the esp32s3 back in - the ROM linker scripts and
 #                           the radio blob set now key off $(SOC_PLATFORM_NAME),
 #                           and the mastered flash size off $(ESP32_IMAGE_FLASH_SIZE)
+#   17-Sep-26   claudius    esp32c3: link with $(SOC_CPU_ARCH_FLAGS), share the
+#                           esp32s3 ROM script list, and gate out the Xtensa-only
+#                           longjmp/highint/intr_matrix_set link arguments

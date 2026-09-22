@@ -113,8 +113,11 @@ typedef u32 static_assert_CommandHeader[(sizeof(CommandHeader) == 8) ? 0 : -1];
 // Supported ESP32 ChipIDs
 typedef u32 ChipID;
 enum ChipID {
-    kChipID_esp32       = 0x00f01d83,
-    kChipID_esp32s3     = 0x00000009,
+    kChipID_esp32         = 0x00f01d83,
+    kChipID_esp32s3       = 0x00000009,
+    // The ESP32-C3 reports one of two magic values, eco1/eco2 or eco3
+    kChipID_esp32c3_eco12 = 0x6921506f,
+    kChipID_esp32c3_eco3  = 0x1b31506f,
 };
 
 //
@@ -154,6 +157,31 @@ static const ChipInfo s_chipInfo[] = {
         .nRtcWdtWriteKey          = 0x50d83aa1,
         .nRegRtcSwdWProtect       = 0x600080b8,
         .nRegRtcSwdConf           = 0x600080b4,
+        .nRtcSwdWriteKey          = 0x8f1d312a,
+    },
+    {   // ESP32-C3 (RISC-V RV32IMC), eco1 and eco2 silicon
+        .nChipID                  = kChipID_esp32c3_eco12,
+        .pName                    = "esp32c3",
+        .bEFuseRevision           = false,
+        .bRomFlashBeginEncryptArg = true,
+        .nRegRtcWdtWProtect       = 0x600080a8,
+        .nRegRtcWdtConfig0        = 0x60008090,
+        .nRtcWdtWriteKey          = 0x50d83aa1,
+        .nRegRtcSwdWProtect       = 0x600080b0,
+        .nRegRtcSwdConf           = 0x600080ac,
+        .nRtcSwdWriteKey          = 0x8f1d312a,
+    },
+    {   // ESP32-C3 eco3 silicon.  Identical to the entry above but for the magic
+        // value the ROM reports, which GetChipInfoFromID() matches one per entry.
+        .nChipID                  = kChipID_esp32c3_eco3,
+        .pName                    = "esp32c3",
+        .bEFuseRevision           = false,
+        .bRomFlashBeginEncryptArg = true,
+        .nRegRtcWdtWProtect       = 0x600080a8,
+        .nRegRtcWdtConfig0        = 0x60008090,
+        .nRtcWdtWriteKey          = 0x50d83aa1,
+        .nRegRtcSwdWProtect       = 0x600080b0,
+        .nRegRtcSwdConf           = 0x600080ac,
         .nRtcSwdWriteKey          = 0x8f1d312a,
     },
 };
@@ -1063,6 +1091,22 @@ static int Erase(u32 nAreaIdx) {
 
 static int Reboot(void) {
     printf("Rebooting\n");
+    if (s_bNativeUSB) {
+        // The USB Serial/JTAG peripheral emulates EN from RTS and the GPIO9 boot
+        // strap from DTR, and the strap is sampled as the chip leaves reset -- so
+        // DTR has to be released here, or the part reboots into download mode
+        // instead of running the firmware.  RTS is written twice for the same
+        // reason as in ResetIntoDownloadModeUSBJTAG(): Windows only propagates a
+        // DTR change while RTS is set, so the second write carries the new DTR.
+        SerialSetDTR(false);
+        SerialSetRTS(true);    // Reset, passing through (1,1) to keep the USB link
+        SerialSetDTR(false);
+        SerialSetRTS(true);
+        usleep(100000);
+        SerialSetDTR(false);
+        SerialSetRTS(false);   // Chip out of reset, strap high -> boot from flash
+        return 0;
+    }
     SerialSetDTR(false);
     SerialSetRTS(true);
     usleep(100000);

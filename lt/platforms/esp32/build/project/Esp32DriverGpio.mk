@@ -9,7 +9,7 @@
 # Copyright 2026 Roku Inc. All rights reserved.
 ################################################################################
 
-# One source file serves both chips: everything that differs is behind the
+# One source file serves all three chips: everything that differs is behind the
 # $(SOC_PLATFORM_NAME) copy of Esp32_GPIO.h.
 LT_PROJECT_SOURCE_DIR       := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/gpio
 LT_PROJECT_SOURCE_FILES     := Esp32DriverGpio.c
@@ -23,3 +23,4 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #   LOG
 ###############################################################################
 #   08-Sep-26   claudius    created
+#   22-Sep-26   claudius    the c3 uses this driver too

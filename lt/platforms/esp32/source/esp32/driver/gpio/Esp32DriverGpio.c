@@ -7,10 +7,10 @@
  *
  * Copyright 2026 Roku Inc. All rights reserved.
  ******************************************************************************/
-/** @file Esp32DriverGpio.c LTDeviceGpio driver for the esp32 and the esp32s3 */
+/** @file Esp32DriverGpio.c LTDeviceGpio driver for the esp32, esp32s3 and esp32c3 */
 
 /*
- * One source file serves both chips.  Everything chip specific - the pad count,
+ * One source file serves all three chips.  Everything chip specific - the pad count,
  * the IO_MUX function that hands a pad to the GPIO block, and which pad numbers
  * a package actually bonds out - comes from the per chip Esp32_GPIO.h that
  * $(SOC_PLATFORM_NAME) puts on the include path.
