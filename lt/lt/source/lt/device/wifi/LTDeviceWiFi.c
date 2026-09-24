@@ -332,7 +332,8 @@ enum {
     WiFiConfig_StartTimeoutSeconds = 2,
     WiFiConfig_CheckDriverSeconds = 2,
     WiFiConfig_ScanTimeoutSeconds = 15,
-    WiFiConfig_JoinTimeoutSeconds = 9,
+    // Full-band scans plus a vendor authentication retry can exceed nine seconds.
+    WiFiConfig_JoinTimeoutSeconds = 12,
     WiFiConfig_LinkCheckSeconds = 4,
 };
 

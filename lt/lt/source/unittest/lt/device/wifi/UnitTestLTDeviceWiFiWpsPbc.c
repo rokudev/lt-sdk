@@ -45,8 +45,16 @@
 /* Whole-suite budget.  Must clear the PBC walk plus scan, reconnect and
  * teardown; the engine default of 30 s aborts the run mid-walk. */
 #define TILT_LIBRARY_TIMEOUT     240
-/* Setup, scan, reconnect and teardown share the suite budget with the walk. */
-#define PBC_SUITE_MARGIN_SEC     60
+#define WIFI_UP_TIMEOUT_SEC      10
+#define HOST_SCAN_TIMEOUT_SEC    15
+#define PBC_CREDENTIAL_GRACE_SEC 10
+#define RECONNECT_MAX_ATTEMPTS   5
+#define RECONNECT_WAIT_SEC       12
+#define RECONNECT_SETTLE_SEC     1
+#define SUITE_TEARDOWN_MARGIN_SEC 10
+#define PBC_SUITE_MARGIN_SEC     (WIFI_UP_TIMEOUT_SEC + HOST_SCAN_TIMEOUT_SEC + \
+                                  PBC_CREDENTIAL_GRACE_SEC + SUITE_TEARDOWN_MARGIN_SEC + \
+                                  RECONNECT_MAX_ATTEMPTS * (RECONNECT_WAIT_SEC + RECONNECT_SETTLE_SEC))
 /* Roku hosts advertise their WiFi-Direct SSID as "DIRECT-roku-xxx-xxxxxx" in
  * pairing mode; match that prefix by default. */
 #define DEFAULT_HOST_SSID_PREFIX "DIRECT-roku-"
@@ -268,7 +276,7 @@ static void TestWiFiUp(Tilt *tilt) {
         return;
     }
     s_upDeferred = true;
-    s_engine->API->DeferTestCompletion(s_engine, LTTime_Seconds(10), NULL, NULL);
+    s_engine->API->DeferTestCompletion(s_engine, LTTime_Seconds(WIFI_UP_TIMEOUT_SEC), NULL, NULL);
 }
 
 static void TestScanForHost(Tilt *tilt) {
@@ -285,7 +293,7 @@ static void TestScanForHost(Tilt *tilt) {
     lt_memset(&scan, 0, sizeof(scan));
     scan.frameCallback = OnScanFrame;
     s_pWiFi->ScanWithVendorIE(&scan, OnScanResult, NULL);
-    s_engine->API->DeferTestCompletion(s_engine, LTTime_Seconds(15), NULL, NULL);
+    s_engine->API->DeferTestCompletion(s_engine, LTTime_Seconds(HOST_SCAN_TIMEOUT_SEC), NULL, NULL);
 }
 
 static void TestHostFound(Tilt *tilt) {
@@ -333,7 +341,7 @@ static void TestStartWps(Tilt *tilt) {
      */
     s_wpsCredsOk = false;
     bool walkSeenActive = false;
-    for (u32 elapsed = 0; elapsed < s_pbcTimeoutSec + 10; ++elapsed) {
+    for (u32 elapsed = 0; elapsed < s_pbcTimeoutSec + PBC_CREDENTIAL_GRACE_SEC; ++elapsed) {
         if (s_pPairing->API->GetCredentials(s_pPairing, &s_wpsCreds)) {
             s_wpsCredsOk = true;
             break;
@@ -419,23 +427,26 @@ static void TestConnectWithCred(Tilt *tilt) {
                          "install the Roku assoc IE for the reconnect");
     }
 
-    const int kMaxAttempts = 5;
     s_connected = false;
 
-    for (int attempt = 1; attempt <= kMaxAttempts && !s_connected; ++attempt) {
+    for (int attempt = 1; attempt <= RECONNECT_MAX_ATTEMPTS && !s_connected; ++attempt) {
         TILT_INFO(tilt, "Reconnect attempt %d/%d to \"%s\" (WPA2-PSK)...",
-                  attempt, kMaxAttempts, s_connectAp.ssid);
+                  attempt, RECONNECT_MAX_ATTEMPTS, s_connectAp.ssid);
         s_pWiFi->JoinAp(&s_connectAp, NULL, NULL);
 
-        /* Wait up to ~8 s for this attempt to reach Connected. */
-        for (int t = 0; t < 8 && !s_connected; ++t) {
+        /* Every attempt gets a full 13 s window so an asynchronously queued
+         * join can pass its 12 s deadline before the next retry or assertion. */
+        for (int t = 0; t < RECONNECT_WAIT_SEC && !s_connected; ++t) {
             s_pCore->GetCurrentThreadObject()->API->Sleep(LTTime_Seconds(1));
             if (s_pWiFi->IsConnected()) {
                 s_connected = true;
             }
         }
-        if (!s_connected && attempt < kMaxAttempts) {
-            s_pCore->GetCurrentThreadObject()->API->Sleep(LTTime_Seconds(1));   /* settle before retry */
+        if (!s_connected) {
+            s_pCore->GetCurrentThreadObject()->API->Sleep(LTTime_Seconds(RECONNECT_SETTLE_SEC));
+            if (s_pWiFi->IsConnected()) {
+                s_connected = true;
+            }
         }
     }
 
