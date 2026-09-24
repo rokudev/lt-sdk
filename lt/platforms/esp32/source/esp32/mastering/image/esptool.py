@@ -124,6 +124,7 @@ def _chip_to_rom_loader(chip):
         'esp32s3beta2': ESP32S3BETA2ROM,
         'esp32s3': ESP32S3ROM,
         'esp32c3': ESP32C3ROM,
+        'esp32p4': ESP32P4ROM,
         'esp32c6beta': ESP32C6BETAROM,
         'esp32h2': ESP32H2ROM,
     }[chip]
@@ -395,7 +396,7 @@ class ESPLoader(object):
             res = struct.unpack("<IBBBBBBBBI", res[:16])  # 4b flags, 1b flash_crypt_cnt, 7*1b key_purposes, 4b chip_id
             chip_id = res[9]  # 2/4 status bytes invariant
 
-            for cls in [ESP32S3BETA2ROM, ESP32S3ROM, ESP32C3ROM, ESP32C6BETAROM, ESP32H2ROM]:
+            for cls in [ESP32S3BETA2ROM, ESP32S3ROM, ESP32C3ROM, ESP32P4ROM, ESP32C6BETAROM, ESP32H2ROM]:
                 if chip_id == cls.IMAGE_CHIP_ID:
                     inst = cls(detect_port._port, baud, trace_enabled=trace_enabled)
                     inst._post_connect()
@@ -408,6 +409,10 @@ class ESPLoader(object):
                 sys.stdout.flush()
                 chip_magic_value = detect_port.read_reg(ESPLoader.CHIP_DETECT_MAGIC_REG_ADDR)
 
+                # ESP32P4ROM is deliberately absent: one of its two magic values is
+                # 0x0, which is also what a failed read yields, so listing it here
+                # would resolve any unreadable chip to a P4.  Its chip-id detection
+                # above is exact, and --chip esp32p4 always works.
                 for cls in [ESP8266ROM, ESP32ROM, ESP32S2ROM, ESP32S3BETA2ROM, ESP32S3ROM, ESP32C3ROM, ESP32C6BETAROM, ESP32H2ROM]:
                     if chip_magic_value in cls.CHIP_DETECT_MAGIC_VALUE:
                         inst = cls(detect_port._port, baud, trace_enabled=trace_enabled)
@@ -802,7 +807,8 @@ class ESPLoader(object):
             timeout = timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB, size)  # ROM performs the erase up front
 
         params = struct.pack('<IIII', erase_size, num_blocks, self.FLASH_WRITE_SIZE, offset)
-        if isinstance(self, (ESP32S2ROM, ESP32S3BETA2ROM, ESP32S3ROM, ESP32C3ROM, ESP32C6BETAROM, ESP32H2ROM)) and not self.IS_STUB:
+        if isinstance(self, (ESP32S2ROM, ESP32S3BETA2ROM, ESP32S3ROM, ESP32C3ROM, ESP32P4ROM, ESP32C6BETAROM,
+                             ESP32H2ROM)) and not self.IS_STUB:
             params += struct.pack('<I', 1 if begin_rom_encrypted else 0)
         self.check_command("enter Flash download mode", self.ESP_FLASH_BEGIN,
                            params, timeout=timeout)
@@ -820,7 +826,7 @@ class ESPLoader(object):
 
     """ Encrypt before writing to flash """
     def flash_encrypt_block(self, data, seq, timeout=DEFAULT_TIMEOUT):
-        if isinstance(self, (ESP32S2ROM, ESP32C3ROM, ESP32H2ROM)) and not self.IS_STUB:
+        if isinstance(self, (ESP32S2ROM, ESP32C3ROM, ESP32P4ROM, ESP32H2ROM)) and not self.IS_STUB:
             # ROM support performs the encrypted writes via the normal write command,
             # triggered by flash_begin(begin_rom_encrypted=True)
             return self.flash_block(data, seq, timeout)
@@ -922,7 +928,8 @@ class ESPLoader(object):
             timeout = timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB, write_size)  # ROM performs the erase up front
         print("Compressed %d bytes to %d..." % (size, compsize))
         params = struct.pack('<IIII', write_size, num_blocks, self.FLASH_WRITE_SIZE, offset)
-        if isinstance(self, (ESP32S2ROM, ESP32S3BETA2ROM, ESP32S3ROM, ESP32C3ROM, ESP32C6BETAROM, ESP32H2ROM)) and not self.IS_STUB:
+        if isinstance(self, (ESP32S2ROM, ESP32S3BETA2ROM, ESP32S3ROM, ESP32C3ROM, ESP32P4ROM, ESP32C6BETAROM,
+                             ESP32H2ROM)) and not self.IS_STUB:
             params += struct.pack('<I', 0)  # extra param is to enter encrypted flash mode via ROM (not supported currently)
         self.check_command("enter compressed flash mode", self.ESP_FLASH_DEFL_BEGIN, params, timeout=timeout)
         if size != 0 and not self.IS_STUB:
@@ -2244,6 +2251,143 @@ class ESP32C3ROM(ESP32ROM):
         return any(p == self.PURPOSE_VAL_XTS_AES128_KEY for p in purposes)
 
 
+class ESP32P4ROM(ESP32ROM):
+    CHIP_NAME = "ESP32-P4"
+    IMAGE_CHIP_ID = 18
+
+    FPGA_SLOW_BOOT = False
+
+    # IROM and DROM share one window on this part rather than having separate
+    # instruction and data buses.
+    IROM_MAP_START = 0x40000000
+    IROM_MAP_END   = 0x4c000000
+    DROM_MAP_START = 0x40000000
+    DROM_MAP_END   = 0x4c000000
+
+    SPI_REG_BASE = 0x5008d000  # SPIMEM1
+    SPI_USR_OFFS    = 0x18
+    SPI_USR1_OFFS   = 0x1C
+    SPI_USR2_OFFS   = 0x20
+    SPI_MOSI_DLEN_OFFS = 0x24
+    SPI_MISO_DLEN_OFFS = 0x28
+    SPI_W0_OFFS = 0x58
+
+    BOOTLOADER_FLASH_OFFSET = 0x2000  # first 2 sectors are reserved for flash encryption
+
+    CHIP_DETECT_MAGIC_VALUE = [0x0, 0x0addbad0]
+
+    UART_DATE_REG_ADDR = 0x500ca000 + 0x8c
+
+    EFUSE_BASE = 0x5012d000
+    EFUSE_BLOCK1_ADDR = EFUSE_BASE + 0x044
+    MAC_EFUSE_REG  = EFUSE_BASE + 0x044
+
+    EFUSE_RD_REG_BASE = EFUSE_BASE + 0x030  # BLOCK0 read base address
+
+    EFUSE_PURPOSE_KEY0_REG = EFUSE_BASE + 0x34
+    EFUSE_PURPOSE_KEY0_SHIFT = 24
+    EFUSE_PURPOSE_KEY1_REG = EFUSE_BASE + 0x34
+    EFUSE_PURPOSE_KEY1_SHIFT = 28
+    EFUSE_PURPOSE_KEY2_REG = EFUSE_BASE + 0x38
+    EFUSE_PURPOSE_KEY2_SHIFT = 0
+    EFUSE_PURPOSE_KEY3_REG = EFUSE_BASE + 0x38
+    EFUSE_PURPOSE_KEY3_SHIFT = 4
+    EFUSE_PURPOSE_KEY4_REG = EFUSE_BASE + 0x38
+    EFUSE_PURPOSE_KEY4_SHIFT = 8
+    EFUSE_PURPOSE_KEY5_REG = EFUSE_BASE + 0x38
+    EFUSE_PURPOSE_KEY5_SHIFT = 12
+
+    EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT_REG = EFUSE_RD_REG_BASE
+    EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT = 1 << 20
+
+    PURPOSE_VAL_XTS_AES256_KEY_1 = 2
+    PURPOSE_VAL_XTS_AES256_KEY_2 = 3
+    PURPOSE_VAL_XTS_AES128_KEY = 4
+
+    FLASH_ENCRYPTED_WRITE_ALIGN = 16
+
+    MEMORY_MAP = [[0x00000000, 0x00010000, "PADDING"],
+                  [0x40000000, 0x4C000000, "DROM"],
+                  [0x4FF00000, 0x4FFA0000, "DRAM"],
+                  [0x4FF00000, 0x4FFA0000, "BYTE_ACCESSIBLE"],
+                  [0x4FC00000, 0x4FC20000, "DROM_MASK"],
+                  [0x4FC00000, 0x4FC20000, "IROM_MASK"],
+                  [0x40000000, 0x4C000000, "IROM"],
+                  [0x4FF00000, 0x4FFA0000, "IRAM"],
+                  [0x50108000, 0x50110000, "RTC_IRAM"],
+                  [0x50108000, 0x50110000, "RTC_DRAM"],
+                  [0x600FE000, 0x60100000, "MEM_INTERNAL2"]]
+
+    def get_pkg_version(self):
+        num_word = 2
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 20) & 0x07
+
+    def get_minor_chip_version(self):
+        num_word = 2
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 0) & 0x0F
+
+    def get_major_chip_version(self):
+        num_word = 2
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 4) & 0x03
+
+    def get_chip_revision(self):
+        # This chip numbers its revisions major.minor; callers of the older
+        # single-number interface want the major.
+        return self.get_major_chip_version()
+
+    def get_chip_description(self):
+        chip_name = {
+            0: "ESP32-P4",
+        }.get(self.get_pkg_version(), "unknown ESP32-P4")
+
+        return "%s (revision v%d.%d)" % (chip_name, self.get_major_chip_version(),
+                                         self.get_minor_chip_version())
+
+    def get_chip_features(self):
+        return ["High-Performance MCU"]
+
+    def get_crystal_freq(self):
+        # ESP32P4 XTAL is fixed to 40MHz
+        return 40
+
+    def override_vddsdio(self, new_voltage):
+        raise NotImplementedInROMError("VDD_SDIO overrides are not supported for ESP32-P4")
+
+    def read_mac(self):
+        mac0 = self.read_reg(self.MAC_EFUSE_REG)
+        mac1 = self.read_reg(self.MAC_EFUSE_REG + 4)  # only bottom 16 bits are MAC
+        bitstring = struct.pack(">II", mac1, mac0)[2:]
+        try:
+            return tuple(ord(b) for b in bitstring)
+        except TypeError:  # Python 3, bitstring elements are already bytes
+            return tuple(bitstring)
+
+    def get_flash_crypt_config(self):
+        return None  # doesn't exist on ESP32-P4
+
+    def get_key_block_purpose(self, key_block):
+        if key_block < 0 or key_block > 5:
+            raise FatalError("Valid key block numbers must be in range 0-5")
+
+        reg, shift = [(self.EFUSE_PURPOSE_KEY0_REG, self.EFUSE_PURPOSE_KEY0_SHIFT),
+                      (self.EFUSE_PURPOSE_KEY1_REG, self.EFUSE_PURPOSE_KEY1_SHIFT),
+                      (self.EFUSE_PURPOSE_KEY2_REG, self.EFUSE_PURPOSE_KEY2_SHIFT),
+                      (self.EFUSE_PURPOSE_KEY3_REG, self.EFUSE_PURPOSE_KEY3_SHIFT),
+                      (self.EFUSE_PURPOSE_KEY4_REG, self.EFUSE_PURPOSE_KEY4_SHIFT),
+                      (self.EFUSE_PURPOSE_KEY5_REG, self.EFUSE_PURPOSE_KEY5_SHIFT)][key_block]
+        return (self.read_reg(reg) >> shift) & 0xF
+
+    def is_flash_encryption_key_valid(self):
+        # Need to see either an AES-128 key or two AES-256 keys
+        purposes = [self.get_key_block_purpose(b) for b in range(6)]
+
+        if any(p == self.PURPOSE_VAL_XTS_AES128_KEY for p in purposes):
+            return True
+
+        return (any(p == self.PURPOSE_VAL_XTS_AES256_KEY_1 for p in purposes)
+                and any(p == self.PURPOSE_VAL_XTS_AES256_KEY_2 for p in purposes))
+
+
 class ESP32H2ROM(ESP32ROM):
     CHIP_NAME = "ESP32-H2"
     IMAGE_CHIP_ID = 10
@@ -2480,6 +2624,26 @@ class ESP32C3StubLoader(ESP32C3ROM):
 ESP32C3ROM.STUB_CLASS = ESP32C3StubLoader
 
 
+class ESP32P4StubLoader(ESP32P4ROM):
+    """ Access class for ESP32P4 stub loader, runs on top of ROM.
+
+    (Basically the same as ESP32StubLoader, but different base class.
+    Can possibly be made into a mixin.)
+    """
+    FLASH_WRITE_SIZE = 0x4000  # matches MAX_WRITE_BLOCK in stub_loader.c
+    STATUS_BYTES_LENGTH = 2  # same as ESP8266, different to ESP32 ROM
+    IS_STUB = True
+
+    def __init__(self, rom_loader):
+        self.secure_download_mode = rom_loader.secure_download_mode
+        self._port = rom_loader._port
+        self._trace_enabled = rom_loader._trace_enabled
+        self.flush_input()  # resets _slip_reader
+
+
+ESP32P4ROM.STUB_CLASS = ESP32P4StubLoader
+
+
 class ESP32H2StubLoader(ESP32H2ROM):
     """ Access class for ESP32H2 stub loader, runs on top of ROM.
 
@@ -2530,6 +2694,8 @@ def LoadFirmwareImage(chip, filename):
             return ESP32S3FirmwareImage(f)
         elif chip == 'esp32c3':
             return ESP32C3FirmwareImage(f)
+        elif chip == 'esp32p4':
+            return ESP32P4FirmwareImage(f)
         elif chip == 'esp32c6beta':
             return ESP32C6BETAFirmwareImage(f)
         elif chip == 'esp32h2':
@@ -3174,6 +3340,14 @@ class ESP32C3FirmwareImage(ESP32FirmwareImage):
 
 
 ESP32C3ROM.BOOTLOADER_IMAGE = ESP32C3FirmwareImage
+
+
+class ESP32P4FirmwareImage(ESP32FirmwareImage):
+    """ ESP32P4 Firmware Image almost exactly the same as ESP32FirmwareImage """
+    ROM_LOADER = ESP32P4ROM
+
+
+ESP32P4ROM.BOOTLOADER_IMAGE = ESP32P4FirmwareImage
 
 
 class ESP32C6BETAFirmwareImage(ESP32FirmwareImage):
@@ -3876,6 +4050,10 @@ def elf2image(args):
         image = ESP32C3FirmwareImage()
         if args.secure_pad_v2:
             image.secure_pad = '2'
+    elif args.chip == 'esp32p4':
+        image = ESP32P4FirmwareImage()
+        if args.secure_pad_v2:
+            image.secure_pad = '2'
     elif args.chip == 'esp32c6beta':
         image = ESP32C6BETAFirmwareImage()
         if args.secure_pad_v2:
@@ -4105,7 +4283,8 @@ def main(argv=None, esp=None):
     parser.add_argument('--chip', '-c',
                         help='Target chip type',
                         type=lambda c: c.lower().replace('-', ''),  # support ESP32-S2, etc.
-                        choices=['auto', 'esp8266', 'esp32', 'esp32s2', 'esp32s3beta2', 'esp32s3', 'esp32c3', 'esp32c6beta', 'esp32h2'],
+                        choices=['auto', 'esp8266', 'esp32', 'esp32s2', 'esp32s3beta2', 'esp32s3', 'esp32c3',
+                                 'esp32p4', 'esp32c6beta', 'esp32h2'],
                         default=os.environ.get('ESPTOOL_CHIP', 'auto'))
 
     parser.add_argument(

@@ -13,8 +13,12 @@
 
 /* LTBootDriver API callable from internal bootloader functions */
 
-#include "esp_efuse.h"
-#include "esp_efuse_table.h"
+/* Angle brackets, not quotes: a quoted include searches this file's own directory
+ * first, which would find the chip esp_efuse.h beside it - that one declares only
+ * esp_efuse_block_t.  esp_efuse_desc_t comes from the generic header one level up,
+ * which in turn includes the chip one. */
+#include <esp_efuse.h>
+#include <esp_efuse_table.h>
 
 #include "LTBootDriver.h"
 

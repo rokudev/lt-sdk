@@ -1,0 +1,81 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+//
+// Minimal device set for the p4 variant, mirroring the c3.  The flash and
+// watchdog drivers are the P4 specific ones; the other variants' versions are
+// pinned to their own register sets and cannot serve this chip.
+//
+// There is no "memory" section here.  The part has 32MB of in-package PSRAM,
+// but this variant does not bring it up, so every heap region is on-chip SRAM
+// and none of them needs a name.
+//
+// Esp32DriverGpio is not chip specific - it is the one GPIO driver for every
+// esp32 variant, and takes its pad count and IO_MUX details from
+// include/esp32p4/Esp32_GPIO.h.  It has a passthru api, so the driver object is
+// the device object and no LTDeviceGpio library is built.
+//
+// The names below are the Waveshare ESP32-P4-Nano's two 2x13 headers, taken
+// from the board schematic.  The chip has 55 pads; the ones not named here are
+// committed on this board and should not be driven:
+//
+//   GPIO9..GPIO13    ES8311 codec I2S
+//   GPIO14..GPIO19   ESP32-C6 SDIO link (WiFi/BT companion)
+//   GPIO28..GPIO31   IP101 ethernet PHY RMII
+//   GPIO34, GPIO49..GPIO52   ethernet PHY clock, reset and MDIO
+//   GPIO39..GPIO44   microSD slot
+//
+// All of them remain reachable by index - the driver refuses no pad the chip
+// has - but nothing here invites driving them.
+//
+{
+  "config":{
+    "device":[ { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32p4DriverFlash" } ] },
+               { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32p4DriverWatchdog" } ] }
+             ]
+           },
+
+  "device": [ { "class": "LTDeviceGpio",
+                  "api": "passthru",
+                 "unit": [ {   "name": "GPIO0", "driver": "Esp32DriverGpio",
+                             "config": { "pins": [ { "name": "boot",     "pin": 35 },   /* BOOT button, active low   */
+
+                                                   { "name": "i2c_sda",  "pin":  7 },   /* P1.3,  shared with codec  */
+                                                   { "name": "i2c_scl",  "pin":  8 },   /* P1.5,  shared with codec  */
+
+                                                   { "name": "gpio23",   "pin": 23 },   /* P1.7                      */
+                                                   { "name": "gpio5",    "pin":  5 },   /* P1.11                     */
+                                                   { "name": "gpio4",    "pin":  4 },   /* P1.12                     */
+                                                   { "name": "gpio20",   "pin": 20 },   /* P1.13                     */
+                                                   { "name": "gpio21",   "pin": 21 },   /* P1.15                     */
+                                                   { "name": "gpio22",   "pin": 22 },   /* P1.16                     */
+                                                   { "name": "gpio24",   "pin": 24 },   /* P1.18, also USB1 FS D-    */
+                                                   { "name": "gpio25",   "pin": 25 },   /* P1.19, also USB1 FS D+    */
+                                                   { "name": "gpio26",   "pin": 26 },   /* P1.21                     */
+                                                   { "name": "gpio27",   "pin": 27 },   /* P1.22                     */
+                                                   { "name": "gpio32",   "pin": 32 },   /* P1.23                     */
+                                                   { "name": "gpio33",   "pin": 33 },   /* P1.24                     */
+                                                   { "name": "gpio36",   "pin": 36 },   /* P1.26                     */
+
+                                                   { "name": "gpio0",    "pin":  0 },   /* P2.6                      */
+                                                   { "name": "gpio1",    "pin":  1 },   /* P2.8                      */
+                                                   { "name": "gpio3",    "pin":  3 },   /* P2.9                      */
+                                                   { "name": "gpio2",    "pin":  2 },   /* P2.11                     */
+                                                   { "name": "gpio6",    "pin":  6 },   /* P2.12                     */
+                                                   { "name": "gpio54",   "pin": 54 },   /* P2.13, also C6 reset      */
+                                                   { "name": "gpio53",   "pin": 53 },   /* P2.14                     */
+                                                   { "name": "gpio47",   "pin": 47 },   /* P2.15                     */
+                                                   { "name": "gpio48",   "pin": 48 },   /* P2.16                     */
+                                                   { "name": "gpio46",   "pin": 46 },   /* P2.17                     */
+                                                   { "name": "gpio45",   "pin": 45 }    /* P2.19                     */
+                                                ]
+                                       }
+                           }
+                         ]
+              }
+            ]
+}

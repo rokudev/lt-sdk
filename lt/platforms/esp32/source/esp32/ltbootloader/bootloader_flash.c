@@ -16,6 +16,17 @@
 #   include "soc/spi_reg.h"
     /* SPI flash controller */
 #   define SPIFLASH SPI1
+#elif CONFIG_IDF_TARGET_ESP32P4
+    /* SPI1 is the flash controller here, and its registers are named after the
+       block rather than shared with SPI0, so the struct and the macros carry the
+       spi1_mem_c prefix. */
+#   include "soc/spi1_mem_c_struct.h"
+#   include "soc/spi1_mem_c_reg.h"
+    /* The struct header declares no instance; the address comes from the
+       peripherals linker script, which PROVIDEs SPIMEM1 = 0x5008D000. */
+extern spi1_mem_c_dev_t SPIMEM1;
+#   define SPIFLASH        SPIMEM1
+#   define SPI_MEM_WP_REG_M SPI1_MEM_C_WP_REG_M
 #else
 #   include "soc/spi_mem_struct.h"
 #   include "soc/spi_mem_reg.h"
@@ -33,6 +44,9 @@
 #include "esp32c3/rom/spi_flash.h"
 #elif CONFIG_IDF_TARGET_ESP32H2
 #include "esp32h2/rom/spi_flash.h"
+#elif CONFIG_IDF_TARGET_ESP32P4
+#include "esp32p4/rom/spi_flash.h"
+#include "esp32p4/rom/cache.h"
 #endif
 
 #ifdef CONFIG_EFUSE_VIRTUAL_KEEP_IN_FLASH
@@ -210,6 +224,11 @@ const void *bootloader_mmap(uint32_t src_addr, uint32_t size)
 #elif CONFIG_IDF_TARGET_ESP32H2
     uint32_t autoload = Cache_Suspend_ICache();
     Cache_Invalidate_ICache_All();
+#elif CONFIG_IDF_TARGET_ESP32P4
+    /* Flash is reached through the L2 cache here; suspending it covers both L1
+       caches behind it. */
+    uint32_t autoload = Cache_Suspend_L2_Cache();
+    Cache_Invalidate_All(CACHE_MAP_L2_CACHE);
 #endif
     ESP_LOGD(TAG, "mmu set paddr=%08x count=%d size=%x src_addr=%x src_addr_aligned=%x",
              src_addr & MMU_FLASH_MASK, count, size, src_addr, src_addr_aligned );
@@ -217,6 +236,11 @@ const void *bootloader_mmap(uint32_t src_addr, uint32_t size)
     int e = cache_flash_mmu_set(0, 0, MMU_BLOCK0_VADDR, src_addr_aligned, 64, count);
 #elif CONFIG_IDF_TARGET_ESP32S2
     int e = Cache_Ibus_MMU_Set(MMU_ACCESS_FLASH, MMU_BLOCK0_VADDR, src_addr_aligned, 64, count, 0);
+#elif CONFIG_IDF_TARGET_ESP32P4
+    /* One unified flash MMU here rather than a separate ibus and dbus one.  The
+       leading 0 is the per-page sensitive bit, which only matters with flash
+       encryption on. */
+    int e = Cache_FLASH_MMU_Set(0, MMU_BLOCK0_VADDR, src_addr_aligned, 64, count, 0);
 #else // S3, C3, H2
     int e = Cache_Dbus_MMU_Set(MMU_ACCESS_FLASH, MMU_BLOCK0_VADDR, src_addr_aligned, 64, count, 0);
 #endif
@@ -232,6 +256,8 @@ const void *bootloader_mmap(uint32_t src_addr, uint32_t size)
         Cache_Resume_ICache(autoload);
 #elif CONFIG_IDF_TARGET_ESP32H2
         Cache_Resume_ICache(autoload);
+#elif CONFIG_IDF_TARGET_ESP32P4
+        Cache_Resume_L2_Cache(autoload);
 #endif
         return NULL;
     }
@@ -245,6 +271,15 @@ const void *bootloader_mmap(uint32_t src_addr, uint32_t size)
     Cache_Resume_ICache(autoload);
 #elif CONFIG_IDF_TARGET_ESP32H2
     Cache_Resume_ICache(autoload);
+#elif CONFIG_IDF_TARGET_ESP32P4
+    Cache_Resume_L2_Cache(autoload);
+    /* Suspending the L2 stalls the L1s behind it but does not invalidate them,
+       and the ROM mapped flash at this same vaddr to load us, so the L1 DCache
+       can still hold lines from whatever the window used to point at.  Drop
+       just that range: Cache_Invalidate_All() would also discard the dirty
+       write-back lines holding the bootloader's own stack. */
+    Cache_Invalidate_Addr(CACHE_MAP_L1_DCACHE | CACHE_MAP_L2_CACHE,
+                          MMU_BLOCK0_VADDR, count * MMU_BLOCK_SIZE);
 #endif
 
     mapped = true;
@@ -279,6 +314,10 @@ void bootloader_munmap(const void *mapping)
         Cache_Suspend_ICache();
         Cache_Invalidate_ICache_All();
         Cache_MMU_Init();
+#elif CONFIG_IDF_TARGET_ESP32P4
+        Cache_Suspend_L2_Cache();
+        Cache_Invalidate_All(CACHE_MAP_L2_CACHE);
+        Cache_FLASH_MMU_Init();
 #endif
         mapped = false;
         current_read_mapping = UINT32_MAX;
@@ -312,6 +351,8 @@ static esp_err_t bootloader_flash_read_no_decrypt(size_t src_addr, void *dest, s
     uint32_t autoload = Cache_Suspend_ICache();
 #elif CONFIG_IDF_TARGET_ESP32H2
     uint32_t autoload = Cache_Suspend_ICache();
+#elif CONFIG_IDF_TARGET_ESP32P4
+    uint32_t autoload = Cache_Suspend_L2_Cache();
 #endif
     esp_rom_spiflash_result_t r = esp_rom_spiflash_read(src_addr, dest, size);
 #if CONFIG_IDF_TARGET_ESP32
@@ -324,6 +365,8 @@ static esp_err_t bootloader_flash_read_no_decrypt(size_t src_addr, void *dest, s
     Cache_Resume_ICache(autoload);
 #elif CONFIG_IDF_TARGET_ESP32H2
     Cache_Resume_ICache(autoload);
+#elif CONFIG_IDF_TARGET_ESP32P4
+    Cache_Resume_L2_Cache(autoload);
 #endif
 
     return spi_to_esp_err(r);
@@ -354,6 +397,9 @@ static esp_err_t bootloader_flash_read_allow_decrypt(size_t src_addr, void *dest
 #elif CONFIG_IDF_TARGET_ESP32H2
             uint32_t autoload = Cache_Suspend_ICache();
             Cache_Invalidate_ICache_All();
+#elif CONFIG_IDF_TARGET_ESP32P4
+            uint32_t autoload = Cache_Suspend_L2_Cache();
+            Cache_Invalidate_All(CACHE_MAP_L2_CACHE);
 #endif
             ESP_LOGD(TAG, "mmu set block paddr=0x%08x (was 0x%08x)", map_at, current_read_mapping);
 #if CONFIG_IDF_TARGET_ESP32
@@ -366,6 +412,8 @@ static esp_err_t bootloader_flash_read_allow_decrypt(size_t src_addr, void *dest
             int e = Cache_Dbus_MMU_Set(MMU_ACCESS_FLASH, MMU_BLOCK63_VADDR, map_at, 64, 1, 0);
 #elif CONFIG_IDF_TARGET_ESP32H2
             int e = Cache_Dbus_MMU_Set(MMU_ACCESS_FLASH, MMU_BLOCK63_VADDR, map_at, 64, 1, 0);
+#elif CONFIG_IDF_TARGET_ESP32P4
+            int e = Cache_FLASH_MMU_Set(0, MMU_BLOCK63_VADDR, map_at, 64, 1, 0);
 #endif
             if (e != 0) {
                 ESP_LOGE(TAG, "cache_flash_mmu_set failed: %d\n", e);
@@ -379,6 +427,8 @@ static esp_err_t bootloader_flash_read_allow_decrypt(size_t src_addr, void *dest
                 Cache_Resume_ICache(autoload);
 #elif CONFIG_IDF_TARGET_ESP32H2
                 Cache_Resume_ICache(autoload);
+#elif CONFIG_IDF_TARGET_ESP32P4
+                Cache_Resume_L2_Cache(autoload);
 #endif
                 return ESP_FAIL;
             }
@@ -393,6 +443,8 @@ static esp_err_t bootloader_flash_read_allow_decrypt(size_t src_addr, void *dest
             Cache_Resume_ICache(autoload);
 #elif CONFIG_IDF_TARGET_ESP32H2
             Cache_Resume_ICache(autoload);
+#elif CONFIG_IDF_TARGET_ESP32P4
+            Cache_Resume_L2_Cache(autoload);
 #endif
         }
         map_ptr = (uint32_t *)(FLASH_READ_VADDR + (word_src - map_at));

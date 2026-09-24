@@ -19,12 +19,25 @@ LT_PROJECT_SOURCE_FILES   += $(SOC_PLATFORM_NAME)/Esp32_LTChipStart.c
 LT_PROJECT_SOURCE_FILES   += $(SOC_PLATFORM_NAME)/Esp32_Clock.c
 LT_PROJECT_SOURCE_FILES   += $(SOC_PLATFORM_NAME)/Esp32_Console.c
 LT_PROJECT_SOURCE_FILES   += $(SOC_PLATFORM_NAME)/Esp32_GPIO.c
-LT_PROJECT_SOURCE_FILES   += $(SOC_PLATFORM_NAME)/Esp32_PSRAM.c
 
-ifeq ($(SOC_PLATFORM_NAME),esp32s3)
-  # The esp32s3 has to bring its own caches up - unlike the esp32, its bootloader
-  # does not leave them configured and running for the application.
+ifneq ($(filter $(SOC_PLATFORM_NAME),esp32 esp32s3),)
+  # The esp32c3 has no PSRAM interface, so there is no Esp32_PSRAM.h under
+  # include/esp32c3 either.  The esp32p4 does have one - 32MB in package - but
+  # this port does not bring it up, so it has no Esp32_PSRAM.c to build.
+  LT_PROJECT_SOURCE_FILES += $(SOC_PLATFORM_NAME)/Esp32_PSRAM.c
+endif
+
+ifneq ($(filter $(SOC_PLATFORM_NAME),esp32s3 esp32c3 esp32p4),)
+  # These parts have to bring their own caches up - unlike the esp32, their
+  # bootloaders do not leave them configured and running for the application.
   LT_PROJECT_SOURCE_FILES += $(SOC_PLATFORM_NAME)/Esp32_Cache.c
+endif
+
+ifneq ($(filter $(SOC_PLATFORM_NAME),esp32c3 esp32p4),)
+  # RISC-V: LTK's SetInterruptVector/SetInterruptPriority are no-ops, so the BSP
+  # owns the vector table, the trap dispatcher, the system tick and the cycle
+  # counter.  The Xtensa parts get all of that from LTK.
+  LT_PROJECT_SOURCE_FILES += $(SOC_PLATFORM_NAME)/Esp32_Interrupt.c
 endif
 
 # Include directories
@@ -41,3 +54,8 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #   13-Aug-26   claudius    shared with the esp32s3 variant: Esp32_LTCoreBSP.c and
 #                           Esp32_LTChipStart.c are now per chip, under
 #                           $(SOC_PLATFORM_NAME)/ like the rest
+#   17-Sep-26   claudius    esp32c3: added Esp32_Interrupt.c and Esp32_Cache.c,
+#                           gated out Esp32_PSRAM.c
+#   21-Sep-26   claudius    esp32p4: joins the esp32c3 on Esp32_Interrupt.c (CLIC
+#                           rather than an interrupt matrix, but the BSP owns the
+#                           vectors either way) and on Esp32_Cache.c

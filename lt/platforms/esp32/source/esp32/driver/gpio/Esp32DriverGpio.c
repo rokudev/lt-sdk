@@ -7,10 +7,10 @@
  *
  * Copyright 2026 Roku Inc. All rights reserved.
  ******************************************************************************/
-/** @file Esp32DriverGpio.c LTDeviceGpio driver for the esp32 and the esp32s3 */
+/** @file Esp32DriverGpio.c LTDeviceGpio driver for the esp32, esp32s3, esp32c3 and esp32p4 */
 
 /*
- * One source file serves both chips.  Everything chip specific - the pad count,
+ * One source file serves every chip.  Everything chip specific - the pad count,
  * the IO_MUX function that hands a pad to the GPIO block, and which pad numbers
  * a package actually bonds out - comes from the per chip Esp32_GPIO.h that
  * $(SOC_PLATFORM_NAME) puts on the include path.
@@ -71,6 +71,7 @@ static const char * const GpioNames[] = {
     "gpio_28", "gpio_29", "gpio_30", "gpio_31", "gpio_32", "gpio_33", "gpio_34",
     "gpio_35", "gpio_36", "gpio_37", "gpio_38", "gpio_39", "gpio_40", "gpio_41",
     "gpio_42", "gpio_43", "gpio_44", "gpio_45", "gpio_46", "gpio_47", "gpio_48",
+    "gpio_49", "gpio_50", "gpio_51", "gpio_52", "gpio_53", "gpio_54",
 };
 #define TotalGpioCount          ((u16)kEsp32GPIO_NumPins)
 LT_STATIC_ASSERT(sizeof(GpioNames) / sizeof(GpioNames[0]) >= kEsp32GPIO_NumPins,
@@ -436,4 +437,5 @@ define_LTObjectImplPublic(LTDeviceGpio, Esp32DriverGpio,
  *  LOG
  *******************************************************************************
  *  08-Sep-26   claudius    created
+ *  23-Sep-26   claudius    esp32p4: named the pads up to 54
  */

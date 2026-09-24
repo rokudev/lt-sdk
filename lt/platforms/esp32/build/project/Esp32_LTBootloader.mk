@@ -48,16 +48,42 @@ LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/bootloader_flash.c
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/flash_encrypt.c
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/secure_boot.c
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/secure_boot_signatures_bootloader.c
-LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/cpu_util.c
-LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/mpu_hal.c
+ifneq ($(SOC_PLATFORM_NAME),esp32p4)
+  # The esp32p4 has no MPU, so IDF does not build this file for it either - its
+  # hal directory ships no mpu_ll.h to back it.  Nothing calls the one function
+  # here on a RISC-V part in any case: its only caller is cpu_util.c, which is
+  # Xtensa only and excluded below.
+  LT_PROJECT_SOURCE_FILES  += $(LT_PROJECT_PLATFORM_SUBDIR)/mpu_hal.c
+endif
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/esp_image_format.c
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/esp_efuse_api.c
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/esp_efuse_utility.c
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/esp_rom_crc.c
-LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/esp_rom_longjmp.S
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/esp_rom_sys.c
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/esp_rom_uart.c
 LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/wdt_hal_iram.c
+
+ifneq (,$(filter $(SOC_PLATFORM_NAME),esp32c3 esp32p4))
+  # This arm is the RISC-V parts.  Both of the files left out here are Xtensa
+  # only.  cpu_util.c compiles to an empty translation unit on a RISC-V part -
+  # its region-protection routine is guarded by #if __XTENSA__ and the rest of
+  # the file by #if 0 - and these parts take the PMP/TOR version from
+  # cpu_util_$(SOC_PLATFORM_NAME).c below instead.  esp_rom_longjmp.S is written
+  # against the Xtensa windowed ABI (entry, WINDOWBASE, retw), and there is
+  # nothing for it to patch: longjmp is not among the entries either part's
+  # rom.ld exports, so the -Wl,-wrap below is dropped too.
+  #
+  # efuse_hal.c is the opposite case - a shared source the older parts do not
+  # build.  It supplies efuse_hal_chip_revision(), which is how IDF v4.4.8 reports
+  # the silicon revision that bootloader_esp32c3.c and rtc_init.c gate their
+  # errata on; the esp32 and esp32s3 sources here predate that split and still
+  # call bootloader_common_get_chip_revision().  It stays in the shared directory
+  # because the chip specialization of the same name lives in each chip subdir.
+  LT_PROJECT_SOURCE_FILES  += $(LT_PROJECT_PLATFORM_SUBDIR)/efuse_hal.c
+else
+  LT_PROJECT_SOURCE_FILES  += $(LT_PROJECT_PLATFORM_SUBDIR)/cpu_util.c
+  LT_PROJECT_SOURCE_FILES  += $(LT_PROJECT_PLATFORM_SUBDIR)/esp_rom_longjmp.S
+endif
 # Chip specific bootloader sources, taken from the $(SOC_PLATFORM_NAME)
 # subdirectory.  That subdirectory is load bearing rather than tidiness: IDF has
 # an esp_efuse_utility.c in both the shared efuse component and the per target
@@ -71,7 +97,56 @@ LT_PROJECT_SOURCE_FILES    += $(LT_PROJECT_PLATFORM_SUBDIR)/wdt_hal_iram.c
 # above.  The esp32 drives the SHA accelerator through the legacy SHA_256_*
 # register set and the later parts have a unified DMA-capable block with an
 # entirely different register layout, so it moved down here with the rest.
-ifeq ($(SOC_PLATFORM_NAME),esp32s3)
+ifeq ($(SOC_PLATFORM_NAME),esp32c3)
+  # Taken from v4.4.8 throughout, unlike the esp32s3 list below, which mixes two
+  # vintages: nothing here talks to shared code whose API moved after the fork
+  # point, so there is no reason to reach back for an older file.
+  #
+  # No spi_flash_rom_patch.c and no regi2c_ctrl.c, for the same reasons as the
+  # esp32s3.  No esp_rom_cache.c either - the cache errata those wrappers work
+  # around are esp32s3 silicon bugs, and esp32c3.rom.ld renames nothing.
+  #
+  # cpu_util_esp32c3.c replaces the shared cpu_util.c: same
+  # esp_cpu_configure_region_protection(), written against the RISC-V PMP rather
+  # than the Xtensa MPU.
+  #
+  # efuse_hal.c here is the chip half of the pair - the generic half is in the
+  # shared list above.
+  ESP32_BOOTLOADER_SOC_SOURCES := bootloader_esp32c3.c bootloader_flash_config_esp32c3.c  \
+                                  flash_encryption_secure_features.c                      \
+                                  rtc_clk_init.c rtc_clk.c rtc_init.c rtc_time.c          \
+                                  bootloader_efuse_esp32c3.c secure_boot_secure_features.c\
+                                  esp_efuse_utility.c esp_efuse_api_key_esp32xx.c         \
+                                  esp_efuse_table.c bootloader_random_esp32c3.c           \
+                                  bootloader_soc.c bootloader_sha.c efuse_hal.c           \
+                                  cpu_util_esp32c3.c
+else ifeq ($(SOC_PLATFORM_NAME),esp32p4)
+  # Taken from v5.4, which is the first IDF that knows this part at all.  Four of
+  # the files the esp32c3 list carries have no counterpart here:
+  #
+  # rtc_clk_init.c, rtc_init.c and rtc_time.c describe an RTC_CNTL block this
+  # part does not have.  Its clock and power management moved to the PMU, and
+  # every frequency change goes through REGI2C, which this ROM does not export -
+  # so the part stays on the clock the ROM left it on and rtc_clk.c here supplies
+  # only the two getters the shared sources read.
+  #
+  # bootloader_efuse_esp32p4.c would be a hard coded chip revision, which is what
+  # every other variant's copy amounts to.  Nothing shared calls
+  # bootloader_common_get_chip_revision() on this part, and LTBootDriver.c reads
+  # the revision live from the efuse HAL instead.
+  #
+  # esp_rom_regi2c_esp32p4.c is the reverse - a file with no esp32c3 counterpart.
+  # The other parts' ROMs export the analog bus accessors and regi2c_ctrl.h maps
+  # straight onto them under BOOTLOADER_BUILD; this ROM exports none, so the
+  # register sequence is carried here.
+  ESP32_BOOTLOADER_SOC_SOURCES := bootloader_esp32p4.c bootloader_flash_config_esp32p4.c  \
+                                  flash_encryption_secure_features.c                      \
+                                  rtc_clk.c secure_boot_secure_features.c                 \
+                                  esp_efuse_utility.c esp_efuse_api_key_esp32xx.c         \
+                                  esp_efuse_table.c bootloader_random_esp32p4.c           \
+                                  bootloader_soc.c bootloader_sha.c efuse_hal.c           \
+                                  cpu_util_esp32p4.c esp_rom_regi2c_esp32p4.c
+else ifeq ($(SOC_PLATFORM_NAME),esp32s3)
   # No spi_flash_rom_patch.c - the esp32s3 ROM needs no such patching.  No
   # regi2c_ctrl.c either: that source only exists to wrap the analog-bus ROM calls
   # in a lock, and regi2c_ctrl.h maps the wrappers straight onto the ROM entries
@@ -154,7 +229,16 @@ ESP32_IMAGE_FLASH_SIZE ?= 4MB
 # Stamped into byte 14 of the image header, where the first stage ROM loader reads
 # it and refuses to start a second stage that asks for a newer part than it is
 # running on.
-ifeq ($(SOC_PLATFORM_NAME),esp32s3)
+ifeq ($(SOC_PLATFORM_NAME),esp32c3)
+  # Same trap as the esp32s3 below, and the esp32c3 is worse placed to survive it:
+  # bootloader_common_get_chip_revision() reports 0 on every part.  Leave this at 0.
+  ESP32_IMAGE_MIN_CHIP_REV := 0
+else ifeq ($(SOC_PLATFORM_NAME),esp32p4)
+  # Every esp32p4 in existence is rev 0 or rev 1, and the rev 0 PLL erratum
+  # bootloader_esp32p4.c works around is handled in software rather than by
+  # refusing to boot.  Leave this at 0.
+  ESP32_IMAGE_MIN_CHIP_REV := 0
+else ifeq ($(SOC_PLATFORM_NAME),esp32s3)
   # The esp32s3 has never shipped above rev 1, and asking for anything higher makes
   # the ROM reject the bootloader on every part in existence - the watchdog the ROM
   # armed then reboots the board every nine seconds, forever, with nothing on the
@@ -188,7 +272,13 @@ ESP32_ELF_DEPENDENCIES += $(ESP32_IMAGE_LIBRARIES)
 ############################################################################################################
 # Linker arguments:
 
-ESP32_LD_ARG := -mlongcalls
+# The ISA and ABI the link has to agree with libgcc on.  Xtensa variants set no
+# SOC_CPU_ARCH_FLAGS and take -mlongcalls, which has no RISC-V counterpart.
+ifneq (,$(SOC_CPU_ARCH_FLAGS))
+  ESP32_LD_ARG := $(SOC_CPU_ARCH_FLAGS)
+else
+  ESP32_LD_ARG := -mlongcalls
+endif
 ESP32_LD_ARG += -fno-lto
 
 # Linker script path
@@ -203,7 +293,31 @@ ESP32_LD_ARG += -T $(SOC_PLATFORM_NAME).peripherals.ld
 
 # ROM linker scripts.  The bootloader takes a smaller set than the application
 # does - see Esp32_MasterFirmwareImage.mk.
-ifeq ($(SOC_PLATFORM_NAME),esp32s3)
+ifeq ($(SOC_PLATFORM_NAME),esp32c3)
+  # The same set the esp32s3 takes.  The esp32c3 also ships rom.newlib-nano.ld and
+  # rom.newlib-time.ld, but both redefine symbols rom.newlib.ld already provides.
+  ESP32_LD_ROM_SCRIPTS := rom.ld rom.api.ld rom.libgcc.ld rom.newlib.ld rom.version.ld
+else ifeq ($(SOC_PLATFORM_NAME),esp32p4)
+  # The same set again, though the esp32p4 ships four more scripts and three of
+  # them are deliberately left out.
+  #
+  # rom.rvfp.ld is the trap.  It names the same 75 symbols rom.libgcc.ld does, at
+  # different addresses - a hand written FP library rather than the compiled one -
+  # and the two cannot both be linked.  It is the wrong one here: its routines
+  # take their arguments in a0 the way the soft float ABI passes them, which is
+  # why the file itself comments out __fixsfdi and __fixunssfdi and points at the
+  # rom.libgcc.ld addresses for those two.  This part is built -mabi=ilp32f, so
+  # floats arrive in fa0, and only the compiled library agrees.
+  #
+  # rom.wdt.ld would collide outright: it assigns wdt_hal_init and its ten
+  # siblings to ROM addresses, and this library compiles wdt_hal_iram.c, which
+  # defines them.
+  #
+  # rom.systimer.ld and rom.newlib-nano.ld are simply unreferenced - nothing here
+  # calls systimer_hal_*, and nothing calls the newlib printf family either, this
+  # library logging through ets_printf out of rom.ld.
+  ESP32_LD_ROM_SCRIPTS := rom.ld rom.api.ld rom.libgcc.ld rom.newlib.ld rom.version.ld
+else ifeq ($(SOC_PLATFORM_NAME),esp32s3)
   # Which the esp32s3 ROM offers is not a matter of name: it has no eco3 script and
   # offers a single newlib.ld where the esp32 splits newlib into -data/-funcs/-time.
   ESP32_LD_ROM_SCRIPTS := rom.ld rom.api.ld rom.libgcc.ld rom.newlib.ld rom.version.ld
@@ -214,8 +328,11 @@ endif
 ESP32_LD_ARG += -L $(ESP32_LD_ROM_SCRIPT_PATH)
 ESP32_LD_ARG += $(foreach ldscript,$(ESP32_LD_ROM_SCRIPTS),-T $(SOC_PLATFORM_NAME).$(ldscript))
 
-# For ROM patch
-ESP32_LD_ARG += -Wl,-wrap,longjmp
+# For ROM patch.  Paired with esp_rom_longjmp.S, which the RISC-V parts do not
+# build - see the source list above.
+ifeq (,$(filter $(SOC_PLATFORM_NAME),esp32c3 esp32p4))
+  ESP32_LD_ARG += -Wl,-wrap,longjmp
+endif
 
 ESP32_LD_ARG += -Wl,--cref
 ESP32_LD_ARG += -Wl,-Map=$(ESP32_MAP)
@@ -311,3 +428,6 @@ endif
 #                           ROM linker scripts and the minimum chip revision now
 #                           key off $(SOC_PLATFORM_NAME), and the mastered flash
 #                           size off $(ESP32_IMAGE_FLASH_SIZE)
+#   17-Sep-26   claudius    added the esp32c3, the first RISC-V part here: its own
+#                           chip source list, ROM linker scripts and link ISA
+#                           flags, and without the two Xtensa only shared sources
