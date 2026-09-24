@@ -16,8 +16,13 @@
 #include <stdlib.h>
 #include "esp_attr.h"
 #include "sdkconfig.h"
+#if CONFIG_IDF_TARGET_ESP32
+/* Named only from the esp32 re-implementation below.  The esp32p4's uart_ll.h
+   is a v5.4 header over register structs this tree does not carry, and there is
+   nothing here for it to serve. */
 #include "hal/uart_ll.h"
 #include "soc/uart_struct.h"
+#endif
 
 #if CONFIG_IDF_TARGET_ESP32
 /**

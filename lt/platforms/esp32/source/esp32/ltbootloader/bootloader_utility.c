@@ -53,6 +53,18 @@
 #include "esp32h2/rom/secure_boot.h"
 #include "soc/extmem_reg.h"
 #include "soc/cache_memory.h"
+#elif CONFIG_IDF_TARGET_ESP32P4
+#include "esp32p4/rom/cache.h"
+#include "esp32p4/rom/efuse.h"
+#include "esp32p4/rom/ets_sys.h"
+#include "esp32p4/rom/spi_flash.h"
+#include "esp32p4/rom/crc.h"
+#include "esp32p4/rom/uart.h"
+#include "esp32p4/rom/gpio.h"
+#include "esp32p4/rom/secure_boot.h"
+/* No extmem_reg.h or cache_memory.h here: the esp32p4 cache is driven entirely
+   through the ROM Cache_* API, and its MMU table is not memory mapped. */
+#include "soc/lp_system_reg.h"
 #else // CONFIG_IDF_TARGET_*
 #error "Unsupported IDF_TARGET"
 #endif
@@ -60,10 +72,14 @@
 #include "soc/soc.h"
 #include "soc/cpu.h"
 #include "soc/rtc.h"
-#include "soc/gpio_periph.h"
 #include "soc/efuse_periph.h"
+#if !CONFIG_IDF_TARGET_ESP32P4
+/* Nothing below needs these three, and on the esp32p4 they reach for headers
+   describing blocks the part does not have (io_mux_reg.h, rtc_cntl_struct.h). */
+#include "soc/gpio_periph.h"
 #include "soc/rtc_periph.h"
 #include "soc/timer_periph.h"
+#endif
 
 #include "esp_image_format.h"
 #include "esp_secure_boot.h"
@@ -274,6 +290,11 @@ static void set_cache_and_start_app(
 #elif CONFIG_IDF_TARGET_ESP32H2
     uint32_t autoload = Cache_Suspend_ICache();
     Cache_Invalidate_ICache_All();
+#elif CONFIG_IDF_TARGET_ESP32P4
+    /* Flash is reached through the L2 cache on this part; suspending it covers
+       both L1 caches behind it. */
+    uint32_t autoload = Cache_Suspend_L2_Cache();
+    Cache_Invalidate_All(CACHE_MAP_L2_CACHE);
 #endif
 
     /* Clear the MMU entries that are already set up,
@@ -283,6 +304,10 @@ static void set_cache_and_start_app(
     for (int i = 0; i < DPORT_FLASH_MMU_TABLE_SIZE; i++) {
         DPORT_PRO_FLASH_MMU_TABLE[i] = DPORT_FLASH_MMU_TABLE_INVALID_VAL;
     }
+#elif CONFIG_IDF_TARGET_ESP32P4
+    /* The esp32p4 MMU table is behind an index/content register pair rather
+       than memory mapped, so the ROM's own initializer does the invalidating. */
+    Cache_FLASH_MMU_Init();
 #else
     for (size_t i = 0; i < FLASH_MMU_TABLE_SIZE; i++) {
         FLASH_MMU_TABLE[i] = MMU_TABLE_INVALID_VAL;
@@ -303,6 +328,12 @@ static void set_cache_and_start_app(
     rc = Cache_Dbus_MMU_Set(MMU_ACCESS_FLASH, drom_load_addr_aligned, drom_addr_aligned, 64, drom_page_count, 0);
 #elif CONFIG_IDF_TARGET_ESP32H2
     rc = Cache_Dbus_MMU_Set(MMU_ACCESS_FLASH, drom_load_addr_aligned, drom_addr_aligned, 64, drom_page_count, 0);
+#elif CONFIG_IDF_TARGET_ESP32P4
+    /* One unified flash MMU here rather than a separate ibus and dbus one.  The
+       leading 0 is the per-page sensitive bit, which only matters with flash
+       encryption on; Cache_FLASH_MMU_Set_Secure() is the variant that derives
+       it from efuse. */
+    rc = Cache_FLASH_MMU_Set(0, drom_load_addr_aligned, drom_addr_aligned, 64, drom_page_count, 0);
 #endif
     ESP_LOGV(TAG, "rc=%d", rc);
 #if CONFIG_IDF_TARGET_ESP32
@@ -333,6 +364,8 @@ static void set_cache_and_start_app(
     rc = Cache_Ibus_MMU_Set(MMU_ACCESS_FLASH, irom_load_addr_aligned, irom_addr_aligned, 64, irom_page_count, 0);
 #elif CONFIG_IDF_TARGET_ESP32H2
     rc = Cache_Ibus_MMU_Set(MMU_ACCESS_FLASH, irom_load_addr_aligned, irom_addr_aligned, 64, irom_page_count, 0);
+#elif CONFIG_IDF_TARGET_ESP32P4
+    rc = Cache_FLASH_MMU_Set(0, irom_load_addr_aligned, irom_addr_aligned, 64, irom_page_count, 0);
 #endif
     ESP_LOGV(TAG, "rc=%d", rc);
 #if CONFIG_IDF_TARGET_ESP32
@@ -370,6 +403,14 @@ static void set_cache_and_start_app(
     Cache_Resume_ICache(autoload);
 #elif CONFIG_IDF_TARGET_ESP32H2
     Cache_Resume_ICache(autoload);
+#elif CONFIG_IDF_TARGET_ESP32P4
+    Cache_Resume_L2_Cache(autoload);
+    /* The app's IRAM arrived through the data path, so its instructions may
+       still be sitting dirty in the L1 DCache while the L1 ICache holds
+       whatever used to live at those addresses.  Push the writes out and drop
+       the stale fetch lines, or the jump below lands on garbage. */
+    Cache_WriteBack_All(CACHE_MAP_L1_DCACHE);
+    Cache_Invalidate_All(CACHE_MAP_L1_ICACHE_0);
 #endif
     // Application will need to do Cache_Flush(1) and Cache_Read_Enable(1)
 
@@ -388,7 +429,13 @@ void bootloader_reset(void)
 #ifdef BOOTLOADER_BUILD
     bootloader_atexit();
     esp_rom_delay_us(1000); /* Allow last byte to leave FIFO */
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* No RTC_CNTL block here.  LP_SYS_SYS_CTRL's other fields select which
+       faults may reset the chip, so this is read-modify-write. */
+    REG_WRITE(LP_SYSTEM_REG_SYS_CTRL_REG, REG_READ(LP_SYSTEM_REG_SYS_CTRL_REG) | LP_SYSTEM_REG_SYS_SW_RST);
+#else
     REG_WRITE(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
+#endif
     while (1) { }       /* This line will never be reached, used to keep gcc happy */
 #else
     abort();            /* This function should really not be called from application code */

@@ -17,6 +17,7 @@ function usage {
     echo "  --nostub                do not load/use stub flasher image program";
     echo "  --usbjtag               force the native USB (USB-Serial/JTAG) reset sequence";
     echo "  --nousbjtag             force the classic DTR/RTS auto-reset sequence";
+    echo "  --chip                  skip chip auto-detection, treat part as this chip";
     echo "  --signed                use signed firmware image";
     echo "  -h, --help              give this help text";
 }
@@ -34,6 +35,7 @@ info="false"
 signed="false"
 nostub="false"
 usbjtag=""
+chip=""
 
 function parse_args {
     script=$0
@@ -54,6 +56,7 @@ function parse_args {
             --info )                      info="true";             ;;
             --usbjtag )                   usbjtag="usbjtag";       ;;
             --nousbjtag )                 usbjtag="nousbjtag";     ;;
+            --chip )                      chip="$2";               shift;;
             --signed )                    signed="true";           ;;
             -h | --help )                 usage;                   exit;; # quit and show usage
             * )                           args+=("$1")             # if no match, add it to the positional args
@@ -176,6 +179,12 @@ fi
 # Left unset, rit picks the reset sequence from the serial device name.
 if [[ -n "$usbjtag" ]]; then
     add_platform_arg "$usbjtag"
+fi
+
+# Left unset, rit auto-detects the part by reading its chip-ID register. Parts
+# on which that read is unreliable must name themselves instead.
+if [[ -n "$chip" ]]; then
+    add_platform_arg "chip=$chip"
 fi
 
 EXTRA_ARG=""

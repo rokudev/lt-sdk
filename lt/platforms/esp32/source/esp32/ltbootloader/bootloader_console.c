@@ -6,14 +6,20 @@
 
 #include "sdkconfig.h"
 #include "bootloader_console.h"
+#include "soc/rtc.h"
+#if !CONFIG_IDF_TARGET_ESP32P4
+/* Everything here is named only from the CONFIG_ESP_CONSOLE_UART_CUSTOM block
+   below, which the esp32p4 does not use - its console is UART0 on the pads the
+   ROM already selected.  Skipping them avoids importing the v5.4 UART and clock
+   register-struct headers for dead code. */
 #include "soc/uart_periph.h"
 #include "soc/uart_channel.h"
 #include "soc/io_mux_reg.h"
 #include "soc/gpio_periph.h"
 #include "soc/gpio_sig_map.h"
-#include "soc/rtc.h"
 #include "hal/clk_gate_ll.h"
 #include "hal/gpio_hal.h"
+#endif
 #if CONFIG_IDF_TARGET_ESP32S2
 #include "esp32s2/rom/usb/cdc_acm.h"
 #include "esp32s2/rom/usb/usb_common.h"

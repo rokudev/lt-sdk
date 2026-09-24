@@ -7,12 +7,22 @@
 #include "soc/soc.h"
 #include "soc/rtc.h"
 #include "soc/efuse_periph.h"
+#if CONFIG_IDF_TARGET_ESP32P4
+/* No RTC_CNTL block on this part; the same interrupt enables live in the LP
+   domain, spread over four peripherals. */
+#include "soc/lp_wdt_reg.h"
+#include "soc/lp_timer_reg.h"
+#include "soc/lp_analog_peri_reg.h"
+#include "soc/pmu_reg.h"
+#else
 #include "soc/rtc_cntl_reg.h"
+#endif
 #if CONFIG_IDF_TARGET_ESP32
 #include "soc/dport_reg.h"
 #endif
 #include "esp_rom_sys.h"
 #include "esp_rom_uart.h"
+#include "lt/LTTypes.h"
 
 __attribute__((weak)) void bootloader_clock_configure(void)
 {
@@ -52,6 +62,12 @@ __attribute__((weak)) void bootloader_clock_configure(void)
     }
 #endif
 
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* Left on whatever clock the ROM selected.  Every frequency change on this
+       part goes through REGI2C, and its ROM exports no rom_i2c_* entries, so
+       rtc_clk_init() is not implemented here. */
+    LT_UNUSED(cpu_freq_mhz);
+#else
     if (rtc_clk_apb_freq_get() < APB_CLK_FREQ || esp_rom_get_reset_reason(0) != RESET_REASON_CPU0_SW) {
         rtc_clk_config_t clk_cfg = RTC_CLK_CONFIG_DEFAULT();
 #if CONFIG_IDF_TARGET_ESP32
@@ -63,6 +79,7 @@ __attribute__((weak)) void bootloader_clock_configure(void)
         clk_cfg.fast_freq = rtc_clk_fast_freq_get();
         rtc_clk_init(clk_cfg);
     }
+#endif
 
     /* As a slight optimization, if 32k XTAL was enabled in sdkconfig, we enable
      * it here. Usually it needs some time to start up, so we amortize at least
@@ -75,6 +92,20 @@ __attribute__((weak)) void bootloader_clock_configure(void)
     }
 #endif // CONFIG_ESP_SYSTEM_RTC_EXT_XTAL
 
+#if CONFIG_IDF_TARGET_ESP32P4
+    CLEAR_PERI_REG_MASK(LP_WDT_INT_ENA_REG, LP_WDT_SUPER_WDT_INT_ENA);
+    CLEAR_PERI_REG_MASK(LP_TIMER_LP_INT_ENA_REG, LP_TIMER_MAIN_TIMER_LP_INT_ENA);
+    CLEAR_PERI_REG_MASK(LP_ANALOG_PERI_LP_INT_ENA_REG, LP_ANALOG_PERI_BOD_MODE0_LP_INT_ENA);
+    CLEAR_PERI_REG_MASK(LP_WDT_INT_ENA_REG, LP_WDT_LP_WDT_INT_ENA);
+    CLEAR_PERI_REG_MASK(PMU_HP_INT_ENA_REG, PMU_SOC_WAKEUP_INT_ENA);
+    CLEAR_PERI_REG_MASK(PMU_HP_INT_ENA_REG, PMU_SOC_SLEEP_REJECT_INT_ENA);
+
+    SET_PERI_REG_MASK(LP_WDT_INT_CLR_REG, LP_WDT_SUPER_WDT_INT_CLR);
+    SET_PERI_REG_MASK(LP_TIMER_LP_INT_CLR_REG, LP_TIMER_MAIN_TIMER_LP_INT_CLR);
+    SET_PERI_REG_MASK(LP_ANALOG_PERI_LP_INT_CLR_REG, LP_ANALOG_PERI_BOD_MODE0_LP_INT_CLR);
+    SET_PERI_REG_MASK(LP_WDT_INT_CLR_REG, LP_WDT_LP_WDT_INT_CLR);
+#else
     REG_WRITE(RTC_CNTL_INT_ENA_REG, 0);
     REG_WRITE(RTC_CNTL_INT_CLR_REG, UINT32_MAX);
+#endif
 }

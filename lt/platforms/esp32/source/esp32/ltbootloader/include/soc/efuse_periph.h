@@ -17,6 +17,6 @@
 /* Upstream also pulls in the register-struct view of the block here.  The esp32
    hal predates the struct headers and reaches the block through the _REG macros
    above, so there is nothing to include on that target. */
-#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32P4
 #include "soc/efuse_struct.h"
 #endif

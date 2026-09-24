@@ -126,6 +126,20 @@ ifneq ($(filter $(SOC_PLATFORM_NAME),esp32s3 esp32c3),)
   # them can be given to the linker together.
   ESP32_LD_ROM_SCRIPTS := rom.ld rom.api.ld rom.libgcc.ld rom.newlib.ld \
                           rom.newlib-nano.ld rom.newlib-time.ld rom.version.ld
+else ifeq ($(SOC_PLATFORM_NAME),esp32p4)
+  # As above, less rom.newlib-time.ld, which this part does not ship - its sole
+  # symbol _isatty_r is in rom.newlib.ld here.  The three scripts taken are still
+  # disjoint.
+  #
+  # Of the three the esp32p4 ships beyond that set, rom.rvfp.ld is the one to be
+  # careful of: it names the same 75 symbols rom.libgcc.ld does, at different
+  # addresses, and its routines take their arguments the way the soft float ABI
+  # passes them.  This part is built -mabi=ilp32f, so rom.libgcc.ld is the right
+  # one of the two and they cannot both be linked.  rom.wdt.ld and
+  # rom.systimer.ld are left out as unreferenced - the watchdog driver drives the
+  # LP_WDT registers directly rather than through wdt_hal_*.
+  ESP32_LD_ROM_SCRIPTS := rom.ld rom.api.ld rom.libgcc.ld rom.newlib.ld \
+                          rom.newlib-nano.ld rom.version.ld
 else
   # rom.redefined.ld supplies ets_timers, needed by wpa_supplicant (WiFi component).
   ESP32_LD_ROM_SCRIPTS := rom.ld rom.api.ld rom.eco3.ld rom.libgcc.ld            \
@@ -136,16 +150,16 @@ endif
 ESP32_LD_ARG += -L $(ESP32_LD_ROM_SCRIPT_PATH)
 ESP32_LD_ARG += $(foreach ldscript,$(ESP32_LD_ROM_SCRIPTS),-T $(SOC_PLATFORM_NAME).$(ldscript))
 
-# For ROM patch.  The esp32c3 BSP has no __wrap_longjmp - the ROM's own longjmp
+# For ROM patch.  The RISC-V BSPs have no __wrap_longjmp - the ROM's own longjmp
 # needs no patching there, and wrapping it would leave the wrapper undefined.
-ifneq ($(SOC_PLATFORM_NAME),esp32c3)
+ifeq (,$(filter $(SOC_PLATFORM_NAME),esp32c3 esp32p4))
   ESP32_LD_ARG += -Wl,-wrap,longjmp
 endif
 
 # Force linker to include these symbols.  ld_include_highint_hdl is the Xtensa
-# high-level interrupt handler out of the Espressif blobs; the esp32c3 has
+# high-level interrupt handler out of the Espressif blobs; the RISC-V parts have
 # neither the blobs nor the Xtensa interrupt levels they hook.
-ifneq ($(SOC_PLATFORM_NAME),esp32c3)
+ifeq (,$(filter $(SOC_PLATFORM_NAME),esp32c3 esp32p4))
   ESP32_LD_ARG += -u ld_include_highint_hdl
 endif
 ESP32_LD_ARG += -u applicationDescriptor
@@ -163,7 +177,7 @@ ESP32_LD_ARG += -nostdlib
 ESP32_LD_ARG += -Wl,-wrap,malloc -Wl,-wrap,realloc -Wl,-wrap,free -Wl,-wrap,calloc -Wl,-wrap,gettimeofday -Wl,-wrap,puts -Wl,-wrap,sprintf
 # __wrap_intr_matrix_set lives in the Wi-Fi/BLE OS adapter, which a variant with
 # no radio blobs does not build.
-ifneq ($(SOC_PLATFORM_NAME),esp32c3)
+ifeq (,$(filter $(SOC_PLATFORM_NAME),esp32c3 esp32p4))
   ESP32_LD_ARG += -Wl,-wrap,intr_matrix_set
 endif
 ESP32_LD_ARG += -specs nosys.specs
@@ -401,3 +415,5 @@ $(ESP32_FLASH_ALL): $(LT_PLATFORM_ROOT)/build/image/esp32_flash_all.sh
 #   17-Sep-26   claudius    esp32c3: link with $(SOC_CPU_ARCH_FLAGS), share the
 #                           esp32s3 ROM script list, and gate out the Xtensa-only
 #                           longjmp/highint/intr_matrix_set link arguments
+#   22-Sep-26   claudius    esp32p4: own ROM script list, and joins the esp32c3 on
+#                           the three Xtensa-only link argument guards
