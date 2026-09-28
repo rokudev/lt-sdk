@@ -37,7 +37,7 @@ typedef_LTObjectImpl(LTDeviceKeypad, LTDeviceKeypadImpl) {
     ILTEvent       *iEvent;
     u32             keysToDispatch[kKeyDispatchBufferSize];
     u32             numKeysToDispatch;
-    bool            bDispatchInProgress;
+    bool            bDispatchScheduled;
 } LTOBJECT_API;
 
 /*______________________________________
@@ -52,9 +52,9 @@ static void LTDeviceKeypadImpl_KeyEventDispatchCompleteProc(LTEvent hEvent, LTAr
     lt_free(LTArgs_pointerAt(0, args));
 }
 
-/*______________________________________________________________________________
-  LTDeviceKeypad ISR Event Notify Thread Proxy - LTEvent proxy thread context */
-static void LTDeviceKeypadImpl_ISREventNotifyThreadProxy(void *pClientData) {
+/*__________________________________________________________________________________
+  LTDeviceKeypad ISR Event Notify Drain Pending Keys - LTEvent proxy thread context */
+static void LTDeviceKeypadImpl_ISREventNotifyDrainPendingKeys(void *pClientData) {
     u32 i, nNumKeys, *pKeys;
     LTDeviceKeypadImpl *keypad = (LTDeviceKeypadImpl *)pClientData;
     LT_SIZE nMask = LT_GetCore()->Disable();
@@ -72,8 +72,20 @@ static void LTDeviceKeypadImpl_ISREventNotifyThreadProxy(void *pClientData) {
         }
         nMask = LT_GetCore()->Disable();
     }
-    keypad->bDispatchInProgress = false;
+    keypad->bDispatchScheduled = false;
     LT_GetCore()->Enable(nMask);
+}
+
+/*_____________________________________________________________
+  LTDeviceKeypad Schedule Dispatch - ISR context */
+static void LTDeviceKeypadImpl_ScheduleDispatchFromISR(LTDeviceKeypadImpl *keypad) LT_ISR_SAFE {
+    if (!keypad->numKeysToDispatch || keypad->bDispatchScheduled) return;
+
+    keypad->bDispatchScheduled = true;
+    if (!keypad->iEvent->NotifyEventFromISR(&LTDeviceKeypadImpl_ISREventNotifyDrainPendingKeys, keypad)) {
+        /* No proxy was queued, so allow the next input to retry. */
+        keypad->bDispatchScheduled = false;
+    }
 }
 
 /*______________________________________________________
@@ -81,18 +93,8 @@ static void LTDeviceKeypadImpl_ISREventNotifyThreadProxy(void *pClientData) {
 static void LTDeviceKeypadImpl_KeyInputProc(u32 *pRawKeys, u32 nNumKeys, void *pClientData) LT_ISR_SAFE {
     LTDeviceKeypadImpl *keypad = (LTDeviceKeypadImpl *)pClientData;
     if (nNumKeys == 0) {
-        /* driver done sending keys, dispatch */
-        dispatch:
-        if (keypad->numKeysToDispatch && (! keypad->bDispatchInProgress)) {
-            keypad->bDispatchInProgress = true;
-            if (!keypad->iEvent->NotifyEventFromISR(&LTDeviceKeypadImpl_ISREventNotifyThreadProxy, keypad)) {
-                // If NotifyEventFromISR() fails, no task was actually queued.
-                // Leaving the flag true would cause future key inputs to believe
-                // dispatch is still pending, so they would never retry and all
-                // subsequent keys could be stranded.
-                keypad->bDispatchInProgress = false;
-            }
-        }
+        /* Driver done sending keys; schedule dispatch. */
+        LTDeviceKeypadImpl_ScheduleDispatchFromISR(keypad);
         return;
     }
     u32 keysAvail = kKeyDispatchBufferSize - keypad->numKeysToDispatch;
@@ -104,11 +106,11 @@ static void LTDeviceKeypadImpl_KeyInputProc(u32 *pRawKeys, u32 nNumKeys, void *p
         keypad->numKeysToDispatch++;
     }
     if (keysAvail == 0) {
-        /* filled up the dispatch buffer; dispatch now */
+        /* Filled the dispatch buffer; schedule dispatch now. */
         if (nNumKeys) {
             LTLOG_YELLOWALERT("isr.key.drop", "dropping %lu keys", LT_Pu32(nNumKeys));
         }
-        goto dispatch;
+        LTDeviceKeypadImpl_ScheduleDispatchFromISR(keypad);
     }
 }
 
