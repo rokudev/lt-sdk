@@ -348,11 +348,14 @@ static bool Esp32DriverGpio_SetISR(Esp32DriverGpio *gpio, u16 gpioIndex,
     LTLOG("set.isr", "gpioIndex=%d, pISR=%p, triggerType=%d", (int)gpioIndex, pISR, (int)triggerType);
 
     /* the trampoline reads s_pIsrs, so fill it in before the interrupt is armed */
+    LT_SIZE nMask = LT_GetCore()->Disable();
     s_pIsrs[gpioIndex] = pISR;
     if (!Esp32GPIO_AttachISR((u8)gpioIndex, trigger, Esp32DriverGpio_IsrTrampoline, pClientData)) {
         s_pIsrs[gpioIndex] = NULL;
+        LT_GetCore()->Enable(nMask);
         return false;
     }
+    LT_GetCore()->Enable(nMask);
 
     return true;
 }

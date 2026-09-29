@@ -53,7 +53,7 @@ bool Esp32FlashDeviceUnit_Initialize(void) {
         LTLOG_DEBUG("chip", "ID: %06lX (%lu KiB)", LT_Pu32(s_flashInfo.pChip->deviceId), LT_Pu32(s_flashInfo.pChip->chipSize >> 10));
 #endif
     }
-    return (s_flashInfo.pChip != NULL);
+    return (s_flashInfo.mutex && s_flashInfo.pChip != NULL);
 }
 
 /*******************************************************************************
