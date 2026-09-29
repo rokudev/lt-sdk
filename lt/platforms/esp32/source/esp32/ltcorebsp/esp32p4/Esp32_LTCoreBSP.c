@@ -15,6 +15,7 @@
 #include "Esp32_SoC.h"
 #include "Esp32_Console.h"
 #include "Esp32_Interrupt.h"
+#include "Esp32_PSRAM.h"
 
 /*_______________________
   forward declarations */
@@ -30,17 +31,18 @@ static LTAtomic                             s_LTCoreBSPInitialized = { 0 };
 /*
  * The heap region numbering is load bearing.  LTMemoryRegion is 1-based
  * positional, and names are bound to positions by /memory/regions in
- * LTDeviceConfig.json.  This part has three regions - the low run of L2MEM, the
- * second stage bootloader's own footprint reclaimed once it has handed over, and
- * the run of L2MEM above the area the ROM reserves for itself.  The in-package
- * PSRAM is not brought up by this variant and contributes no region.
+ * LTDeviceConfig.json.  This part has four regions - the low run of L2MEM, the
+ * second stage bootloader's own footprint reclaimed once it has handed over, the
+ * run of L2MEM above the area the ROM reserves for itself, and the in-package
+ * PSRAM.
  *
  * heap2 and heap3 are absent rather than renumbered: those are the esp32's ROM
  * data island hole and the esp32s3's SRAM2, and reusing the numbers would give
  * the same LTMemoryRegion value two meanings across variants.
  *
- * All three regions are fixed at link time by memory.ld; nothing here is
- * detected at runtime.
+ * The three SRAM regions are fixed at link time by memory.ld.  The PSRAM region
+ * is discovered at runtime and is last, so that its absence - which is not an
+ * error - leaves the other three at the positions LTDeviceConfig.json names.
  */
 extern int _heap0_start;
 extern int _heap0_end;
@@ -49,13 +51,13 @@ extern int _heap1_end;
 extern int _heap4_start;
 extern int _heap4_end;
 
-/* heap0 (low L2MEM), heap1 (reclaimed bootloader SRAM), heap4 (high L2MEM) */
-#define ESP32_NUM_HEAP_REGIONS  3
+/* heap0 (low L2MEM), heap1 (reclaimed bootloader SRAM), heap4 (high L2MEM), PSRAM */
+#define ESP32_MAX_HEAP_REGIONS  4
 
 #define HEAP_REGION_SIZE(n) (u32)(((u8*)&_heap##n##_end) - ((u8*)&_heap##n##_start))
 
-static LTCoreBSP_HeapRegion s_heapRegions[ESP32_NUM_HEAP_REGIONS];
-static LTCoreBSP_LTHeapConfig LTHeapConfig = { s_heapRegions, ESP32_NUM_HEAP_REGIONS };
+static LTCoreBSP_HeapRegion s_heapRegions[ESP32_MAX_HEAP_REGIONS];
+static LTCoreBSP_LTHeapConfig LTHeapConfig = { s_heapRegions, 0 };
 
 /*___________________
   BSP configuration */
@@ -104,9 +106,22 @@ LTCoreBSP_Initialize(const LTCoreBSP_LTCoreCallbacks * pCallbacks) {
     /* UART0 on GPIO37/38 - see Esp32_Console.c */
     Esp32_ConsoleInitialize(pCallbacks);
 
+    Esp32_PSRAM_Info psram;
+    bool bHavePSRAM = Esp32_PSRAM_Initialize(&psram);
+    u8   nRegions;
+
     s_heapRegions[0] = (LTCoreBSP_HeapRegion) { (u8*)&_heap0_start, HEAP_REGION_SIZE(0), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
     s_heapRegions[1] = (LTCoreBSP_HeapRegion) { (u8*)&_heap1_start, HEAP_REGION_SIZE(1), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
     s_heapRegions[2] = (LTCoreBSP_HeapRegion) { (u8*)&_heap4_start, HEAP_REGION_SIZE(4), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
+    nRegions = 3;
+
+    /* PSRAM is not stack memory: an exception handler running with the cache
+     * suspended could not reach it. */
+    if (bHavePSRAM) {
+        s_heapRegions[nRegions++] = (LTCoreBSP_HeapRegion) { psram.pBase, psram.nSizeInBytes, kLTMemoryRegionFlags_NoStackMalloc | kLTMemoryRegionFlags_External | kLTMemoryRegionFlags_Malloc };
+    }
+
+    LTHeapConfig.nRegions = nRegions;
 
     Esp32_InitializeTick();
 
@@ -156,4 +171,6 @@ static const LTCoreBSP s_bsp = {
  *  LOG
  ******************************************************************************
  *  23-Sep-26   claudius    created, from esp32c3/Esp32_LTCoreBSP.c
+ *  28-Sep-26   claudius    the in-package PSRAM joins the heap as a fourth
+ *                          region, appended only when it answers
  */

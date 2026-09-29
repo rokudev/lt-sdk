@@ -20,10 +20,9 @@ LT_PROJECT_SOURCE_FILES   += $(SOC_PLATFORM_NAME)/Esp32_Clock.c
 LT_PROJECT_SOURCE_FILES   += $(SOC_PLATFORM_NAME)/Esp32_Console.c
 LT_PROJECT_SOURCE_FILES   += $(SOC_PLATFORM_NAME)/Esp32_GPIO.c
 
-ifneq ($(filter $(SOC_PLATFORM_NAME),esp32 esp32s3),)
-  # The esp32c3 has no PSRAM interface, so there is no Esp32_PSRAM.h under
-  # include/esp32c3 either.  The esp32p4 does have one - 32MB in package - but
-  # this port does not bring it up, so it has no Esp32_PSRAM.c to build.
+ifneq ($(filter $(SOC_PLATFORM_NAME),esp32 esp32s3 esp32p4),)
+  # The esp32c3 is the only one of these with no PSRAM interface at all, so
+  # there is no Esp32_PSRAM.h under include/esp32c3 either.
   LT_PROJECT_SOURCE_FILES += $(SOC_PLATFORM_NAME)/Esp32_PSRAM.c
 endif
 
@@ -59,3 +58,4 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #   21-Sep-26   claudius    esp32p4: joins the esp32c3 on Esp32_Interrupt.c (CLIC
 #                           rather than an interrupt matrix, but the BSP owns the
 #                           vectors either way) and on Esp32_Cache.c
+#   28-Sep-26   claudius    esp32p4: added Esp32_PSRAM.c
