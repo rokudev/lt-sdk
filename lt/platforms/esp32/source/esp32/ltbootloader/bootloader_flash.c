@@ -238,9 +238,9 @@ const void *bootloader_mmap(uint32_t src_addr, uint32_t size)
     int e = Cache_Ibus_MMU_Set(MMU_ACCESS_FLASH, MMU_BLOCK0_VADDR, src_addr_aligned, 64, count, 0);
 #elif CONFIG_IDF_TARGET_ESP32P4
     /* One unified flash MMU here rather than a separate ibus and dbus one.  The
-       leading 0 is the per-page sensitive bit, which only matters with flash
-       encryption on. */
-    int e = Cache_FLASH_MMU_Set(0, MMU_BLOCK0_VADDR, src_addr_aligned, 64, count, 0);
+       _Secure variant derives the per-page sensitive bit from efuse, so what is
+       mapped reads back decrypted once flash has been encrypted. */
+    int e = Cache_FLASH_MMU_Set_Secure(MMU_BLOCK0_VADDR, src_addr_aligned, 64, count, 0);
 #else // S3, C3, H2
     int e = Cache_Dbus_MMU_Set(MMU_ACCESS_FLASH, MMU_BLOCK0_VADDR, src_addr_aligned, 64, count, 0);
 #endif
@@ -413,7 +413,7 @@ static esp_err_t bootloader_flash_read_allow_decrypt(size_t src_addr, void *dest
 #elif CONFIG_IDF_TARGET_ESP32H2
             int e = Cache_Dbus_MMU_Set(MMU_ACCESS_FLASH, MMU_BLOCK63_VADDR, map_at, 64, 1, 0);
 #elif CONFIG_IDF_TARGET_ESP32P4
-            int e = Cache_FLASH_MMU_Set(0, MMU_BLOCK63_VADDR, map_at, 64, 1, 0);
+            int e = Cache_FLASH_MMU_Set_Secure(MMU_BLOCK63_VADDR, map_at, 64, 1, 0);
 #endif
             if (e != 0) {
                 ESP_LOGE(TAG, "cache_flash_mmu_set failed: %d\n", e);

@@ -330,10 +330,9 @@ static void set_cache_and_start_app(
     rc = Cache_Dbus_MMU_Set(MMU_ACCESS_FLASH, drom_load_addr_aligned, drom_addr_aligned, 64, drom_page_count, 0);
 #elif CONFIG_IDF_TARGET_ESP32P4
     /* One unified flash MMU here rather than a separate ibus and dbus one.  The
-       leading 0 is the per-page sensitive bit, which only matters with flash
-       encryption on; Cache_FLASH_MMU_Set_Secure() is the variant that derives
-       it from efuse. */
-    rc = Cache_FLASH_MMU_Set(0, drom_load_addr_aligned, drom_addr_aligned, 64, drom_page_count, 0);
+       _Secure variant derives the per-page sensitive bit from efuse, so the app
+       still reads plaintext through the cache once flash has been encrypted. */
+    rc = Cache_FLASH_MMU_Set_Secure(drom_load_addr_aligned, drom_addr_aligned, 64, drom_page_count, 0);
 #endif
     ESP_LOGV(TAG, "rc=%d", rc);
 #if CONFIG_IDF_TARGET_ESP32
@@ -365,7 +364,7 @@ static void set_cache_and_start_app(
 #elif CONFIG_IDF_TARGET_ESP32H2
     rc = Cache_Ibus_MMU_Set(MMU_ACCESS_FLASH, irom_load_addr_aligned, irom_addr_aligned, 64, irom_page_count, 0);
 #elif CONFIG_IDF_TARGET_ESP32P4
-    rc = Cache_FLASH_MMU_Set(0, irom_load_addr_aligned, irom_addr_aligned, 64, irom_page_count, 0);
+    rc = Cache_FLASH_MMU_Set_Secure(irom_load_addr_aligned, irom_addr_aligned, 64, irom_page_count, 0);
 #endif
     ESP_LOGV(TAG, "rc=%d", rc);
 #if CONFIG_IDF_TARGET_ESP32

@@ -590,7 +590,8 @@ enum Esp32_RegisterSPIMEM {
  *
  * An entry holds a physical page number in its low bits with VALID set and
  * ACCESS_FLASH (0) selecting flash over PSRAM; the whole word reads back as
- * INVALID (0) when nothing is mapped.
+ * INVALID (0) when nothing is mapped.  SENSITIVE joins them once flash
+ * encryption is burned in.
  */
 enum Esp32_RegisterMMU {
     kEsp32_RegisterMMU_ITEM_CONTENT                   = ESP32_REG_BASE(SPI0) + 0x37c,
@@ -607,6 +608,14 @@ enum Esp32_RegisterMMU {
     kEsp32_RegisterMMU_INVALID_V                      = 0,
     kEsp32_RegisterMMU_ACCESS_FLASH_V                 = 0,
     kEsp32_RegisterMMU_ADDRESS_M                      = 0x7ff,
+
+    /*
+     * Marks the page as needing decryption on the way through the cache.  It
+     * must be set on every flash page whenever flash encryption is burned in,
+     * or reads through the cache return ciphertext.  The PSRAM MMU carries the
+     * same bit one place lower, at bit 12.
+     */
+    kEsp32_RegisterMMU_SENSITIVE_V                    = 0x01 << 13,
 
     /* (PAGE_SIZE * ENTRY_COUNT) - 1 */
     kEsp32_RegisterMMU_VADDR_MASK                     = 0x03ffffff,
@@ -1014,4 +1023,5 @@ enum Esp32_RegisterWDEV {
  *  22-Sep-26   claudius    created
  *  28-Sep-26   claudius    added the PSRAM controller, MSPI pads, MPLL and
  *                          external LDO registers the PSRAM bring-up needs
+ *  29-Sep-26   claudius    added the flash MMU sensitive bit
  */

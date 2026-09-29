@@ -58,6 +58,22 @@ extern int  Cache_Invalidate_All(u32 map);
 static u32 s_cacheRefCount = 0;
 
 /****************************************************************************
+ * Flash encryption
+ *
+ * Duplicated from Esp32p4SPIFlash_IsEncryptionEnabled() rather than called,
+ * because that one lives in flash and every caller here has the cache
+ * suspended.  The parity is folded by hand for the same reason -
+ * __builtin_parity() on a 3 bit field becomes an out-of-line libgcc call.
+ ****************************************************************************/
+static bool ESP32_MEM_REGION(IRAM) EncryptionEnabled(void) {
+    u32 nCryptCount = (ESP32_REG(EFUSE_RD_REPEAT_DATA1) & ESP32_REG_MASK(EFUSE, SPI_BOOT_CRYPT_CNT))
+                          >> ESP32_REG_SHIFT(EFUSE, SPI_BOOT_CRYPT_CNT);
+
+    /* Three bits wide, an odd number of them set means encryption is on */
+    return (((nCryptCount >> 2) ^ (nCryptCount >> 1) ^ nCryptCount) & 0x01) != 0;
+}
+
+/****************************************************************************
  * MMU access
  *
  * An entry is reached by writing its index to one register and then reading or
@@ -105,13 +121,18 @@ void ESP32_MEM_REGION(IRAM) Esp32p4SPIFlashCache_Mmap(Esp32p4SPIFlash_MapInfo * 
         }
     }
 
+    /* Reads through the cache come back as ciphertext unless the page is marked
+     * sensitive, so once encryption is burned in every mapping needs the bit. */
+    u32 nSensitive = EncryptionEnabled() ? ESP32_REG_VAL(MMU, SENSITIVE) : 0;
+
     u32 flashPage = ADDR2PAGE(pInfo->srcAddr);
     u32 pageCount = BYTES2PAGES(ADDR2OFF(pInfo->srcAddr) + pInfo->size);
     if (startPage + pageCount < kEsp32_RegisterMMU_ENTRY_COUNT) {
         for (u32 i = 0; i < pageCount; i++) {
             MMUWrite(startPage + i, ((flashPage + i) & ESP32_REG_MASK(MMU, ADDRESS)) |
                                     ESP32_REG_VAL(MMU, VALID) |
-                                    ESP32_REG_VAL(MMU, ACCESS_FLASH));
+                                    ESP32_REG_VAL(MMU, ACCESS_FLASH) |
+                                    nSensitive);
         }
 
         pInfo->startPage = startPage;
@@ -205,4 +226,6 @@ bool Esp32p4SPIFlashCache_BusAddressToByteOffset(void * pAddress, u32 * pByteOff
  *  LOG
  *******************************************************************************
  *  23-Sep-26   claudius    created, from esp32c3/Esp32c3SPIFlashCache.c
+ *  29-Sep-26   claudius    mark mapped pages sensitive when flash encryption
+ *                          is burned in
  */
