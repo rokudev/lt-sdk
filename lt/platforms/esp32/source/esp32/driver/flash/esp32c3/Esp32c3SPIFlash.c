@@ -484,7 +484,7 @@ bool Esp32c3SPIFlash_Read(u32 nSrcAddr, u8 * pBuffer, u32 nSize, bool bDecrypt) 
         return true;
     }
 
-    if (nSrcAddr + nSize > GetChip()->chipSize) {
+    if (nSrcAddr > GetChip()->chipSize || nSize > GetChip()->chipSize - nSrcAddr) {
         return false;
     }
 
