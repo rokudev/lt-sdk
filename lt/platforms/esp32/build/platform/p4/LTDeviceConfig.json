@@ -10,9 +10,10 @@
 // watchdog drivers are the P4 specific ones; the other variants' versions are
 // pinned to their own register sets and cannot serve this chip.
 //
-// There is no "memory" section here.  The part has 32MB of in-package PSRAM,
-// but this variant does not bring it up, so every heap region is on-chip SRAM
-// and none of them needs a name.
+// The "memory" section names the in-package PSRAM so that allocations can ask
+// for it by name.  Region 4 is where the BSP appends it, after the three SRAM
+// regions; if no PSRAM answers at boot the region simply does not exist, and
+// nothing else shifts.
 //
 // Esp32DriverGpio is not chip specific - it is the one GPIO driver for every
 // esp32 variant, and takes its pad count and IO_MUX details from
@@ -38,6 +39,7 @@
                { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32p4DriverWatchdog" } ] }
              ]
            },
+    "memory":{ "regions":[ { "name": "psram", "region": 4 } ] },
 
   "device": [ { "class": "LTDeviceGpio",
                   "api": "passthru",

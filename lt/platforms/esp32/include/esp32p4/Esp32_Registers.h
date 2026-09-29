@@ -32,7 +32,9 @@
  * (register/soc/reg_base.h, lp_wdt_reg.h, lp_system_reg.h, hp_system_reg.h,
  * lp_iomux_reg.h, timer_group_reg.h, systimer_reg.h, efuse_reg.h, uart_reg.h,
  * gpio_reg.h, io_mux_reg.h, interrupt_core0_reg.h, spi_mem_c_reg.h,
- * spi1_mem_c_reg.h, cache_reg.h, include/soc/ext_mem_defs.h and
+ * spi1_mem_c_reg.h, spi_mem_s_reg.h, spi1_mem_s_reg.h, iomux_mspi_pin_reg.h,
+ * hp_sys_clkrst_reg.h, lp_clkrst_reg.h, pmu_reg.h, lpperi_reg.h,
+ * i2c_ana_mst_reg.h, cache_reg.h, include/soc/ext_mem_defs.h and
  * include/soc/wdev_reg.h) rather than adapted from the esp32c3 numbering.
  */
 
@@ -56,6 +58,8 @@ enum Esp32_RegisterBase {
     kEsp32_RegisterBase_CACHE        = 0x3ff10000,
     kEsp32_RegisterBase_SPI0         = 0x5008c000,   /* FLASH_SPI0, the cache side */
     kEsp32_RegisterBase_SPI1         = 0x5008d000,   /* FLASH_SPI1, user transactions */
+    kEsp32_RegisterBase_PSRAM0       = 0x5008e000,   /* PSRAM_MSPI0, the cache and AXI side */
+    kEsp32_RegisterBase_PSRAM1       = 0x5008f000,   /* PSRAM_MSPI1, user transactions */
     kEsp32_RegisterBase_TIMG0        = 0x500c2000,
     kEsp32_RegisterBase_TIMG1        = 0x500c3000,
     kEsp32_RegisterBase_UART0        = 0x500ca000,
@@ -63,11 +67,16 @@ enum Esp32_RegisterBase {
     kEsp32_RegisterBase_INTERRUPT    = 0x500d6000,
     kEsp32_RegisterBase_GPIO         = 0x500e0000,
     kEsp32_RegisterBase_IO_MUX       = 0x500e1000,
+    kEsp32_RegisterBase_MSPI_IOMUX   = 0x500e1200,   /* the MSPI pads, not in IO_MUX's pad file */
     kEsp32_RegisterBase_SYSTIMER     = 0x500e2000,
     kEsp32_RegisterBase_HP_SYS       = 0x500e5000,
     kEsp32_RegisterBase_HP_CLKRST    = 0x500e6000,
     kEsp32_RegisterBase_LP_SYS       = 0x50110000,
+    kEsp32_RegisterBase_LP_CLKRST    = 0x50111000,
+    kEsp32_RegisterBase_PMU          = 0x50115000,
     kEsp32_RegisterBase_LP_WDT       = 0x50116000,
+    kEsp32_RegisterBase_LPPERI       = 0x50120000,
+    kEsp32_RegisterBase_I2C_ANA_MST  = 0x50124000,
     kEsp32_RegisterBase_LP_IO_MUX    = 0x5012b000,
     kEsp32_RegisterBase_EFUSE        = 0x5012d000,
     kEsp32_RegisterBase_CLIC         = 0x20800000,
@@ -258,9 +267,24 @@ enum Esp32_RegisterTIMG {
  * on before use.  Only I2C and LEDC default off.
  */
 enum Esp32_RegisterHP_CLKRST {
+    kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL0            = ESP32_REG_BASE(HP_CLKRST) + 0x14,
+    kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL0_PSRAM_SYS_CLK_EN_M = 0x01u << 31,
+
     kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL1            = ESP32_REG_BASE(HP_CLKRST) + 0x18,
     kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL2            = ESP32_REG_BASE(HP_CLKRST) + 0x1c,
     kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL3            = ESP32_REG_BASE(HP_CLKRST) + 0x20,
+    /*
+     * The PSRAM module clock: a source select, a gate on the PLL output and a
+     * gate on the core clock.  Source 0 is XTAL, 1 the MPLL, 2 the SPLL and 3
+     * the CPLL; only the MPLL can power the PSRAM die on this part.
+     */
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00          = ESP32_REG_BASE(HP_CLKRST) + 0x30,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_CLK_SRC_SEL_S = 12,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_CLK_SRC_SEL_M = 0x03 << 12,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_PLL_CLK_EN_M  = 0x01 << 14,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_CORE_CLK_EN_M = 0x01 << 15,
+    kEsp32_RegisterHP_CLKRST_PSRAM_CLK_SRC_MPLL_V     = 1,
+
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL10          = ESP32_REG_BASE(HP_CLKRST) + 0x40,
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL110         = ESP32_REG_BASE(HP_CLKRST) + 0x68,
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL111         = ESP32_REG_BASE(HP_CLKRST) + 0x6c,
@@ -268,6 +292,19 @@ enum Esp32_RegisterHP_CLKRST {
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL21          = ESP32_REG_BASE(HP_CLKRST) + 0x98,
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL22          = ESP32_REG_BASE(HP_CLKRST) + 0x9c,
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL26          = ESP32_REG_BASE(HP_CLKRST) + 0xac,
+    /*
+     * MPLL self calibration.  CAL_STOP is inverted: clearing it starts the
+     * calibration, and CAL_END reads back when the PLL has settled.
+     */
+    kEsp32_RegisterHP_CLKRST_ANA_PLL_CTRL0            = ESP32_REG_BASE(HP_CLKRST) + 0xbc,
+    kEsp32_RegisterHP_CLKRST_ANA_PLL_CTRL0_MSPI_CAL_END_M  = 0x01 << 8,
+    kEsp32_RegisterHP_CLKRST_ANA_PLL_CTRL0_MSPI_CAL_STOP_M = 0x01 << 9,
+
+    /* The PSRAM MSPI pair's resets, pulsed before its clock source is chosen */
+    kEsp32_RegisterHP_CLKRST_HP_RST_EN0               = ESP32_REG_BASE(HP_CLKRST) + 0xc0,
+    kEsp32_RegisterHP_CLKRST_HP_RST_EN0_DUAL_MSPI_AXI_M = 0x01 << 23,
+    kEsp32_RegisterHP_CLKRST_HP_RST_EN0_DUAL_MSPI_APB_M = 0x01 << 25,
+
     kEsp32_RegisterHP_CLKRST_HP_RST_EN1               = ESP32_REG_BASE(HP_CLKRST) + 0xc4,
 
     /*
@@ -399,6 +436,25 @@ enum Esp32_RegisterEFUSE {
      */
     kEsp32_RegisterEFUSE_RD_MAC_SYS_0                 = ESP32_REG_BASE(EFUSE) + 0x044,
     kEsp32_RegisterEFUSE_RD_MAC_SYS_1                 = ESP32_REG_BASE(EFUSE) + 0x048,
+
+    /*
+     * Per die trim for external LDO channel 2, the rail that feeds both the
+     * PSRAM and the MPLL.  Only valid once the eFuse block version is at least
+     * 1, and only when both fields are non-zero; the uncalibrated pair is
+     * exact at 1.8V anyway, so these are a refinement rather than a
+     * requirement.
+     */
+    kEsp32_RegisterEFUSE_RD_MAC_SYS_2                 = ESP32_REG_BASE(EFUSE) + 0x04c,
+    kEsp32_RegisterEFUSE_BLK_VERSION_MINOR_S          = 8,
+    kEsp32_RegisterEFUSE_BLK_VERSION_MINOR_M          = 0x07u << 8,
+    kEsp32_RegisterEFUSE_BLK_VERSION_MAJOR_S          = 11,
+    kEsp32_RegisterEFUSE_BLK_VERSION_MAJOR_M          = 0x03u << 11,
+    kEsp32_RegisterEFUSE_LDO_VO2_DREF_S               = 28,
+    kEsp32_RegisterEFUSE_LDO_VO2_DREF_M               = 0x0fu << 28,
+
+    kEsp32_RegisterEFUSE_RD_MAC_SYS_3                 = ESP32_REG_BASE(EFUSE) + 0x050,
+    kEsp32_RegisterEFUSE_LDO_VO2_MUL_S                = 3,
+    kEsp32_RegisterEFUSE_LDO_VO2_MUL_M                = 0x07u << 3,
 };
 
 /*
@@ -561,6 +617,221 @@ enum Esp32_RegisterMMU {
 };
 
 /*
+ * PSRAM MSPI
+ *
+ * Flash and PSRAM do not share a bus on this part - SOC_MEMSPI_FLASH_PSRAM_-
+ * INDEPENDENT is 1 - so the PSRAM has a controller pair of its own, PSRAM0 for
+ * the cache and AXI side and PSRAM1 for user transactions, and programming it
+ * does not disturb the running flash cache.  The two halves do not share a
+ * register layout either, which is why the offsets below are absolute and not
+ * an offset enum indexed by unit as kEsp32_RegisterSPIMEM_ is.
+ *
+ * Only what Esp32_PSRAM.c writes is reproduced.  Almost all of the cache phase
+ * configuration lands on PSRAM0 even for fields whose name says smem; the two
+ * DLL calibration bits are the trap, because the PSRAM1 one is also a PSRAM0
+ * register, just a different one.
+ */
+enum Esp32_RegisterPSRAM {
+    /* PSRAM0 - AXI request splicing */
+    kEsp32_RegisterPSRAM_CTRL1                        = ESP32_REG_BASE(PSRAM0) + 0x00c,
+    kEsp32_RegisterPSRAM_CTRL1_AR_SPLICE_EN_M         = 0x01 << 25,
+    kEsp32_RegisterPSRAM_CTRL1_AW_SPLICE_EN_M         = 0x01 << 26,
+
+    /* PSRAM0 - the AXI interface to the cache */
+    kEsp32_RegisterPSRAM_CACHE_FCTRL                  = ESP32_REG_BASE(PSRAM0) + 0x03c,
+    kEsp32_RegisterPSRAM_CACHE_FCTRL_AXI_REQ_EN_M     = 0x01 << 0,
+    kEsp32_RegisterPSRAM_CACHE_FCTRL_CLOSE_AXI_INF_EN_M = 0x01u << 31,
+
+    /* PSRAM0 - the cache phase description: command, address and dummy lengths */
+    kEsp32_RegisterPSRAM_CACHE_SCTRL                  = ESP32_REG_BASE(PSRAM0) + 0x040,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_USR_SADDR_4BYTE_M = 0x01 << 0,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_USR_WR_DUMMY_M   = 0x01 << 3,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_USR_RD_DUMMY_M   = 0x01 << 4,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_USR_RCMD_M       = 0x01 << 5,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_RDUMMY_CYCLELEN_S = 6,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_RDUMMY_CYCLELEN_M = 0x3f << 6,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_ADDR_BITLEN_S    = 14,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_ADDR_BITLEN_M    = 0x3f << 14,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_USR_WCMD_M       = 0x01 << 20,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_SRAM_OCT_M       = 0x01 << 21,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_WDUMMY_CYCLELEN_S = 22,
+    kEsp32_RegisterPSRAM_CACHE_SCTRL_WDUMMY_CYCLELEN_M = 0x3f << 22,
+
+    /* PSRAM0 - which phases go out on eight lines, and which on sixteen */
+    kEsp32_RegisterPSRAM_SRAM_CMD                     = ESP32_REG_BASE(PSRAM0) + 0x044,
+    kEsp32_RegisterPSRAM_SRAM_CMD_SDIN_OCT_M          = 0x01 << 18,
+    kEsp32_RegisterPSRAM_SRAM_CMD_SDOUT_OCT_M         = 0x01 << 19,
+    kEsp32_RegisterPSRAM_SRAM_CMD_SADDR_OCT_M         = 0x01 << 20,
+    kEsp32_RegisterPSRAM_SRAM_CMD_SCMD_OCT_M          = 0x01 << 21,
+    kEsp32_RegisterPSRAM_SRAM_CMD_SDUMMY_WOUT_M       = 0x01 << 23,
+    kEsp32_RegisterPSRAM_SRAM_CMD_SDIN_HEX_M          = 0x01 << 26,
+    kEsp32_RegisterPSRAM_SRAM_CMD_SDOUT_HEX_M         = 0x01 << 27,
+
+    /* PSRAM0 - the opcodes the cache issues */
+    kEsp32_RegisterPSRAM_SRAM_DRD_CMD                 = ESP32_REG_BASE(PSRAM0) + 0x048,
+    kEsp32_RegisterPSRAM_SRAM_DWR_CMD                 = ESP32_REG_BASE(PSRAM0) + 0x04c,
+    kEsp32_RegisterPSRAM_SRAM_CMD_VALUE_S             = 0,
+    kEsp32_RegisterPSRAM_SRAM_CMD_VALUE_M             = 0xffff << 0,
+    kEsp32_RegisterPSRAM_SRAM_CMD_BITLEN_S            = 28,
+    kEsp32_RegisterPSRAM_SRAM_CMD_BITLEN_M            = 0x0fu << 28,
+
+    /*
+     * PSRAM0 and PSRAM1 bus clock.  Both hold the same three counter fields at
+     * the same shifts and an equal-to-sysclk bit at 31; only the offset within
+     * the block differs, which is why they cannot share an offset enum.
+     */
+    kEsp32_RegisterPSRAM_SRAM_CLK                     = ESP32_REG_BASE(PSRAM0) + 0x050,
+    kEsp32_RegisterPSRAM_USER_CLK                     = ESP32_REG_BASE(PSRAM1) + 0x014,
+    kEsp32_RegisterPSRAM_CLK_CLKCNT_L_S               = 0,
+    kEsp32_RegisterPSRAM_CLK_CLKCNT_H_S               = 8,
+    kEsp32_RegisterPSRAM_CLK_CLKCNT_N_S               = 16,
+    kEsp32_RegisterPSRAM_CLK_EQU_SYSCLK_M             = 0x01u << 31,
+
+    /* PSRAM0 - double data rate, and the variable dummy the cache side uses */
+    kEsp32_RegisterPSRAM_SMEM_DDR                     = ESP32_REG_BASE(PSRAM0) + 0x0d8,
+    kEsp32_RegisterPSRAM_SMEM_DDR_EN_M                = 0x01 << 0,
+    kEsp32_RegisterPSRAM_SMEM_DDR_VAR_DUMMY_M         = 0x01 << 1,
+    kEsp32_RegisterPSRAM_SMEM_DDR_RDAT_SWP_M          = 0x01 << 2,
+    kEsp32_RegisterPSRAM_SMEM_DDR_WDAT_SWP_M          = 0x01 << 3,
+
+    /* PSRAM1 - the variable dummy the user side uses, its own register */
+    kEsp32_RegisterPSRAM_USER_DDR                     = ESP32_REG_BASE(PSRAM1) + 0x0d4,
+    kEsp32_RegisterPSRAM_USER_DDR_VAR_DUMMY_M         = 0x01 << 1,
+
+    /*
+     * PSRAM1 data buffer, W0 to W15.  A user transaction reads its write data
+     * from here and leaves its read data behind, so a read of a part that never
+     * answered returns whatever the last transaction left.
+     */
+    kEsp32_RegisterPSRAM_USER_W0                      = ESP32_REG_BASE(PSRAM1) + 0x058,
+    kEsp32_RegisterPSRAM_USER_NUM_DATA_WORDS          = 16,
+
+    /*
+     * The DLL calibration enables.  Both are PSRAM0 registers even though one
+     * of them is the PSRAM1 controller's: the mspi id selects which of these
+     * two words is written, not which block.
+     */
+    kEsp32_RegisterPSRAM_TIMING_CALI                  = ESP32_REG_BASE(PSRAM0) + 0x180,
+    kEsp32_RegisterPSRAM_SMEM_TIMING_CALI             = ESP32_REG_BASE(PSRAM0) + 0x190,
+    kEsp32_RegisterPSRAM_TIMING_CALI_DLL_M            = 0x01 << 5,
+
+    /* PSRAM0 - chip select setup, hold and inter-transaction delay */
+    kEsp32_RegisterPSRAM_SMEM_AC                      = ESP32_REG_BASE(PSRAM0) + 0x1a0,
+    kEsp32_RegisterPSRAM_SMEM_AC_CS_SETUP_M           = 0x01 << 0,
+    kEsp32_RegisterPSRAM_SMEM_AC_CS_HOLD_M            = 0x01 << 1,
+    kEsp32_RegisterPSRAM_SMEM_AC_CS_SETUP_TIME_S      = 2,
+    kEsp32_RegisterPSRAM_SMEM_AC_CS_SETUP_TIME_M      = 0x1f << 2,
+    kEsp32_RegisterPSRAM_SMEM_AC_CS_HOLD_TIME_S       = 7,
+    kEsp32_RegisterPSRAM_SMEM_AC_CS_HOLD_TIME_M       = 0x1f << 7,
+    kEsp32_RegisterPSRAM_SMEM_AC_CS_HOLD_DELAY_S      = 25,
+    kEsp32_RegisterPSRAM_SMEM_AC_CS_HOLD_DELAY_M      = 0x3f << 25,
+};
+
+/*
+ * MSPI pads
+ *
+ * The twenty PSRAM pads are not in IO_MUX's pad file and are not routable: the
+ * data sheet calls them dedicated, so there is no matrix select to write and no
+ * GPIO number to claim.  Their configuration words are twenty consecutive
+ * registers from PAD_FIRST to PAD_LAST, so drive strength is set by walking
+ * them rather than by naming each one.
+ *
+ * The two DQS pads are the exception in that walk.  They carry a phase select
+ * and a strobe power-down in the low bits, which pushes their drive field three
+ * bits higher than every other pad's.
+ */
+enum Esp32_RegisterMSPI_IOMUX {
+    kEsp32_RegisterMSPI_IOMUX_PAD_FIRST               = ESP32_REG_BASE(MSPI_IOMUX) + 0x1c,
+    kEsp32_RegisterMSPI_IOMUX_PAD_LAST                = ESP32_REG_BASE(MSPI_IOMUX) + 0x68,
+    kEsp32_RegisterMSPI_IOMUX_PAD_DQS0                = ESP32_REG_BASE(MSPI_IOMUX) + 0x3c,
+    kEsp32_RegisterMSPI_IOMUX_PAD_DQS1                = ESP32_REG_BASE(MSPI_IOMUX) + 0x68,
+
+    kEsp32_RegisterMSPI_IOMUX_PAD_DRV_S               = 12,
+    kEsp32_RegisterMSPI_IOMUX_PAD_DRV_M               = 0x03 << 12,
+    kEsp32_RegisterMSPI_IOMUX_DQS_DRV_S               = 15,
+    kEsp32_RegisterMSPI_IOMUX_DQS_DRV_M               = 0x03 << 15,
+    /* Power up the strobe receiver.  Without it a DDR read returns nothing. */
+    kEsp32_RegisterMSPI_IOMUX_DQS_XPD_M               = 0x01 << 0,
+};
+
+/*
+ * PMU, LP_CLKRST, LPPERI and I2C_ANA_MST
+ *
+ * These four blocks are here only because the PSRAM die is powered from the
+ * MPLL - SOC_PSRAM_VDD_POWER_MPLL is 1 - and the MPLL's divider lives behind
+ * the analog register I2C bus rather than in any memory mapped register.  PMU
+ * powers the MSPI PHY, LP_CLKRST gates the MPLL's output, and LPPERI clocks the
+ * I2C master that I2C_ANA_MST fronts.
+ *
+ * The ROM exports no regi2c entry point on this part, so the transaction is
+ * built by hand in Esp32_PSRAM.c: slave id, register address, a write flag and
+ * a data byte packed into one control word, with BUSY polled either side.
+ */
+enum Esp32_RegisterPMU {
+    kEsp32_RegisterPMU_RF_PWC                         = ESP32_REG_BASE(PMU) + 0x15c,
+    kEsp32_RegisterPMU_RF_PWC_MSPI_PHY_XPD_M          = 0x01 << 24,
+
+    /*
+     * External LDO channel 2 - the 1.8V rail that powers the PSRAM die and the
+     * MPLL together.  The analog design numbers the outputs VO1..VO4 from one
+     * while the PMU's register file is a six element array indexed from zero,
+     * and the two orders do not agree: channel 2 is array slot 3, whose pair
+     * of words the SoC header names PMU_EXT_LDO_P1_0P1A_REG (0x1d0) and
+     * PMU_EXT_LDO_P1_0P1A_ANA_REG (0x1d4).
+     *
+     * Output voltage is Vref * (1 + 0.25 * MUL), with Vref selected by DREF -
+     * 0.5V + 0.05V per step below 9, then 1V + 0.1V per step.  TIEH forces the
+     * 3.3V input rail through instead and must stay clear for 1.8V.
+     * FORCE_TIEH_SEL hands control to software rather than to the eFuse.
+     */
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2                  = ESP32_REG_BASE(PMU) + 0x1d0,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_FORCE_TIEH_SEL_M = 0x01 << 7,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_XPD_M            = 0x01 << 8,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_TIEH_SEL_S       = 9,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_TIEH_SEL_M       = 0x07 << 9,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_TIEH_M           = 0x01 << 14,
+
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_ANA              = ESP32_REG_BASE(PMU) + 0x1d4,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_ANA_MUL_S        = 23,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_ANA_MUL_M        = 0x07 << 23,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_ANA_EN_VDET_M    = 0x01 << 26,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_ANA_DREF_S       = 28,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN2_ANA_DREF_M       = 0x0fu << 28,
+};
+
+enum Esp32_RegisterLP_CLKRST {
+    kEsp32_RegisterLP_CLKRST_HP_CLK_CTRL              = ESP32_REG_BASE(LP_CLKRST) + 0x40,
+    kEsp32_RegisterLP_CLKRST_HP_CLK_CTRL_MPLL_EN_M    = 0x01 << 28,
+};
+
+enum Esp32_RegisterLPPERI {
+    kEsp32_RegisterLPPERI_CLK_EN                      = ESP32_REG_BASE(LPPERI) + 0x00,
+    kEsp32_RegisterLPPERI_CLK_EN_I2CMST_M             = 0x01 << 27,
+};
+
+enum Esp32_RegisterI2C_ANA_MST {
+    kEsp32_RegisterI2C_ANA_MST_I2C0_CTRL              = ESP32_REG_BASE(I2C_ANA_MST) + 0x00,
+    kEsp32_RegisterI2C_ANA_MST_I2C0_CTRL_SLAVE_ID_S   = 0,
+    kEsp32_RegisterI2C_ANA_MST_I2C0_CTRL_ADDR_S       = 8,
+    kEsp32_RegisterI2C_ANA_MST_I2C0_CTRL_DATA_S       = 16,
+    kEsp32_RegisterI2C_ANA_MST_I2C0_CTRL_DATA_M       = 0xff << 16,
+    kEsp32_RegisterI2C_ANA_MST_I2C0_CTRL_WR_M         = 0x01 << 24,
+    kEsp32_RegisterI2C_ANA_MST_I2C0_CTRL_BUSY_M       = 0x01 << 25,
+
+    /* Which analog block the master talks to.  One bit per block; MSPI is 0x63. */
+    kEsp32_RegisterI2C_ANA_MST_ANA_CONF1              = ESP32_REG_BASE(I2C_ANA_MST) + 0x1c,
+    kEsp32_RegisterI2C_ANA_MST_ANA_CONF2              = ESP32_REG_BASE(I2C_ANA_MST) + 0x20,
+    kEsp32_RegisterI2C_ANA_MST_ANA_CONF_SEL_M         = 0x00ffffff,
+    kEsp32_RegisterI2C_ANA_MST_ANA_CONF2_MSPI_SEL_M   = 0x01 << 9,
+
+    /* The master's own clock source.  The bootloader already selects 160MHz for
+     * its PLL work, but the bit is cheap to reassert and the app cannot see
+     * what the bootloader did. */
+    kEsp32_RegisterI2C_ANA_MST_CLK160M                = ESP32_REG_BASE(I2C_ANA_MST) + 0x34,
+    kEsp32_RegisterI2C_ANA_MST_CLK160M_SEL_M          = 0x01 << 0,
+};
+
+/*
  * CACHE
  *
  * Two levels: per core L1 instruction and data caches, and a shared L2.  The
@@ -719,6 +990,12 @@ enum Esp32_RegisterWDEV {
 #define ESP32_SPIMEM_REG(n, r)             (*(volatile u32 *)((ESP32_REG_BASE(SPI ## n)) + kEsp32_RegisterSPIMEM_ ## r))
 
 /*
+ * The MSPI pad configuration words are walked by address rather than named, so
+ * they are reached through a plain address rather than a register accessor.
+ */
+#define ESP32_MSPI_PAD_REG(a)              (*(volatile u32 *)(a))
+
+/*
  * Register accessors
  */
 #define ESP32_REG(r)                       (*(volatile u32 *)kEsp32_Register ## r)
@@ -735,4 +1012,6 @@ enum Esp32_RegisterWDEV {
  *  LOG
  *******************************************************************************
  *  22-Sep-26   claudius    created
+ *  28-Sep-26   claudius    added the PSRAM controller, MSPI pads, MPLL and
+ *                          external LDO registers the PSRAM bring-up needs
  */
