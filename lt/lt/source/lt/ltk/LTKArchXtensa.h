@@ -98,10 +98,14 @@ typedef struct {
 } LTKStackFrame;
 
 enum {
+    /* A running thread's SP sits LTK_ARCH_XTENSA_STACK_PTR_ADJ above its saved
+       frame, so the idle stack has to hold the frame plus the BSA and NFA that
+       the ABI keeps above it - budgeting for the BSA alone leaves the initial
+       SP past the top of the stack. */
 #ifdef LT_DEBUG
-    kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + LTK_ARCH_XTENSA_BSA_SIZE + 64 + 16,
+    kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + LTK_ARCH_XTENSA_BSA_SIZE + LTK_ARCH_XTENSA_NFA_SIZE + 64 + 16,
 #else
-    kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + LTK_ARCH_XTENSA_BSA_SIZE + 64,
+    kLTK_IdleThreadStackSize    = sizeof(LTKStackFrame) + LTK_ARCH_XTENSA_BSA_SIZE + LTK_ARCH_XTENSA_NFA_SIZE + 64,
 #endif
     /* Xtensa adds 32 bytes to the stack per function call when sliding register window is used.
        add the overhead of 8 function calls to the base default */
@@ -193,4 +197,6 @@ LT_INLINE void *GetStackPointer(void) {
  *  LOG
  ******************************************************************************
  *  29-Mar-22   tiberius    created
+ *  29-Sep-26   claudius    idle stack budget includes the NFA the ABI keeps
+ *                          above the frame
  */

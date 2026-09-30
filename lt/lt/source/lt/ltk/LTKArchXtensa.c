@@ -314,9 +314,12 @@ _LTKInitThread(LTKThread * pThread, u8 nPriority, void * pEntry, s32 nArg, u8 * 
     // Insert canary
     pStack -= sizeof(u32);
     *((u32 *)pStack) = kLTKStackFillValue;
-    // Make room for a BSA (supporting return to _LTKThreadExit)
-    //   and then align to 16 bytes per Xtensa ISA
-    pStack -= LTK_ARCH_XTENSA_BSA_SIZE;
+    // Make room for the BSA and NFA, then align to 16 bytes per Xtensa ISA.
+    //   Both sit below the running SP, which is the frame base plus
+    //   LTK_ARCH_XTENSA_STACK_PTR_ADJ - reserving only the BSA puts the initial
+    //   SP past the top of the stack, so a window overflow spills the caller's
+    //   a0-a3 over whatever follows the stack in memory.
+    pStack -= LTK_ARCH_XTENSA_BSA_SIZE + LTK_ARCH_XTENSA_NFA_SIZE;
     pStack = (u8 *)((u32)pStack & 0xfffffff0);
     // Fill out initial frame
     LTKStackFrame * pStackFrame = (LTKStackFrame *)pStack - 1;
@@ -423,4 +426,7 @@ _LTKFaultHandler(u32 nType, u32 * pThreadStackFrame, u32 * pInterruptStackFrame)
  ******************************************************************************
  *  29-Mar-22   tiberius    created
  *  18-Dec-22   augustus    added LTKThreadGetDefaultStackSize()
+ *  29-Sep-26   claudius    reserve the NFA as well as the BSA above a new
+ *                          thread's frame - the initial SP was one NFA past
+ *                          the top of the stack
  */
