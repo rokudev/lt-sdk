@@ -149,6 +149,13 @@ SECTIONS
        any .iram1 an Espressif ROM-facing source brings with it. */
     *(.iram1 .iram1.*)
 
+    /* Code the app places by name with LT_SECTION(".tcm_code.lt").  RAM is the
+       point of the name - it is the parts of the audio codec that must not stall
+       on a flash fetch - and leaving it an orphan puts it in flash at an
+       unaligned vaddr, which elf2image then pads with a segment of unaligned
+       length that the bootloader rejects. */
+    *(.tcm_code.lt*)
+
   } > sram_low_seg
 
   /* Marks the end of IRAM code segment */
@@ -215,6 +222,8 @@ SECTIONS
     *(.log_buf)
     . = ALIGN(4);
     *(.blechar_buf)
+    . = ALIGN(4);
+    *(.irwdb_buf)
     . = ALIGN(4);
 
     _data_end = ABSOLUTE(.);
@@ -442,4 +451,8 @@ ASSERT(((_heap4_end - ORIGIN(sram_high_seg)) <= LENGTH(sram_high_seg)),
  *  LOG
  *******************************************************************************
  *  23-Sep-26   claudius    created
+ *  29-Sep-26   claudius    give .tcm_code.lt and .irwdb_buf explicit homes -
+ *                          as orphans they land in the flash run at unaligned
+ *                          addresses and elf2image emits a pad the bootloader
+ *                          will not load
  */
