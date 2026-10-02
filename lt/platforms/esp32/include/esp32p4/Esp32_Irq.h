@@ -60,6 +60,7 @@ typedef u32 Esp32_ExternalIrq;
 enum Esp32_ExternalIrq {
     kEsp32_ExternalIrq_LPWatchdog        = 1,
     kEsp32_ExternalIrq_USBSerialJTAG     = 22,
+    kEsp32_ExternalIrq_GDMA              = 24,
     kEsp32_ExternalIrq_UART0             = 31,
     kEsp32_ExternalIrq_UART1             = 32,
     kEsp32_ExternalIrq_TG0_T0            = 46,
@@ -68,6 +69,8 @@ enum Esp32_ExternalIrq {
     kEsp32_ExternalIrq_SystemTimer1      = 54,
     kEsp32_ExternalIrq_SystemTimer2      = 55,
     kEsp32_ExternalIrq_GPIO              = 74,
+    kEsp32_ExternalIrq_DSIBridge         = 86,
+    kEsp32_ExternalIrq_DSIHost           = 88,
 };
 
 /*
@@ -78,6 +81,7 @@ enum Esp32_ExternalIrq {
  *   1   kernel tick, SYSTIMER comparator 0
  *   4   GPIO
  *   5   console UART0
+ *   6   MIPI-DSI host errors, bridge underrun and the GDMA channel feeding it
  */
 typedef u32 Esp32_IrqNumber;
 enum Esp32_IrqNumbers {
@@ -85,6 +89,7 @@ enum Esp32_IrqNumbers {
     kEsp32_IrqNumber_SystemTick          = 1,
     kEsp32_IrqNumber_GPIO                = 4,
     kEsp32_IrqNumber_UART0               = 5,
+    kEsp32_IrqNumber_MipiDsi             = 6,
     kEsp32_IrqNumber_Count               = 32,
 };
 
@@ -99,6 +104,7 @@ enum Esp32_IrqPriorities {
     kEsp32_IrqPriority_SystemTick        = 1,
     kEsp32_IrqPriority_GPIO              = 1,
     kEsp32_IrqPriority_UART0             = 1,
+    kEsp32_IrqPriority_MipiDsi           = 1,
     kEsp32_IrqPriority_Highest           = 7,
 };
 
@@ -249,4 +255,6 @@ void Esp32_DetachInterrupt(Esp32_ExternalIrq nExternalIrq, Esp32_IrqNumber nCpuI
  *  LOG
  *******************************************************************************
  *  22-Sep-26   claudius    created
+ *  30-Sep-26   dwoodward   added the MIPI-DSI sources and CPU line
+ *  30-Sep-26   dwoodward   added the GDMA source, which shares the MIPI-DSI line
  */

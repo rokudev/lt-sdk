@@ -56,10 +56,13 @@
 typedef u32 Esp32_RegisterBase;
 enum Esp32_RegisterBase {
     kEsp32_RegisterBase_CACHE        = 0x3ff10000,
+    kEsp32_RegisterBase_GDMA         = 0x5008a000,   /* the Synopsys DW-GDMA, the general purpose AXI DMA */
     kEsp32_RegisterBase_SPI0         = 0x5008c000,   /* FLASH_SPI0, the cache side */
     kEsp32_RegisterBase_SPI1         = 0x5008d000,   /* FLASH_SPI1, user transactions */
     kEsp32_RegisterBase_PSRAM0       = 0x5008e000,   /* PSRAM_MSPI0, the cache and AXI side */
     kEsp32_RegisterBase_PSRAM1       = 0x5008f000,   /* PSRAM_MSPI1, user transactions */
+    kEsp32_RegisterBase_DSI_HOST     = 0x500a0000,   /* the Synopsys DWC MIPI-DSI host */
+    kEsp32_RegisterBase_DSI_BRG      = 0x500a0800,   /* Espressif's DPI feeder in front of it */
     kEsp32_RegisterBase_TIMG0        = 0x500c2000,
     kEsp32_RegisterBase_TIMG1        = 0x500c3000,
     kEsp32_RegisterBase_UART0        = 0x500ca000,
@@ -267,10 +270,45 @@ enum Esp32_RegisterTIMG {
  * on before use.  Only I2C and LEDC default off.
  */
 enum Esp32_RegisterHP_CLKRST {
+    /*
+     * The root clock dividers.  CPU, MEM, SYS and APB each take a divisor less
+     * one; a write only lands when SOC_CLK_DIV_UPDATE is set, which the hardware
+     * clears when it has taken effect.
+     */
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL0           = ESP32_REG_BASE(HP_CLKRST) + 0x04,
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL0_SOC_CLK_DIV_UPDATE_M = 0x01 << 4,
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL0_CPU_CLK_DIV_NUM_S = 5,
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL0_CPU_CLK_DIV_NUM_M = 0xff << 5,
+
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL1           = ESP32_REG_BASE(HP_CLKRST) + 0x08,
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL1_MEM_CLK_DIV_NUM_S = 0,
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL1_MEM_CLK_DIV_NUM_M = 0xff << 0,
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL1_SYS_CLK_DIV_NUM_S = 24,
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL1_SYS_CLK_DIV_NUM_M = 0xffu << 24,
+
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL2           = ESP32_REG_BASE(HP_CLKRST) + 0x0c,
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL2_APB_CLK_DIV_NUM_S = 16,
+    kEsp32_RegisterHP_CLKRST_ROOT_CLK_CTRL2_APB_CLK_DIV_NUM_M = 0xff << 16,
+
+    /*
+     * PLL_F20M, the D-PHY's PLL reference: the SPLL divided by one more than
+     * REF_20M_CLK_DIV_NUM, which resets to 23 for 480/24 = 20MHz, behind a gate
+     * that resets enabled.
+     */
+    kEsp32_RegisterHP_CLKRST_REF_CLK_CTRL1            = ESP32_REG_BASE(HP_CLKRST) + 0x28,
+    kEsp32_RegisterHP_CLKRST_REF_CLK_CTRL1_REF_20M_CLK_DIV_NUM_S = 16,
+    kEsp32_RegisterHP_CLKRST_REF_CLK_CTRL1_REF_20M_CLK_DIV_NUM_M = 0xff << 16,
+
+    kEsp32_RegisterHP_CLKRST_REF_CLK_CTRL2            = ESP32_REG_BASE(HP_CLKRST) + 0x2c,
+    kEsp32_RegisterHP_CLKRST_REF_CLK_CTRL2_REF_20M_CLK_EN_M = 0x01 << 8,
+
     kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL0            = ESP32_REG_BASE(HP_CLKRST) + 0x14,
+    kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL0_GDMA_CPU_CLK_EN_M = 0x01 << 13,
     kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL0_PSRAM_SYS_CLK_EN_M = 0x01u << 31,
 
     kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL1            = ESP32_REG_BASE(HP_CLKRST) + 0x18,
+    kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL1_GDMA_SYS_CLK_EN_M = 0x01 << 5,
+    kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL1_DSI_SYS_CLK_EN_M = 0x01 << 12,
     kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL2            = ESP32_REG_BASE(HP_CLKRST) + 0x1c,
     kEsp32_RegisterHP_CLKRST_SOC_CLK_CTRL3            = ESP32_REG_BASE(HP_CLKRST) + 0x20,
     /*
@@ -284,6 +322,28 @@ enum Esp32_RegisterHP_CLKRST {
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_PLL_CLK_EN_M  = 0x01 << 14,
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_CORE_CLK_EN_M = 0x01 << 15,
     kEsp32_RegisterHP_CLKRST_PSRAM_CLK_SRC_MPLL_V     = 1,
+
+    /*
+     * The MIPI-DSI module clocks.  The D-PHY takes a low rate reference that
+     * its own PLL multiplies up to the lane bit rate: source 0 is PLL_F20M,
+     * 1 RC_FAST and 2 PLL_F25M.  The DPI clock is the pixel clock the bridge
+     * feeds the host with: source 0 is XTAL, 1 PLL_F240M and 2 PLL_F160M, and
+     * the divider field takes one less than the wanted divisor.
+     */
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL02          = ESP32_REG_BASE(HP_CLKRST) + 0x38,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL02_DSI_DPHY_CLK_SRC_SEL_S = 30,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL02_DSI_DPHY_CLK_SRC_SEL_M = 0x03u << 30,
+
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL03          = ESP32_REG_BASE(HP_CLKRST) + 0x3c,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL03_DSI_DPHY_CFG_CLK_EN_M   = 0x01 << 0,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL03_DSI_DPHY_PLL_REFCLK_EN_M = 0x01 << 1,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL03_DSI_DPICLK_SRC_SEL_S    = 5,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL03_DSI_DPICLK_SRC_SEL_M    = 0x03 << 5,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL03_DSI_DPICLK_EN_M         = 0x01 << 7,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL03_DSI_DPICLK_DIV_NUM_S    = 8,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL03_DSI_DPICLK_DIV_NUM_M    = 0xff << 8,
+    kEsp32_RegisterHP_CLKRST_DSI_DPHY_CLK_SRC_PLL_F20M_V  = 0,
+    kEsp32_RegisterHP_CLKRST_DSI_DPICLK_SRC_PLL_F160M_V   = 2,
 
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL10          = ESP32_REG_BASE(HP_CLKRST) + 0x40,
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL110         = ESP32_REG_BASE(HP_CLKRST) + 0x68,
@@ -300,10 +360,13 @@ enum Esp32_RegisterHP_CLKRST {
     kEsp32_RegisterHP_CLKRST_ANA_PLL_CTRL0_MSPI_CAL_END_M  = 0x01 << 8,
     kEsp32_RegisterHP_CLKRST_ANA_PLL_CTRL0_MSPI_CAL_STOP_M = 0x01 << 9,
 
-    /* The PSRAM MSPI pair's resets, pulsed before its clock source is chosen */
+    /* Peripheral resets, active high.  Cleared to release; the PSRAM MSPI pair's
+     * are pulsed before its clock source is chosen. */
     kEsp32_RegisterHP_CLKRST_HP_RST_EN0               = ESP32_REG_BASE(HP_CLKRST) + 0xc0,
+    kEsp32_RegisterHP_CLKRST_HP_RST_EN0_GDMA_M          = 0x01 << 21,
     kEsp32_RegisterHP_CLKRST_HP_RST_EN0_DUAL_MSPI_AXI_M = 0x01 << 23,
     kEsp32_RegisterHP_CLKRST_HP_RST_EN0_DUAL_MSPI_APB_M = 0x01 << 25,
+    kEsp32_RegisterHP_CLKRST_HP_RST_EN0_DSI_BRG_M       = 0x01 << 26,
 
     kEsp32_RegisterHP_CLKRST_HP_RST_EN1               = ESP32_REG_BASE(HP_CLKRST) + 0xc4,
 
@@ -449,11 +512,34 @@ enum Esp32_RegisterEFUSE {
     kEsp32_RegisterEFUSE_BLK_VERSION_MINOR_M          = 0x07u << 8,
     kEsp32_RegisterEFUSE_BLK_VERSION_MAJOR_S          = 11,
     kEsp32_RegisterEFUSE_BLK_VERSION_MAJOR_M          = 0x03u << 11,
+
+    /*
+     * The wafer revision, as major*100 + minor.  The major field is split: two
+     * low bits at [5:4] and the high bit at [23].  ECO2 parts read 1.0 (100);
+     * revisions from 3.0 on move several peripheral clock controls and are not
+     * register compatible with 0.x and 1.x.
+     */
+    kEsp32_RegisterEFUSE_WAFER_VERSION_MINOR_S        = 0,
+    kEsp32_RegisterEFUSE_WAFER_VERSION_MINOR_M        = 0x0fu << 0,
+    kEsp32_RegisterEFUSE_WAFER_VERSION_MAJOR_LO_S     = 4,
+    kEsp32_RegisterEFUSE_WAFER_VERSION_MAJOR_LO_M     = 0x03u << 4,
+    kEsp32_RegisterEFUSE_WAFER_VERSION_MAJOR_HI_S     = 23,
+    kEsp32_RegisterEFUSE_WAFER_VERSION_MAJOR_HI_M     = 0x01u << 23,
     kEsp32_RegisterEFUSE_LDO_VO2_DREF_S               = 28,
     kEsp32_RegisterEFUSE_LDO_VO2_DREF_M               = 0x0fu << 28,
 
     kEsp32_RegisterEFUSE_RD_MAC_SYS_3                 = ESP32_REG_BASE(EFUSE) + 0x050,
     kEsp32_RegisterEFUSE_LDO_VO2_MUL_S                = 3,
+
+    /* The VO3 trim, for the D-PHY rail.  K, VOS and C are signed corrections
+     * to the Vref*(1+0.25*MUL) ideal rather than a DREF/MUL pair, so unlike VO2
+     * above they describe the die rather than name a setting. */
+    kEsp32_RegisterEFUSE_LDO_VO3_K_S                  = 6,
+    kEsp32_RegisterEFUSE_LDO_VO3_K_M                  = 0xffu << 6,
+    kEsp32_RegisterEFUSE_LDO_VO3_VOS_S                = 14,
+    kEsp32_RegisterEFUSE_LDO_VO3_VOS_M                = 0x3fu << 14,
+    kEsp32_RegisterEFUSE_LDO_VO3_C_S                  = 20,
+    kEsp32_RegisterEFUSE_LDO_VO3_C_M                  = 0x3fu << 20,
     kEsp32_RegisterEFUSE_LDO_VO2_MUL_M                = 0x07u << 3,
 };
 
@@ -806,10 +892,34 @@ enum Esp32_RegisterPMU {
     kEsp32_RegisterPMU_EXT_LDO_CHAN2_ANA_EN_VDET_M    = 0x01 << 26,
     kEsp32_RegisterPMU_EXT_LDO_CHAN2_ANA_DREF_S       = 28,
     kEsp32_RegisterPMU_EXT_LDO_CHAN2_ANA_DREF_M       = 0x0fu << 28,
+
+    /* Channel 3 (LDO_VO3), PMU+0x1c0, supplies VDD_MIPI_DPHY.  Same field
+     * layout as channel 2 above.  The D-PHY analog section has no power until
+     * this rail is up, which reads as a PLL that never locks. */
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3                  = ESP32_REG_BASE(PMU) + 0x1c0,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_FORCE_TIEH_SEL_M = 0x01 << 7,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_XPD_M            = 0x01 << 8,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_TIEH_SEL_S       = 9,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_TIEH_SEL_M       = 0x07 << 9,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_TIEH_M           = 0x01 << 14,
+
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_ANA              = ESP32_REG_BASE(PMU) + 0x1c4,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_ANA_MUL_S        = 23,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_ANA_MUL_M        = 0x07 << 23,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_ANA_EN_VDET_M    = 0x01 << 26,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_ANA_DREF_S       = 28,
+    kEsp32_RegisterPMU_EXT_LDO_CHAN3_ANA_DREF_M       = 0x0fu << 28,
 };
 
 enum Esp32_RegisterLP_CLKRST {
     kEsp32_RegisterLP_CLKRST_HP_CLK_CTRL              = ESP32_REG_BASE(LP_CLKRST) + 0x40,
+    /* The HP root clock source: 0 the 40MHz crystal, 1 the CPLL, 2 the 20MHz
+     * internal oscillator. */
+    kEsp32_RegisterLP_CLKRST_HP_CLK_CTRL_ROOT_CLK_SRC_SEL_S = 0,
+    kEsp32_RegisterLP_CLKRST_HP_CLK_CTRL_ROOT_CLK_SRC_SEL_M = 0x03 << 0,
+    kEsp32_RegisterLP_CLKRST_HP_CLK_CTRL_ROOT_CLK_EN_M      = 0x01 << 2,
+    kEsp32_RegisterLP_CLKRST_HP_ROOT_CLK_SRC_XTAL_V         = 0,
+    kEsp32_RegisterLP_CLKRST_HP_ROOT_CLK_SRC_CPLL_V         = 1,
     kEsp32_RegisterLP_CLKRST_HP_CLK_CTRL_MPLL_EN_M    = 0x01 << 28,
 };
 
@@ -1024,4 +1134,12 @@ enum Esp32_RegisterWDEV {
  *  28-Sep-26   claudius    added the PSRAM controller, MSPI pads, MPLL and
  *                          external LDO registers the PSRAM bring-up needs
  *  29-Sep-26   claudius    added the flash MMU sensitive bit
+ *  30-Sep-26   dwoodward   added the MIPI-DSI host and bridge bases and the
+ *                          HP_CLKRST clock and reset bits the DSI driver needs
+ *  30-Sep-26   dwoodward   added the GDMA base and its clock and reset bits
+ *  01-Oct-26   dwoodward   added the EFUSE wafer version fields
+ *  01-Oct-26   dwoodward   added the root clock dividers, the PLL_F20M divider
+ *                          and gate, and the HP root clock source select
+ *  01-Oct-26   dwoodward   added the VO3 external LDO channel and its eFuse
+ *                          trim, the supply for the MIPI D-PHY
  */

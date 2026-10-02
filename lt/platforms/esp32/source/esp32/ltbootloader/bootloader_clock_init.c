@@ -22,7 +22,6 @@
 #endif
 #include "esp_rom_sys.h"
 #include "esp_rom_uart.h"
-#include "lt/LTTypes.h"
 
 __attribute__((weak)) void bootloader_clock_configure(void)
 {
@@ -44,6 +43,11 @@ __attribute__((weak)) void bootloader_clock_configure(void)
      * back. The esp32 arm still leaves the CPU at 80 MHz for its own BSP to raise.
      */
     int cpu_freq_mhz = CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ;
+#elif CONFIG_IDF_TARGET_ESP32P4
+    /* The only three rates reachable off this part's 360MHz CPLL are 360, 180
+     * and 90; soc.h names the bootloader stage's choice, and APB_CLK_FREQ below
+     * is derived from it. The BSP raises the part further. */
+    int cpu_freq_mhz = CPU_CLK_FREQ_MHZ_BTLD;
 #else
     /* Set CPU to 80MHz. Keep other clocks unmodified. */
     int cpu_freq_mhz = 80;
@@ -63,10 +67,17 @@ __attribute__((weak)) void bootloader_clock_configure(void)
 #endif
 
 #if CONFIG_IDF_TARGET_ESP32P4
-    /* Left on whatever clock the ROM selected.  Every frequency change on this
-       part goes through REGI2C, and its ROM exports no rom_i2c_* entries, so
-       rtc_clk_init() is not implemented here. */
-    LT_UNUSED(cpu_freq_mhz);
+    /* The p4 cannot share the arm below: RTC_CLK_CONFIG_DEFAULT() here reads a
+       CONFIG_XTAL_FREQ this tree does not define, and the slow/fast members are
+       named for clock sources rather than frequencies.  The vendored
+       rtc_clk_init() for this part reads only the two members set here. */
+    if (rtc_clk_apb_freq_get() < APB_CLK_FREQ || esp_rom_get_reset_reason(0) != RESET_REASON_CPU0_SW) {
+        rtc_clk_config_t clk_cfg = {
+            .xtal_freq = SOC_XTAL_FREQ_40M,
+            .cpu_freq_mhz = (uint32_t) cpu_freq_mhz,
+        };
+        rtc_clk_init(clk_cfg);
+    }
 #else
     if (rtc_clk_apb_freq_get() < APB_CLK_FREQ || esp_rom_get_reset_reason(0) != RESET_REASON_CPU0_SW) {
         rtc_clk_config_t clk_cfg = RTC_CLK_CONFIG_DEFAULT();

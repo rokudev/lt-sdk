@@ -71,6 +71,13 @@ enum Esp32_ClockPeripheralClocks {
     kEsp32_Clock_SYSTIMER               = ESP32_CLOCK_GATE(0x98, 30, 0xc4,  5),
     kEsp32_Clock_LEDC                   = ESP32_CLOCK_GATE(0x9c,  2, 0xc4, 29),
     kEsp32_Clock_IOMUX                  = ESP32_CLOCK_GATE(0xac,  9, 0xc4,  3),
+    /* The DSI gate is in SOC_CLK_CTRL1 rather than a PERI_CLK_CTRL register,
+     * and the reset it releases is the bridge's - the host has none of its own */
+    kEsp32_Clock_MIPI_DSI               = ESP32_CLOCK_GATE(0x18, 12, 0xc0, 26),
+    /* The GDMA takes two gates, and a descriptor holds one: this is the system
+     * clock and the reset.  The CPU clock, SOC_CLK_CTRL0 bit 13, has to be set
+     * separately by whoever enables this. */
+    kEsp32_Clock_GDMA                   = ESP32_CLOCK_GATE(0x18,  5, 0xc0, 21),
 };
 
 /*
@@ -131,4 +138,6 @@ Esp32_ClockDisablePeripheralClock(Esp32_ClockPeripheralClock clock) {
  *  LOG
  *******************************************************************************
  *  22-Sep-26   claudius    created
+ *  30-Sep-26   dwoodward   added the MIPI-DSI gate
+ *  30-Sep-26   dwoodward   added the GDMA gate
  */

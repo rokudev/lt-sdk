@@ -39,7 +39,8 @@
                { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32p4DriverWatchdog" } ] }
              ]
            },
-    "memory":{ "regions":[ { "name": "psram", "region": 4 } ] },
+
+  "memory": { "regions":[ { "name": "psram", "region": 4 } ] },
 
   "device": [ { "class": "LTDeviceGpio",
                   "api": "passthru",
@@ -78,6 +79,9 @@
                                        }
                            }
                          ]
+              },
+              { "class" : "LTDeviceMipiDsi",
+                "unit": [ {   "name": "DSI0", "driver": "Esp32p4DriverMipiDsi" } ]
               }
             ]
 }
