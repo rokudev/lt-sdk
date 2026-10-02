@@ -125,10 +125,10 @@ else ifeq ($(SOC_PLATFORM_NAME),esp32p4)
   # the files the esp32c3 list carries have no counterpart here:
   #
   # rtc_clk_init.c, rtc_init.c and rtc_time.c describe an RTC_CNTL block this
-  # part does not have.  Its clock and power management moved to the PMU, and
-  # every frequency change goes through REGI2C, which this ROM does not export -
-  # so the part stays on the clock the ROM left it on and rtc_clk.c here supplies
-  # only the two getters the shared sources read.
+  # part does not have - its clock and power management moved to the PMU.  The
+  # CPU bring-up that rtc_clk_init.c would have done is open coded in rtc_clk.c
+  # here, against the register headers rather than the v5.4 HAL, alongside the
+  # two getters the shared sources read.
   #
   # bootloader_efuse_esp32p4.c would be a hard coded chip revision, which is what
   # every other variant's copy amounts to.  Nothing shared calls
@@ -138,7 +138,7 @@ else ifeq ($(SOC_PLATFORM_NAME),esp32p4)
   # esp_rom_regi2c_esp32p4.c is the reverse - a file with no esp32c3 counterpart.
   # The other parts' ROMs export the analog bus accessors and regi2c_ctrl.h maps
   # straight onto them under BOOTLOADER_BUILD; this ROM exports none, so the
-  # register sequence is carried here.
+  # register sequence is carried here and the same macros map onto it instead.
   ESP32_BOOTLOADER_SOC_SOURCES := bootloader_esp32p4.c bootloader_flash_config_esp32p4.c  \
                                   flash_encryption_secure_features.c                      \
                                   rtc_clk.c secure_boot_secure_features.c                 \

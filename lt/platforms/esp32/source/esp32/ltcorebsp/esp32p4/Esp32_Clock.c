@@ -18,10 +18,10 @@
  * As on the other variants, nothing here changes a clock frequency; this file
  * only reports what the ROM and the second stage bootloader left running.
  *
- * On this part that is not a choice.  Every frequency change on the esp32p4
- * goes through REGI2C, and its ROM exports no rom_i2c_* entries at all, so the
- * sequence is not reachable without importing the v5.4 PMU and clk_tree HAL.
- * The vendored bootloader's rtc_clk.c says the same thing at more length.
+ * On this part the bootstrap is the bootloader's: its rtc_clk.c calibrates the
+ * CPLL and takes the CPU to CPU_CLK_FREQ_MHZ_BTLD.  Raising the part beyond
+ * that needs the efuse calibrated regulator bias this tree's efuse HAL does not
+ * expose, so it is left alone here.
  */
 
 /* Reports the CPU frequency in MHz.  PROVIDEd by
@@ -48,4 +48,5 @@ u32 ESP32_MEM_REGION(IRAM) Esp32_ClockInitialize(void) {
  *  LOG
  *******************************************************************************
  *  23-Sep-26   claudius    created
+ *  01-Oct-26   claudius    the bootloader now brings up the CPLL
  */
