@@ -175,7 +175,14 @@ typedef_LTENUM_SIZED(LTKey, u32) {
                                     #else
 
     kLTKey_LastButtonMarker,
-    kLTKey_LastButton               = kLTKey_LastButtonMarker - 1
+    kLTKey_LastButton               = kLTKey_LastButtonMarker - 1,
+
+    /* This is not a real button.  A keypad driver emits this once, immediately
+       after the first scan it performs, so a consumer can tell which keys were
+       already held when the driver started, from those pressed afterwards.  It
+       sits above the button range so LTKey_IsButton() rejects it and nothing
+       downstream mistakes it for a real key. */
+    kLTKey_EndOfInitialScan         = 0x40000000
 };
 
 LT_INLINE LTKey LTKey_KeyVal(u32 key)           { return (LTKey)(key & ~kLTKey_FlagsKeyDown); }
