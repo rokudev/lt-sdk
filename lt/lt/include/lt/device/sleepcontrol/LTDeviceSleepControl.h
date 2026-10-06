@@ -73,6 +73,8 @@ typedef enum LTDeviceSleepControl_WakeupSources {
     kLTDeviceSleepControl_WakeupSource_UARTRX = 1 << 1,
     kLTDeviceSleepControl_WakeupSource_Key  = 1 << 2,
     kLTDeviceSleepControl_WakeupSource_Captouch  = 1 << 3,
+    kLTDeviceSleepControl_WakeupSource_VoiceController = 1 << 4,
+    kLTDeviceSleepControl_WakeupSource_MuteSwitch = 1 << 5,
     /* (others, TBD) */
     kLTDeviceSleepControl_WakeupSource_Any = LT_U32_MAX,
 } LTDeviceSleepControl_WakeupSources;
