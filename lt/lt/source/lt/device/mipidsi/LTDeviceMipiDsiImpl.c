@@ -75,7 +75,10 @@ static void LTDeviceMipiDsiImpl_StaticErrorProc(LTDeviceMipiDsi_Error errors, vo
     LTAtomic_FetchOr(&dsi->accumulatedErrors, (u32)errors);
     /* only the transition from "nothing pending" to "something pending" needs a notification queued */
     if (0 == LTAtomic_FetchOr(&dsi->pendingErrors, (u32)errors)) {
-        dsi->iEvent->NotifyEventFromISR(&LTDeviceMipiDsiImpl_StaticNotifyErrorProc, pClientData);
+        if (!dsi->iEvent->NotifyEventFromISR(&LTDeviceMipiDsiImpl_StaticNotifyErrorProc, pClientData)) {
+            // Queueing failed; clear pending so a later error can retry scheduling.
+            LTAtomic_Store(&dsi->pendingErrors, 0);
+        }
     }
 }
 
