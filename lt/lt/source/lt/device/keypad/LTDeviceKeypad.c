@@ -85,7 +85,13 @@ static void LTDeviceKeypadImpl_KeyInputProc(u32 *pRawKeys, u32 nNumKeys, void *p
         dispatch:
         if (keypad->numKeysToDispatch && (! keypad->bDispatchInProgress)) {
             keypad->bDispatchInProgress = true;
-            keypad->iEvent->NotifyEventFromISR(&LTDeviceKeypadImpl_ISREventNotifyThreadProxy, keypad);
+            if (!keypad->iEvent->NotifyEventFromISR(&LTDeviceKeypadImpl_ISREventNotifyThreadProxy, keypad)) {
+                // If NotifyEventFromISR() fails, no task was actually queued.
+                // Leaving the flag true would cause future key inputs to believe
+                // dispatch is still pending, so they would never retry and all
+                // subsequent keys could be stranded.
+                keypad->bDispatchInProgress = false;
+            }
         }
         return;
     }
