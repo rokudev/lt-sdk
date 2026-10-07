@@ -55,6 +55,7 @@ typedef LTSystemShell_OutputCharsProc  OutputCharsProc;
 typedef_LTObjectImpl(LTSystemSchell, LTSystemSchellImpl) {
     LTMutex           *mutex;              /**< General mutex */
     LTOThread         *thread;             /**< Thread for running commands */
+    LTOThread         *sleepTimerThread;   /**< Input idle timer, independent of command execution */
     LTString           prompt;             /**< Prompt string to print */
     LTArray           *cmdTables;          /**< Tables of supported command procs */
     LTArray           *cmdQueue;           /**< Queue of commands to run (plus command history) */
@@ -63,6 +64,7 @@ typedef_LTObjectImpl(LTSystemSchell, LTSystemSchellImpl) {
     const char       **argv;               /**< Argument vector for current command */
     OutputCharsProc   *outputCharsProc;    /**< Proc for outputting chars to underlying interface */
     u32                disallowanceGrant;  /**< Disallowance grant for sleep mode */
+    LTTime             sleepHoldUntil;     /**< Kernel time until which recent input holds off sleep */
     u16                cmdBufLen;          /**< Current length of command buffer */
     u16                printBufSize;       /**< Current size of the print buffer */
     bool               isOutputEnabled;    /**< Is the output currently enabled (false for silence). */
@@ -234,9 +236,16 @@ static u32 ScrollCmdHistory(LTSystemSchellImpl *shell, char ch) {
 
 static void ReallowSleepMode(void *pClientData) {
     LTSystemSchellImpl *shell = (LTSystemSchellImpl *)pClientData;
+    shell->mutex->API->Lock(shell->mutex);
+    /* A keystroke may have restarted the timer while this callback waited for the mutex. */
+    if (LTTime_IsLessThan(s_core->GetKernelTime(), shell->sleepHoldUntil)) {
+        shell->mutex->API->Unlock(shell->mutex);
+        return;
+    }
     lt_reallowsleepmode(shell->disallowanceGrant);
     shell->disallowanceGrant = 0;
-    shell->thread->API->KillTimer(shell->thread, &ReallowSleepMode, shell);
+    shell->sleepTimerThread->API->KillTimer(shell->sleepTimerThread, &ReallowSleepMode, shell);
+    shell->mutex->API->Unlock(shell->mutex);
 }
 
 /*___________________________
@@ -247,13 +256,18 @@ static void LTSystemSchellImpl_PutInputChars(LTSystemSchellImpl *shell, const ch
     enum { kCursorUp = 1, kCursorDown = 2, kCursorLeft = 3 };
     if (!shell->isInteractive) return;
    /* Prevent the system from entering sleep mode during input operations. */
+    shell->mutex->API->Lock(shell->mutex);
+    /* Set before (re)arming the timer so the timer never fires ahead of this deadline. */
+    shell->sleepHoldUntil = LTTime_Add(s_core->GetKernelTime(), LTTime_Milliseconds(kLTSystemShell_KeyStrokeIdle_ms));
     if (shell->disallowanceGrant == 0) {
         shell->disallowanceGrant = lt_disallowsleepmode();
-        shell->thread->API->SetTimer(shell->thread, LTTime_Milliseconds(kLTSystemShell_KeyStrokeIdle_ms),
-                                        &ReallowSleepMode, NULL, shell);
+        shell->sleepTimerThread->API->SetTimer(shell->sleepTimerThread,
+                                               LTTime_Milliseconds(kLTSystemShell_KeyStrokeIdle_ms),
+                                               &ReallowSleepMode, NULL, shell);
     } else {
-        shell->thread->API->RestartTimer(shell->thread, &ReallowSleepMode, shell);
+        shell->sleepTimerThread->API->RestartTimer(shell->sleepTimerThread, &ReallowSleepMode, shell);
     }
+    shell->mutex->API->Unlock(shell->mutex);
     const char *out;
     LTArray    *cmdQueue = shell->cmdQueue;
     u16         cmdCount = cmdQueue->API->GetCount(cmdQueue);
@@ -483,6 +497,18 @@ static bool LTSystemSchellImpl_ConstructObject(LTSystemSchellImpl *shell) {
     shell->cmdTables->API->TuneAllocation(shell->cmdTables, 2, 2);
     LTSystemSchellImpl_SetOutputCharsProc(shell, NULL);
 
+    // A blocking command (e.g. ltrun) must not hold off sleep indefinitely.
+    shell->sleepTimerThread = lt_createobject(LTOThread);
+    if (!shell->sleepTimerThread) {
+        LTSystemSchellImpl_DestructObject(shell);
+        return false;
+    }
+    shell->sleepTimerThread->API->SetStackSize(shell->sleepTimerThread, 1024);
+    if (!shell->sleepTimerThread->API->StartSynchronous(shell->sleepTimerThread, "shell.sleep", NULL, NULL)) {
+        LTSystemSchellImpl_DestructObject(shell);
+        return false;
+    }
+
     shell->printBufSize    = kLTSystemShell_PrintBufferSize;
     shell->isOutputEnabled = true;
     return true;
@@ -497,6 +523,18 @@ static void DestroyPointerArray(LTArray *ptrArray) {
 }
 
 static void LTSystemSchellImpl_DestructObject(LTSystemSchellImpl *shell) {
+    if (shell->sleepTimerThread) {
+        if (shell->sleepTimerThread->API->GetThreadState(shell->sleepTimerThread) != kLTThread_ThreadState_NotStarted) {
+            shell->sleepTimerThread->API->Terminate(shell->sleepTimerThread);
+            shell->sleepTimerThread->API->WaitUntilFinished(shell->sleepTimerThread, LTTime_Infinite());
+        }
+        lt_destroyobject(shell->sleepTimerThread);
+        shell->sleepTimerThread = NULL;
+    }
+    if (shell->disallowanceGrant) {
+        lt_reallowsleepmode(shell->disallowanceGrant);
+        shell->disallowanceGrant = 0;
+    }
     ltstring_destroy(shell->printBuffer);
     shell->printBuffer = NULL;
     ltstring_destroy(shell->cmdBuffer);
