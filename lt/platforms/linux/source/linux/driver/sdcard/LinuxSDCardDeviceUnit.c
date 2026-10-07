@@ -71,6 +71,10 @@ enum {
 // (or in Init before polling is armed).
 static int s_mountAttempt = 0;
 
+// Whether the most recent still-mounted retry failure was a busy (EBUSY)
+// unmount specifically, vs. some other, non-transient failure.
+static bool s_mountBusy = false;
+
 // Shared between the poll thread and app thread; access protected by s_SDCardOpMutex
 static LTDeviceSDCard_SDCardInfo s_previousPollInfo;
 
@@ -328,6 +332,34 @@ static const char *FsckExitDesc(int status) {
 // clusters, free count mismatch). May block for several seconds on
 // large or corrupt cards.
 static bool Mount_Private(LTDeviceUnit hUnit) {
+    // A leftover mount (e.g. a retry woke up after a prior attempt's cleanup
+    // unmount failed to detach a rejected read-only mount) is either already
+    // writable -- done -- or needs unmounting so the code below can fsck and
+    // mount it fresh, same as an unmounted card.
+    if (GetSDCardInfo(hUnit).mounted) {
+        struct statvfs vfs;
+        if (statvfs(MOUNTPOINT, &vfs) == 0 && !(vfs.f_flag & ST_RDONLY)) {
+            // A previous attempt may have marked this mounted without notifying
+            // (it wasn't writable yet) -- tell listeners now that it is.
+            s_previousPollInfo.mounted = true;
+            NotifySDCardEvent(hUnit);
+            return true;
+        }
+        // A lazy MNT_DETACH would "succeed" while a recorder still holds the
+        // filesystem open, letting fsck below run on a live, still-written-to
+        // device -- require a clean unmount and defer recovery if busy.
+        if (umount2(MOUNTPOINT, 0) != 0 && errno != EINVAL) {
+            int unmountErrno = errno;
+            LTLOG_YELLOWALERT("mnt.fail.ro.stuck", "Still mounted, clean unmount failed: %s", strerror(unmountErrno));
+            // Keep the poll thread's bookkeeping truthful so it doesn't later see a
+            // false->true transition on this same stuck mount and announce it as
+            // usable without checking writability.
+            s_previousPollInfo.mounted = true;
+            s_mountBusy = (unmountErrno == EBUSY);
+            return false;
+        }
+    }
+
     struct stat st = {0};
     const char *devicePath = (stat(SDCARD_PART_PATH, &st) == -1) ? SDCARD_PATH : SDCARD_PART_PATH;
 
@@ -348,6 +380,9 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
             fsckType, devicePath, FsckExitDesc(fsckRet),
             WIFEXITED(fsckRet) ? WEXITSTATUS(fsckRet) : -1);
         LogMountFailureContext(devicePath);
+        // A still-mounted guard above may have left this stale from an earlier
+        // retry -- resync from ground truth instead of assuming.
+        s_previousPollInfo.mounted = GetSDCardInfo(hUnit).mounted;
         return false;
     }
     LTLOG_SERVER("mnt.fsck.ok", "fsck.%s on %s (exit %d)", fsckType, devicePath, WEXITSTATUS(fsckRet));
@@ -357,6 +392,8 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
         LTLOG_YELLOWALERT("mnt.fail", "Failed to mount %s: %s", devicePath,
             s_mountOutput[0] ? s_mountOutput : "unknown");
         LogMountFailureContext(devicePath);
+        // Same as above: resync instead of trusting a possibly-stale value.
+        s_previousPollInfo.mounted = GetSDCardInfo(hUnit).mounted;
         return false;
     }
 
@@ -376,9 +413,21 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
             LTLOG_YELLOWALERT("mnt.fail.ro", "Mounted %s read-only, treating as failure", devicePath);
         }
         LogMountFailureContext(devicePath);
-        // EINVAL means it's already unmounted, which is fine.
-        if (umount2(MOUNTPOINT, MNT_DETACH) != 0 && errno != EINVAL) {
-            LTLOG_YELLOWALERT("mnt.fail.ro.umount", "Failed to unmount %s: %s", devicePath, strerror(errno));
+        // A lazy MNT_DETACH would hide a still-busy mount from the next
+        // retry's already-mounted guard above, letting it fsck a live
+        // filesystem -- a clean unmount leaves it mounted for that guard to
+        // retry if busy. EINVAL means it's already unmounted.
+        if (umount2(MOUNTPOINT, 0) != 0 && errno != EINVAL) {
+            int unmountErrno = errno;
+            LTLOG_YELLOWALERT("mnt.fail.ro.umount", "Failed to unmount %s: %s", devicePath, strerror(unmountErrno));
+            // Same as above: don't let the poll thread see this as a fresh mount
+            // transition and announce it as usable without a writability check.
+            s_previousPollInfo.mounted = true;
+            s_mountBusy = (unmountErrno == EBUSY);
+        } else {
+            // Unmount succeeded this time -- resync instead of leaving a stale
+            // true from an earlier retry's busy failure.
+            s_previousPollInfo.mounted = GetSDCardInfo(hUnit).mounted;
         }
         return false;
     }
@@ -565,11 +614,22 @@ static void MountRetryTimerProc(void *pClientData) {
     // check and Mount_Private(), which would fsck a live filesystem.
     s_SDCardOpMutex->API->Lock(s_SDCardOpMutex);
     LTDeviceSDCard_SDCardInfo info = GetSDCardInfo(DEFAULT_SDCARD_DEVICE_LTHANDLE);
-    bool done = !info.present || info.mounted || Mount_Private(DEFAULT_SDCARD_DEVICE_LTHANDLE);
+    // Mount_Private() now safely reports (and re-checks) an already-mounted
+    // card's real writability itself, instead of this being assumed healthy
+    // just because something is mounted at MOUNTPOINT.
+    bool done = !info.present || Mount_Private(DEFAULT_SDCARD_DEVICE_LTHANDLE);
+    // A still-mounted card after a failed attempt means something else has it
+    // busy, not that it's actually broken -- don't burn the attempt budget on
+    // a transient condition that will clear on its own. Only a confirmed EBUSY
+    // unmount counts as busy; other failures (e.g. EPERM) are real and still
+    // count against the limit.
+    bool busy = !done && s_mountBusy && GetSDCardInfo(DEFAULT_SDCARD_DEVICE_LTHANDLE).mounted;
     s_SDCardOpMutex->API->Unlock(s_SDCardOpMutex);
 
     if (done) {
         StopMountRetry();
+    } else if (busy) {
+        s_mountAttempt--;
     } else if (s_mountAttempt >= kMaxMountAttempts) {
         // SetTimer() repeats until killed, so stop it once retries are exhausted.
         LTLOG_YELLOWALERT("mnt.give_up", "Giving up after %d attempts", kMaxMountAttempts);
