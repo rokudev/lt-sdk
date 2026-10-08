@@ -332,8 +332,6 @@ enum {
     WiFiConfig_StartTimeoutSeconds = 2,
     WiFiConfig_CheckDriverSeconds = 2,
     WiFiConfig_ScanTimeoutSeconds = 15,
-    // Full-band scans plus a vendor authentication retry can exceed nine seconds.
-    WiFiConfig_JoinTimeoutSeconds = 12,
     WiFiConfig_LinkCheckSeconds = 4,
 };
 
@@ -822,6 +820,7 @@ static void WSM_DoNext(WSM_Input *input) {
     static LTTime expired_time;
     static LTTime rejoin_time;
     static LTTime link_check_time;
+    static LTTime join_deadline;  // join start + JoinMaxSeconds, the deadline once the join progresses
     static LTTime metrics_check_time = LTTimeInitializer_Seconds(METRICS_SAMPLING_PERIOD);
     LTTime now;
 
@@ -1134,7 +1133,8 @@ static void WSM_DoNext(WSM_Input *input) {
             if(!WSM_DisallowanceGrant) {
                 WSM_DisallowanceGrant = lt_disallowsleepmode();
             }
-            SET_TIMEOUT(WiFiConfig_JoinTimeoutSeconds);
+            SET_TIMEOUT(kLTDeviceWiFi_JoinTimeoutSeconds);
+            join_deadline = LTTime_Add(pCore->GetKernelTime(), LTTime_Seconds(kLTDeviceWiFi_JoinMaxSeconds));
             if (WSM_RejoinEnabled) WSM_JoinSpec.options |= kLTWiFi_JoinOption_Retry;
             LTAtomic_Store(&WSM_JoinStatus, kLTWiFi_JoinStatus_Starting);
             LTAtomic_Store(&WSM_LastJoinStatus, kLTWiFi_JoinStatus_Starting);
@@ -1147,9 +1147,13 @@ static void WSM_DoNext(WSM_Input *input) {
             /* Pull the driver's latest status before checking the timeout --
              * otherwise a join that just succeeded this same tick reads as
              * stale (still Authenticating) and a timeout at the same poll
-             * clobbers it into Failed before the callback below can land. */
+             * clobbers it into Failed before the callback below can land.
+             * Progress reported this tick likewise moves the deadline first. */
             DRV_WiFi->JoinCheck(DRV_Unit);
-            if (IS_TIMEOUT && LTAtomic_Load(&WSM_JoinStatus) < kLTWiFi_JoinStatus_Failed) {
+            u32 status = LTAtomic_Load(&WSM_JoinStatus);
+            if (status >= kLTWiFi_JoinStatus_Associating && status < kLTWiFi_JoinStatus_Failed)
+                expired_time = join_deadline;
+            if (IS_TIMEOUT && status < kLTWiFi_JoinStatus_Failed) {
                 LTAtomic_Store(&WSM_JoinStatus, kLTWiFi_JoinStatus_Failed);
             }
             // Sequence through the connection states:

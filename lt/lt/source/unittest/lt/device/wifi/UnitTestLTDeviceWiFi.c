@@ -50,7 +50,7 @@
 
 #define DEFAULT_AP_SSID   "mywifiap"  // override with AP_SSID test parameter
 #define DEFAULT_AP_PASS   "pass1234"  // override with AP_PASS test parameter
-#define MAX_JOIN_TIME     20          // max time for AP to connect (timeout)
+#define MAX_JOIN_TIME     (kLTDeviceWiFi_JoinMaxSeconds + 8)  // device join cap plus callback margin
 #define JOIN_SETTLE_TIME  3           // seconds to delay after a join to "let it settle"
 
 static struct Statics {

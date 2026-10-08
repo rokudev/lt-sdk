@@ -49,7 +49,7 @@
 #define HOST_SCAN_TIMEOUT_SEC    15
 #define PBC_CREDENTIAL_GRACE_SEC 10
 #define RECONNECT_MAX_ATTEMPTS   5
-#define RECONNECT_WAIT_SEC       12
+#define RECONNECT_WAIT_SEC       kLTDeviceWiFi_JoinMaxSeconds
 #define RECONNECT_SETTLE_SEC     1
 #define SUITE_TEARDOWN_MARGIN_SEC 10
 #define PBC_SUITE_MARGIN_SEC     (WIFI_UP_TIMEOUT_SEC + HOST_SCAN_TIMEOUT_SEC + \
@@ -434,8 +434,8 @@ static void TestConnectWithCred(Tilt *tilt) {
                   attempt, RECONNECT_MAX_ATTEMPTS, s_connectAp.ssid);
         s_pWiFi->JoinAp(&s_connectAp, NULL, NULL);
 
-        /* Every attempt gets a full 13 s window so an asynchronously queued
-         * join can pass its 12 s deadline before the next retry or assertion. */
+        /* Every attempt waits out the device-layer join cap plus a settle
+         * second, so a queued join has ended before the next retry. */
         for (int t = 0; t < RECONNECT_WAIT_SEC && !s_connected; ++t) {
             s_pCore->GetCurrentThreadObject()->API->Sleep(LTTime_Seconds(1));
             if (s_pWiFi->IsConnected()) {
