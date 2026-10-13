@@ -439,7 +439,7 @@ static void LTDeviceAuthenticationImpl_LibFini(void) {
  * Note that a missing driver is not fatal, since the default implementation
  * will be used instead                                                       */
 static bool LTDeviceAuthenticationImpl_LibInit(void) {
-    LTLOG("init.begin", NULL);
+    LTLOG_DEBUG("init.begin", NULL);
 
     // Pick up this platform's development key chip ID limit, if it overrides
     // the default.  Absent (or zero) leaves the default in place.
@@ -525,7 +525,7 @@ static bool LTDeviceAuthenticationImpl_LibInit(void) {
     }
 #endif
 
-    LTLOG("init.end", "driver:%d", (s_pDriver != NULL));
+    LTLOG_DEBUG("init.end", "driver:%d", (s_pDriver != NULL));
 
     return true;
 }

@@ -96,7 +96,7 @@ static void LTDeviceCapTouchImpl_DestructObject(LTDeviceCapTouchImpl *capTouch) 
 static bool LTDeviceCapTouchImpl_ConstructObject(LTDeviceCapTouchImpl *capTouch) {
     do
     {
-        LTLOG("construct.start", NULL);
+        LTLOG_DEBUG("construct.start", NULL);
         if (NULL == (capTouch->driver = lt_createdriverobject_fordevice(LTDriverCapTouch, capTouch))) {
             LTLOG_REDALERT("construct.fail.driver", "Failed to create driver object");
             break;
@@ -107,7 +107,7 @@ static bool LTDeviceCapTouchImpl_ConstructObject(LTDeviceCapTouchImpl *capTouch)
         }
         capTouch->iEvent = lt_gethandleinterface(ILTEvent, capTouch->hEvent);
         capTouch->iThread = lt_getlibraryinterface(ILTThread, LT_GetCore());
-        LTLOG("construct.success", NULL);
+        LTLOG_DEBUG("construct.success", NULL);
         return true;
     } while (false);
     lt_destroyobject(capTouch->driver);
