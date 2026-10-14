@@ -539,6 +539,10 @@ static bool WSM_InitThread(void) {
 
 static void WSM_ExitThread(void) {
     LT_GetCore()->NoSleepAction(&WSM_SleepActionEventProc);
+    if (WSM_DisallowanceGrant) {
+        lt_reallowsleepmode(WSM_DisallowanceGrant);
+        WSM_DisallowanceGrant = 0;
+    }
     LTThread hThread = iThread->GetCurrentThread();
     iThread->KillTimer(hThread, WSM_GotTimer, LTHANDLE_TO_VOIDPTR(hThread));
     lt_destroyobject(WSM_ScanMutex);
@@ -1286,6 +1290,11 @@ static void WSM_DoNext(WSM_Input *input) {
             LTAtomic_Store(&WSM_LinkConnected, 0);
             // Metrics.disconnects++;  // intentional disconnects should not be counted
             WSM_RejoinCount = 0;
+            // No rejoin follows. Requests only run from Idle, so no scan holds the grant here.
+            if (WSM_DisallowanceGrant) {
+                lt_reallowsleepmode(WSM_DisallowanceGrant);
+                WSM_DisallowanceGrant = 0;
+            }
             DRV_WiFi->Disconnect(DRV_Unit);
             // Always notify, even if not connected (allows user-side state changes)
             iEvent->NotifyEvent(WSM_StatEvent, kLTDeviceWiFi_Status_Disconnected, DRV_Unit);
