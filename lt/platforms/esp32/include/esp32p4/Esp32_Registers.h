@@ -56,7 +56,7 @@
 typedef u32 Esp32_RegisterBase;
 enum Esp32_RegisterBase {
     kEsp32_RegisterBase_CACHE        = 0x3ff10000,
-    kEsp32_RegisterBase_GDMA         = 0x5008a000,   /* the Synopsys DW-GDMA, the general purpose AXI DMA */
+    kEsp32_RegisterBase_GDMA         = 0x50081000,   /* Synopsys DW-GDMA used by the MIPI bridges */
     kEsp32_RegisterBase_SPI0         = 0x5008c000,   /* FLASH_SPI0, the cache side */
     kEsp32_RegisterBase_SPI1         = 0x5008d000,   /* FLASH_SPI1, user transactions */
     kEsp32_RegisterBase_PSRAM0       = 0x5008e000,   /* PSRAM_MSPI0, the cache and AXI side */

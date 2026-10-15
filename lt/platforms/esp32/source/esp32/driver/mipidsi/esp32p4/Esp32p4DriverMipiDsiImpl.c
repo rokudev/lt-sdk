@@ -50,6 +50,7 @@
   Esp32p4DriverMipiDsi #defines  */
 DEFINE_LTLOG_SECTION("esp32p4.drv.mipidsi");
 #define DO_DLOG 0
+#define TEST_DSI_HOST_VPG 0
     #if DO_DLOG
         #define DLOG LTLOG
     #else
@@ -66,6 +67,7 @@ void esp_rom_delay_us(u32 nMicroseconds);
    Both the L1 data cache and the L2 have to be named: the L2 is what backs
    PSRAM, and the L1 sits in front of it. */
 int Cache_WriteBack_Addr(u32 nMap, u32 nAddr, u32 nSize);
+int Cache_Invalidate_Addr(u32 nMap, u32 nAddr, u32 nSize);
 
 #define CACHE_MAP_L1_DCACHE 0x10
 #define CACHE_MAP_L2_CACHE  0x20
@@ -128,11 +130,13 @@ enum Esp32p4DriverMipiDsiConstants {
      */
     kPixelDmaChannel                = 0,
 
-    /* The AXI burst length both sides of the pixel transfer use */
-    kPixelDmaBurstLength            = 16,
+    /* AXI ARLEN/AWLEN encode the number of beats minus one. */
+    kPixelDmaBurstLength            = 15,
 
-    /* One less than the outstanding AXI requests a channel may have in flight */
-    kPixelDmaOutstandingLimit       = 15,
+    /* One less than the outstanding AXI requests a channel may have in flight.
+       These match Espressif's qualified DSI path: five reads and two writes. */
+    kPixelDmaSourceOutstandingLimit = 4,
+    kPixelDmaDestOutstandingLimit   = 1,
 
     /*
      * The bridge's pixel FIFO is 1024 words deep.  Asking the DMA for more when
@@ -233,7 +237,7 @@ typedef_LTObjectImpl(LTDriverMipiDsi, Esp32p4DriverMipiDsi) {
     LTDriverMipiDsi_ErrorProc    *pErrorProc;
     void                         *pErrorClientData;
     u32                           nLaneRateMbps;      /* what the PLL actually produced */
-    u32                           nDpiClockMHz;       /* what the DPI divider actually produced */
+    u32                           nDpiClockDivider;   /* PLL_F160M divided by this */
     bool                          bConfigured;
     bool                          bPoweredOn;
     bool                          bVideoActive;
@@ -251,11 +255,42 @@ typedef_LTObjectImpl(LTDriverMipiDsi, Esp32p4DriverMipiDsi) {
  * and LTCore's allocator has no aligned entry point.  There is one DSI host on
  * this part, so there is never a second driver instance wanting its own.
  */
-static Esp32_GdmaDescriptor LT_ALIGNED(kEsp32_Gdma_DescriptorAlignment) s_pixelDescriptor;
+static Esp32_GdmaDescriptor LT_ALIGNED(kCacheLineBytes) s_pixelDescriptors[2];
+static volatile u32 s_nActivePixelDescriptor;
+static volatile u32 s_nQueuedPixelDescriptor = 0xffffffffu;
+
+static Esp32_GdmaDescriptor * LT_ISR_SAFE Esp32p4DriverMipiDsi_PixelDescriptor(u32 nIndex) {
+    return &s_pixelDescriptors[nIndex & 1u];
+}
+
+static void LT_ISR_SAFE Esp32p4DriverMipiDsi_FlushPixelDescriptor(
+    Esp32_GdmaDescriptor *pDescriptor) {
+    Cache_WriteBack_Addr(CACHE_MAP_L1_DCACHE, (u32)(LT_SIZE)pDescriptor,
+                         kCacheLineBytes);
+}
 
 /* The sole instance, and how the ISR reaches it - an LT interrupt vector takes
    no argument, so there is nowhere else for it to come from. */
 static Esp32p4DriverMipiDsi *s_driverMipiDsi;
+
+/* Latched diagnostics.  The live interrupt registers are clear-on-read, so a
+   register dump after the event would otherwise hide the evidence. */
+static volatile u32 s_nIsrCount;
+static volatile u32 s_nDmaIsrCount;
+static volatile u32 s_nDmaCompletionCount;
+static volatile u32 s_nDmaRearmCount;
+static volatile u32 s_nBridgeUnderrunCount;
+static volatile u32 s_nLastHostStatus0;
+static volatile u32 s_nLastHostStatus1;
+static volatile u32 s_nLastBridgeStatus;
+static volatile u32 s_nLastDmaStatus;
+
+/* Cache-maintenance result and samples taken on both sides of an invalidate.
+   The post-invalidate values have necessarily been fetched back from memory. */
+static u32 s_nCacheWritebackResult;
+static u32 s_nCacheInvalidateResult;
+static u32 s_frameBufferSamplesBefore[3];
+static u32 s_frameBufferSamplesAfter[3];
 
 /*________________________________________________
   Esp32p4DriverMipiDsi forward declarations     */
@@ -425,9 +460,13 @@ static void Esp32p4DriverMipiDsi_SetTiming(Esp32p4DriverMipiDsi *dsi) {
                          + pTiming->nVerticalBackPorch + pTiming->nVerticalFrontPorch;
 
     /* Multiplied before dividing: the ratio is well under one for any real
-       panel and would round to zero the other way round. */
-    u32 nLaneByteRate = dsi->nLaneRateMbps / 8;
-    #define SCALE_TO_LANE_BYTES(pixels)  ((u32)(((u64)(pixels) * nLaneByteRate) / dsi->nDpiClockMHz))
+       panel and would round to zero the other way round.  Rounded to nearest,
+       so the host's line is never a fraction of a byte clock shorter than the
+       bridge's. */
+    #define SCALE_TO_LANE_BYTES(pixels) \
+        ((u32)(((u64)(pixels) * dsi->nLaneRateMbps * dsi->nDpiClockDivider \
+                + 4 * kDpiSourceClockMHz) \
+               / (8 * kDpiSourceClockMHz)))
 
     ESP32_REG(DSI_HOST_VID_HSA_TIME)   = SCALE_TO_LANE_BYTES(pTiming->nHorizontalSyncWidth);
     ESP32_REG(DSI_HOST_VID_HBP_TIME)   = SCALE_TO_LANE_BYTES(pTiming->nHorizontalBackPorch);
@@ -555,9 +594,39 @@ static u32 LT_ISR_SAFE Esp32p4DriverMipiDsi_TranslateErrors(u32 nStatus0, u32 nS
 }
 
 /*
- * The DSI interrupt, shared by the host's error line and the bridge's underrun
- * line - both blocks are read whichever one woke it.  Returns zero: only the
- * tick line advances the clock.
+ * Hardware clears LLI_VALID when it consumes the sole descriptor and disables
+ * the channel when that descriptor is marked LAST.  Put both back after every
+ * frame so the panel continues to refresh from the same framebuffer.
+ *
+ * The transfer-done ISR uses this smaller operation rather than rebuilding the
+ * descriptor: every field except the two marker bits survives consumption.
+ */
+static void LT_ISR_SAFE Esp32p4DriverMipiDsi_RearmPixelDma(void) {
+    u32 nDescriptor = s_nQueuedPixelDescriptor;
+    if (nDescriptor > 1) nDescriptor = s_nActivePixelDescriptor;
+    s_nQueuedPixelDescriptor = 0xffffffffu;
+    s_nActivePixelDescriptor = nDescriptor;
+
+    Esp32_GdmaDescriptor *pDescriptor =
+        Esp32p4DriverMipiDsi_PixelDescriptor(nDescriptor);
+    Cache_Invalidate_Addr(CACHE_MAP_L1_DCACHE,
+                          (u32)(LT_SIZE)pDescriptor, kCacheLineBytes);
+    pDescriptor->nControlHigh |= ESP32_REG_MASK(GDMA_CH_CTL1, LLI_LAST)
+                               | ESP32_REG_MASK(GDMA_CH_CTL1, LLI_VALID);
+    Esp32p4DriverMipiDsi_FlushPixelDescriptor(pDescriptor);
+
+    ESP32_GDMA_CH_REG(kPixelDmaChannel, LLP0) =
+          (((u32)(LT_SIZE)pDescriptor >> 6) << kEsp32_RegisterGDMA_CH_LLP0_LOC_S)
+        | kEsp32_GdmaMaster_Memory;
+    ESP32_GDMA_CH_REG(kPixelDmaChannel, LLP1) = 0;
+    ESP32_REG(GDMA_CHEN0) = ESP32_GDMA_CHEN_ENABLE(kPixelDmaChannel);
+    ++s_nDmaRearmCount;
+}
+
+/*
+ * The DSI interrupt, shared by the host's error line, the bridge's underrun
+ * line and the GDMA channel feeding the bridge.  Every source is read whichever
+ * one woke it.  Returns zero: only the tick line advances the clock.
  */
 static u32 LT_ISR_SAFE Esp32p4DriverMipiDsi_Isr(void) {
     /* Both host status registers clear on read, so each is read exactly once
@@ -568,15 +637,47 @@ static u32 LT_ISR_SAFE Esp32p4DriverMipiDsi_Isr(void) {
     u32 nBridgeStatus = ESP32_REG(DSI_BRG_INT_ST);
     if (nBridgeStatus) ESP32_REG(DSI_BRG_INT_CLR) = nBridgeStatus;
 
+    u32 nDmaStatus = ESP32_GDMA_CH_REG(kPixelDmaChannel, INT_ST0);
+    if (nDmaStatus) {
+        ESP32_GDMA_CH_REG(kPixelDmaChannel, INT_CLR0) = nDmaStatus;
+    }
+
+    ++s_nIsrCount;
+    s_nLastHostStatus0 = nStatus0;
+    s_nLastHostStatus1 = nStatus1;
+    if (nBridgeStatus) s_nLastBridgeStatus = nBridgeStatus;
+    if (nDmaStatus) {
+        ++s_nDmaIsrCount;
+        s_nLastDmaStatus = nDmaStatus;
+    }
+
     u32 nErrors = Esp32p4DriverMipiDsi_TranslateErrors(nStatus0, nStatus1);
 
     /* The bridge's FIFO running dry is the same fault as the host's, seen from
        the other side of it. */
     if (nBridgeStatus & ESP32_REG_MASK(DSI_BRG_INT, UNDERRUN)) {
+        ++s_nBridgeUnderrunCount;
         nErrors |= kLTDeviceMipiDsi_Error_TxFifoUnderflow;
     }
 
     Esp32p4DriverMipiDsi *dsi = s_driverMipiDsi;
+    if ((nDmaStatus & kEsp32_GdmaEvent_DmaTransferDone)
+     && dsi && dsi->bVideoActive) {
+        ++s_nDmaCompletionCount;
+        Esp32p4DriverMipiDsi_RearmPixelDma();
+    }
+    if (nDmaStatus & (kEsp32_GdmaEvent_SrcDecodeError
+                    | kEsp32_GdmaEvent_DstDecodeError
+                    | kEsp32_GdmaEvent_SrcSlaveError
+                    | kEsp32_GdmaEvent_DstSlaveError
+                    | kEsp32_GdmaEvent_LliReadDecodeError
+                    | kEsp32_GdmaEvent_LliWriteDecodeError
+                    | kEsp32_GdmaEvent_LliReadSlaveError
+                    | kEsp32_GdmaEvent_LliWriteSlaveError
+                    | kEsp32_GdmaEvent_LliInvalidError)) {
+        nErrors |= kLTDeviceMipiDsi_Error_TxFifoUnderflow;
+    }
+
     if (nErrors && dsi && dsi->pErrorProc) {
         (*dsi->pErrorProc)((LTDeviceMipiDsi_Error)nErrors, dsi->pErrorClientData);
     }
@@ -683,19 +784,35 @@ static void Esp32p4DriverMipiDsi_FlushFrameBuffer(const void *pPixels, u32 nByte
     u32 nAligned = nStart & ~(u32)(kCacheLineBytes - 1);
     nEnd         = (nEnd + kCacheLineBytes - 1) & ~(u32)(kCacheLineBytes - 1);
 
-    Cache_WriteBack_Addr(CACHE_MAP_L1_DCACHE | CACHE_MAP_L2_CACHE, nAligned, nEnd - nAligned);
+    const volatile u32 *pWords = pPixels;
+    u32 nWords = nBytes / sizeof(u32);
+    s_frameBufferSamplesBefore[0] = pWords[0];
+    s_frameBufferSamplesBefore[1] = pWords[nWords / 2];
+    s_frameBufferSamplesBefore[2] = pWords[nWords - 1];
+
+    s_nCacheWritebackResult =
+        (u32)Cache_WriteBack_Addr(CACHE_MAP_L1_DCACHE | CACHE_MAP_L2_CACHE,
+                                  nAligned, nEnd - nAligned);
+    s_nCacheInvalidateResult =
+        (u32)Cache_Invalidate_Addr(CACHE_MAP_L1_DCACHE | CACHE_MAP_L2_CACHE,
+                                   nAligned, nEnd - nAligned);
+
+    s_frameBufferSamplesAfter[0] = pWords[0];
+    s_frameBufferSamplesAfter[1] = pWords[nWords / 2];
+    s_frameBufferSamplesAfter[2] = pWords[nWords - 1];
 }
 
-static void Esp32p4DriverMipiDsi_ArmPixelDma(Esp32p4DriverMipiDsi *dsi) {
+static void Esp32p4DriverMipiDsi_PreparePixelDescriptor(
+    Esp32_GdmaDescriptor *pDescriptor, const void *pPixels, u32 nBytes) {
     /* Sixty-four bit transfers, so the item count is the byte count over eight,
        and BLOCK_TS is written one less than the count. */
-    u32 nItems = dsi->nFrameBufferBytes / 8;
+    u32 nItems = nBytes / 8;
 
-    lt_memset(&s_pixelDescriptor, 0, sizeof(s_pixelDescriptor));
+    lt_memset(pDescriptor, 0, sizeof(*pDescriptor));
 
-    s_pixelDescriptor.nSourceAddressLow      = (u32)(LT_SIZE)dsi->pFrameBuffer;
-    s_pixelDescriptor.nDestinationAddressLow = kEsp32_Gdma_MipiDsiBridgeMemory;
-    s_pixelDescriptor.nBlockTransferSize     = nItems - 1;
+    pDescriptor->nSourceAddressLow      = (u32)(LT_SIZE)pPixels;
+    pDescriptor->nDestinationAddressLow = kEsp32_Gdma_MipiDsiBridgeMemory;
+    pDescriptor->nBlockTransferSize     = nItems - 1;
 
     /*
      * SINC and DINC are inverted - a set bit holds the address still - so the
@@ -703,7 +820,7 @@ static void Esp32p4DriverMipiDsi_ArmPixelDma(Esp32p4DriverMipiDsi *dsi) {
      * selected by setting DINC.  SMS picks the memory master for the source;
      * DMS is left clear, which is the master the DSI bridge is on.
      */
-    s_pixelDescriptor.nControlLow =
+    pDescriptor->nControlLow =
           ESP32_REG_MASK(GDMA_CH_CTL0, SMS)
         | ESP32_REG_MASK(GDMA_CH_CTL0, DINC)
         | (kEsp32_GdmaTransferWidth_64  << ESP32_REG_SHIFT(GDMA_CH_CTL0, SRC_TR_WIDTH))
@@ -711,13 +828,22 @@ static void Esp32p4DriverMipiDsi_ArmPixelDma(Esp32p4DriverMipiDsi *dsi) {
         | (kEsp32_GdmaBurstSize_512     << ESP32_REG_SHIFT(GDMA_CH_CTL0, SRC_MSIZE))
         | (kEsp32_GdmaBurstSize_256     << ESP32_REG_SHIFT(GDMA_CH_CTL0, DST_MSIZE));
 
-    s_pixelDescriptor.nControlHigh =
+    pDescriptor->nControlHigh =
           ESP32_REG_MASK(GDMA_CH_CTL1, ARLEN_EN)
         | (kPixelDmaBurstLength << ESP32_REG_SHIFT(GDMA_CH_CTL1, ARLEN))
         | ESP32_REG_MASK(GDMA_CH_CTL1, AWLEN_EN)
         | (kPixelDmaBurstLength << ESP32_REG_SHIFT(GDMA_CH_CTL1, AWLEN))
         | ESP32_REG_MASK(GDMA_CH_CTL1, LLI_LAST)
         | ESP32_REG_MASK(GDMA_CH_CTL1, LLI_VALID);
+    Esp32p4DriverMipiDsi_FlushPixelDescriptor(pDescriptor);
+}
+
+static void Esp32p4DriverMipiDsi_ArmPixelDma(Esp32p4DriverMipiDsi *dsi) {
+    s_nActivePixelDescriptor = 0;
+    s_nQueuedPixelDescriptor = 0xffffffffu;
+    Esp32_GdmaDescriptor *pDescriptor = Esp32p4DriverMipiDsi_PixelDescriptor(0);
+    Esp32p4DriverMipiDsi_PreparePixelDescriptor(
+        pDescriptor, dsi->pFrameBuffer, dsi->nFrameBufferBytes);
 
     /* Both ends walk a link list of exactly one item. */
     ESP32_GDMA_CH_REG(kPixelDmaChannel, CFG0) =
@@ -734,13 +860,14 @@ static void Esp32p4DriverMipiDsi_ArmPixelDma(Esp32p4DriverMipiDsi *dsi) {
           (kEsp32_GdmaFlow_MemToPeri_Dmac << ESP32_REG_SHIFT(GDMA_CH_CFG1, TT_FC))
         | ESP32_REG_MASK(GDMA_CH_CFG1, HS_SEL_SRC)
         | (kEsp32_GdmaHandshake_MipiDsi << ESP32_REG_SHIFT(GDMA_CH_CFG1, DST_PER))
-        | (kPixelDmaOutstandingLimit << ESP32_REG_SHIFT(GDMA_CH_CFG1, SRC_OSR_LMT))
-        | (kPixelDmaOutstandingLimit << ESP32_REG_SHIFT(GDMA_CH_CFG1, DST_OSR_LMT));
+        | (1u << ESP32_REG_SHIFT(GDMA_CH_CFG1, CH_PRIOR))
+        | (kPixelDmaSourceOutstandingLimit << ESP32_REG_SHIFT(GDMA_CH_CFG1, SRC_OSR_LMT))
+        | (kPixelDmaDestOutstandingLimit << ESP32_REG_SHIFT(GDMA_CH_CFG1, DST_OSR_LMT));
 
-    /* The link list pointer holds the descriptor address over sixty-four, which
-       is why the descriptor has to be aligned that way. */
+    /* The descriptor is fetched through memory master port 1. */
     ESP32_GDMA_CH_REG(kPixelDmaChannel, LLP0) =
-        ((u32)(LT_SIZE)&s_pixelDescriptor >> 6) << kEsp32_RegisterGDMA_CH_LLP0_LOC_S;
+          (((u32)(LT_SIZE)pDescriptor >> 6) << kEsp32_RegisterGDMA_CH_LLP0_LOC_S)
+        | kEsp32_GdmaMaster_Memory;
     ESP32_GDMA_CH_REG(kPixelDmaChannel, LLP1) = 0;
 
     ESP32_REG(GDMA_CHEN0) = ESP32_GDMA_CHEN_ENABLE(kPixelDmaChannel);
@@ -803,7 +930,10 @@ static bool Esp32p4DriverMipiDsi_Configure(Esp32p4DriverMipiDsi *dsi,
      * than the one requested.
      */
     u32 nPixelClockMHz = Esp32p4DriverMipiDsi_DerivePixelClockMHz(&pConfig->timing);
-    u32 nDivider = kDpiSourceClockMHz / nPixelClockMHz;
+    u64 nPixelClockHz = Esp32p4DriverMipiDsi_FramePixels(&pConfig->timing)
+                      * pConfig->timing.nFrameRateHz;
+    u32 nDivider = (u32)(((u64)kDpiSourceClockMHz * 1000000u + nPixelClockHz / 2)
+                         / nPixelClockHz);
     if (nDivider < 2 || nDivider > kEsp32_MipiDsi_MaxDpiClockDivider) {
         LTLOG_YELLOWALERT("configure.dpiclock", "%lu MHz needs divider %lu",
                           LT_Pu32(nPixelClockMHz), LT_Pu32(nDivider));
@@ -812,11 +942,12 @@ static bool Esp32p4DriverMipiDsi_Configure(Esp32p4DriverMipiDsi *dsi,
 
     dsi->config        = *pConfig;
     dsi->nLaneRateMbps = nLaneRateMbps;
-    dsi->nDpiClockMHz  = kDpiSourceClockMHz / nDivider;
+    dsi->nDpiClockDivider = nDivider;
     dsi->bConfigured   = true;
 
     DLOG("configure", "lanes=%lu rate=%lu dpi=%lu", LT_Pu32(pConfig->nDataLanes),
-         LT_Pu32(dsi->nLaneRateMbps), LT_Pu32(dsi->nDpiClockMHz));
+         LT_Pu32(dsi->nLaneRateMbps),
+         LT_Pu32((kDpiSourceClockMHz + nDivider / 2) / nDivider));
     return true;
 }
 
@@ -922,7 +1053,7 @@ static bool Esp32p4DriverMipiDsi_PowerOn(Esp32p4DriverMipiDsi *dsi) {
 
     /* The D-PHY's reference and configuration clocks, and the DPI pixel clock;
        the divider field is written one less than the divider. */
-    u32 nDivider = kDpiSourceClockMHz / dsi->nDpiClockMHz;
+    u32 nDivider = dsi->nDpiClockDivider;
     u32 nPeriClock03 = ESP32_REG(HP_CLKRST_PERI_CLK_CTRL03);
     nPeriClock03 &= ~(ESP32_REG_MASK(HP_CLKRST_PERI_CLK_CTRL03, DSI_DPICLK_SRC_SEL)
                     | ESP32_REG_MASK(HP_CLKRST_PERI_CLK_CTRL03, DSI_DPICLK_DIV_NUM));
@@ -1059,12 +1190,14 @@ static bool Esp32p4DriverMipiDsi_PowerOn(Esp32p4DriverMipiDsi *dsi) {
     ESP32_REG(DSI_HOST_INT_MSK1) = 0;
     ESP32_REG(DSI_BRG_INT_ENA)   = ESP32_REG_MASK(DSI_BRG_INT, UNDERRUN);
 
-    /* Both DSI sources share one handler and one CPU line - the handler reads
-       both blocks' status whichever of them woke it. */
+    /* The DSI and pixel-DMA sources share one handler and one CPU line. */
     Esp32_AttachInterrupt(kEsp32_ExternalIrq_DSIHost, kEsp32_IrqNumber_MipiDsi,
                           kEsp32_IrqType_Level, kEsp32_IrqPriority_MipiDsi,
                           &Esp32p4DriverMipiDsi_Isr);
     Esp32_AttachInterrupt(kEsp32_ExternalIrq_DSIBridge, kEsp32_IrqNumber_MipiDsi,
+                          kEsp32_IrqType_Level, kEsp32_IrqPriority_MipiDsi,
+                          &Esp32p4DriverMipiDsi_Isr);
+    Esp32_AttachInterrupt(kEsp32_ExternalIrq_GDMA, kEsp32_IrqNumber_MipiDsi,
                           kEsp32_IrqType_Level, kEsp32_IrqPriority_MipiDsi,
                           &Esp32p4DriverMipiDsi_Isr);
 
@@ -1078,6 +1211,7 @@ static void Esp32p4DriverMipiDsi_PowerOff(Esp32p4DriverMipiDsi *dsi) {
 
     Esp32p4DriverMipiDsi_StopVideo(dsi);
 
+    Esp32_DetachInterrupt(kEsp32_ExternalIrq_GDMA, kEsp32_IrqNumber_MipiDsi);
     Esp32_DetachInterrupt(kEsp32_ExternalIrq_DSIBridge, kEsp32_IrqNumber_MipiDsi);
     Esp32_DetachInterrupt(kEsp32_ExternalIrq_DSIHost, kEsp32_IrqNumber_MipiDsi);
 
@@ -1124,6 +1258,19 @@ static bool Esp32p4DriverMipiDsi_SetFrameBuffer(Esp32p4DriverMipiDsi *dsi,
         return false;
     }
 
+    if (dsi->bVideoActive) {
+        if (nBytes != dsi->nFrameBufferBytes || s_nQueuedPixelDescriptor <= 1) {
+            return false;
+        }
+        u32 nDescriptor = s_nActivePixelDescriptor ^ 1u;
+        Esp32p4DriverMipiDsi_FlushFrameBuffer(pPixels, nBytes);
+        Esp32p4DriverMipiDsi_PreparePixelDescriptor(
+            Esp32p4DriverMipiDsi_PixelDescriptor(nDescriptor), pPixels, nBytes);
+        dsi->pFrameBuffer = pPixels;
+        s_nQueuedPixelDescriptor = nDescriptor;
+        return true;
+    }
+
     dsi->pFrameBuffer      = pPixels;
     dsi->nFrameBufferBytes = nBytes;
     return true;
@@ -1132,6 +1279,16 @@ static bool Esp32p4DriverMipiDsi_SetFrameBuffer(Esp32p4DriverMipiDsi *dsi,
 static bool Esp32p4DriverMipiDsi_StartVideo(Esp32p4DriverMipiDsi *dsi) {
     if (! dsi->bPoweredOn || ! dsi->pFrameBuffer) return false;
     if (dsi->bVideoActive) return true;
+
+    s_nIsrCount = 0;
+    s_nDmaIsrCount = 0;
+    s_nDmaCompletionCount = 0;
+    s_nDmaRearmCount = 0;
+    s_nBridgeUnderrunCount = 0;
+    s_nLastHostStatus0 = 0;
+    s_nLastHostStatus1 = 0;
+    s_nLastBridgeStatus = 0;
+    s_nLastDmaStatus = 0;
 
     u32 nBurstType;
     switch (dsi->config.mode) {
@@ -1159,11 +1316,12 @@ static bool Esp32p4DriverMipiDsi_StartVideo(Esp32p4DriverMipiDsi *dsi) {
         | ESP32_REG_MASK(DSI_HOST_VID_MODE_CFG, LP_VACT_EN)
         | ESP32_REG_MASK(DSI_HOST_VID_MODE_CFG, LP_HBP_EN)
         | ESP32_REG_MASK(DSI_HOST_VID_MODE_CFG, LP_HFP_EN)
+        | ESP32_REG_MASK(DSI_HOST_VID_MODE_CFG, FRAME_BTA_ACK_EN)
         | ESP32_REG_MASK(DSI_HOST_VID_MODE_CFG, LP_CMD_EN);
 
     /* One chunk per line and no null packets: the link was configured from this
        geometry, so it has the bandwidth for a whole line in one go. */
-    ESP32_REG(DSI_HOST_VID_PKT_SIZE)   = dsi->config.timing.nHorizontalActive;
+    ESP32_REG(DSI_HOST_VID_PKT_SIZE) = dsi->config.timing.nHorizontalActive;
     ESP32_REG(DSI_HOST_VID_NUM_CHUNKS) = 0;
     ESP32_REG(DSI_HOST_VID_NULL_SIZE)  = 0;
 
@@ -1183,30 +1341,66 @@ static bool Esp32p4DriverMipiDsi_StartVideo(Esp32p4DriverMipiDsi *dsi) {
 
     /* CONTROLLER clear leaves the DMA pacing itself off the bridge's requests,
        which is what lets one descriptor cover a whole frame. */
+    /* DMA_FRAME_INTERVAL keeps its reset value, which enables the bridge's
+       gap between frame transfers; only the multi-block bit is ours. */
     ESP32_REG(DSI_BRG_DMA_FLOW_CTRL) = 1u << ESP32_REG_SHIFT(DSI_BRG_DMA_FLOW_CTRL, MULTIBLK_NUM);
-    ESP32_REG(DSI_BRG_DMA_FRAME_INTERVAL) = 0;
+    ESP32_REG(DSI_BRG_DMA_FRAME_INTERVAL) &= ~ESP32_REG_MASK(DSI_BRG_DMA_FRAME_INTERVAL, MULTIBLK_EN);
     ESP32_REG(DSI_BRG_DMA_REQ_CFG) =
         kBridgeBurstLength << ESP32_REG_SHIFT(DSI_BRG_DMA_REQ_CFG, BURST_LEN);
     ESP32_REG(DSI_BRG_RAW_BUF_ALMOST_EMPTY_THRD) = kBridgeFifoWords - kBridgeBurstLength;
 
     ESP32_REG(DSI_BRG_EN) = ESP32_REG_MASK(DSI_BRG, EN);
 
-    /* The GDMA's global enable.  Its channel events go nowhere: a frame
-       completing is not something anyone waits for. */
-    ESP32_REG(GDMA_CFG0) = ESP32_REG_MASK(GDMA_CFG0, DMAC_EN);
+    /*
+     * A LAST descriptor stops the channel after one frame.  Enable its
+     * transfer-done interrupt so the shared DSI ISR can make the descriptor
+     * valid and start it again for the next refresh.
+     */
+    ESP32_GDMA_CH_REG(kPixelDmaChannel, INT_CLR0) = 0xffffffffu;
+    ESP32_GDMA_CH_REG(kPixelDmaChannel, INT_ST_ENA0) =
+          kEsp32_GdmaEvent_BlockTransferDone
+        | kEsp32_GdmaEvent_DmaTransferDone
+        | kEsp32_GdmaEvent_SrcDecodeError
+        | kEsp32_GdmaEvent_DstDecodeError
+        | kEsp32_GdmaEvent_SrcSlaveError
+        | kEsp32_GdmaEvent_DstSlaveError
+        | kEsp32_GdmaEvent_LliReadDecodeError
+        | kEsp32_GdmaEvent_LliWriteDecodeError
+        | kEsp32_GdmaEvent_LliReadSlaveError
+        | kEsp32_GdmaEvent_LliWriteSlaveError
+        | kEsp32_GdmaEvent_LliInvalidError;
+    ESP32_GDMA_CH_REG(kPixelDmaChannel, INT_SIG_ENA0) =
+        ESP32_GDMA_CH_REG(kPixelDmaChannel, INT_ST_ENA0);
+
+    ESP32_REG(GDMA_CFG0) = ESP32_REG_MASK(GDMA_CFG0, DMAC_EN)
+                         | ESP32_REG_MASK(GDMA_CFG0, INT_EN);
     Esp32p4DriverMipiDsi_FlushFrameBuffer(dsi->pFrameBuffer, dsi->nFrameBufferBytes);
+    dsi->bVideoActive = true;
     Esp32p4DriverMipiDsi_ArmPixelDma(dsi);
 
     ESP32_REG(DSI_HOST_MODE_CFG) = 0;   /* video mode */
-    ESP32_REG(DSI_BRG_DPI_MISC_CONFIG) |= ESP32_REG_MASK(DSI_BRG_DPI_MISC_CONFIG, DPI_EN);
+    #if TEST_DSI_HOST_VPG
+        /* Diagnostic: bypass framebuffer and bridge pixel output. */
+        ESP32_REG(DSI_HOST_VID_MODE_CFG) |=
+              ESP32_REG_MASK(DSI_HOST_VID_MODE_CFG, VPG_EN)
+            | ESP32_REG_MASK(DSI_HOST_VID_MODE_CFG, VPG_ORIENTATION);
+    #else
+        ESP32_REG(DSI_BRG_DPI_MISC_CONFIG) |= ESP32_REG_MASK(DSI_BRG_DPI_MISC_CONFIG, DPI_EN);
+    #endif
     ESP32_REG(DSI_BRG_DPI_CONFIG_UPDATE) = ESP32_REG_MASK(DSI_BRG_DPI_CONFIG, UPDATE);
 
-    dsi->bVideoActive = true;
     return true;
 }
 
 static void Esp32p4DriverMipiDsi_StopVideo(Esp32p4DriverMipiDsi *dsi) {
     if (! dsi->bVideoActive) return;
+    dsi->bVideoActive = false;
+    s_nQueuedPixelDescriptor = 0xffffffffu;
+
+    /* Prevent a completion racing the stop from re-enabling the channel. */
+    ESP32_GDMA_CH_REG(kPixelDmaChannel, INT_SIG_ENA0) = 0;
+    ESP32_GDMA_CH_REG(kPixelDmaChannel, INT_ST_ENA0) = 0;
+    ESP32_GDMA_CH_REG(kPixelDmaChannel, INT_CLR0) = 0xffffffffu;
 
     ESP32_REG(DSI_BRG_DPI_MISC_CONFIG) &= ~ESP32_REG_MASK(DSI_BRG_DPI_MISC_CONFIG, DPI_EN);
     ESP32_REG(DSI_BRG_DPI_CONFIG_UPDATE) = ESP32_REG_MASK(DSI_BRG_DPI_CONFIG, UPDATE);
@@ -1221,8 +1415,6 @@ static void Esp32p4DriverMipiDsi_StopVideo(Esp32p4DriverMipiDsi *dsi) {
        stopped, which is what a shutdown sequence needs. */
     ESP32_REG(DSI_HOST_MODE_CFG) = ESP32_REG_MASK(DSI_HOST_MODE_CFG, CMD_VIDEO_MODE);
     Esp32p4DriverMipiDsi_SetClockLaneContinuous(false);
-
-    dsi->bVideoActive = false;
 }
 
 /*
@@ -1546,7 +1738,20 @@ static const Esp32p4DriverMipiDsi_RegisterName s_clockRegisters[] = {
 static const Esp32p4DriverMipiDsi_RegisterName s_dsiRegisters[] = {
     { "DSI_HOST_PWR_UP",            kEsp32_RegisterDSI_HOST_PWR_UP            },
     { "DSI_HOST_CLKMGR_CFG",        kEsp32_RegisterDSI_HOST_CLKMGR_CFG        },
+    { "DSI_HOST_DPI_COLOR_CODING",  kEsp32_RegisterDSI_HOST_DPI_COLOR_CODING  },
+    { "DSI_HOST_DPI_CFG_POL",       kEsp32_RegisterDSI_HOST_DPI_CFG_POL       },
     { "DSI_HOST_MODE_CFG",          kEsp32_RegisterDSI_HOST_MODE_CFG          },
+    { "DSI_HOST_VID_MODE_CFG",      kEsp32_RegisterDSI_HOST_VID_MODE_CFG      },
+    { "DSI_HOST_VID_PKT_SIZE",      kEsp32_RegisterDSI_HOST_VID_PKT_SIZE      },
+    { "DSI_HOST_VID_NUM_CHUNKS",    kEsp32_RegisterDSI_HOST_VID_NUM_CHUNKS    },
+    { "DSI_HOST_VID_NULL_SIZE",     kEsp32_RegisterDSI_HOST_VID_NULL_SIZE     },
+    { "DSI_HOST_VID_HSA_TIME",      kEsp32_RegisterDSI_HOST_VID_HSA_TIME      },
+    { "DSI_HOST_VID_HBP_TIME",      kEsp32_RegisterDSI_HOST_VID_HBP_TIME      },
+    { "DSI_HOST_VID_HLINE_TIME",    kEsp32_RegisterDSI_HOST_VID_HLINE_TIME    },
+    { "DSI_HOST_VID_VSA_LINES",     kEsp32_RegisterDSI_HOST_VID_VSA_LINES     },
+    { "DSI_HOST_VID_VBP_LINES",     kEsp32_RegisterDSI_HOST_VID_VBP_LINES     },
+    { "DSI_HOST_VID_VFP_LINES",     kEsp32_RegisterDSI_HOST_VID_VFP_LINES     },
+    { "DSI_HOST_VID_VACTIVE_LINES", kEsp32_RegisterDSI_HOST_VID_VACTIVE_LINES },
     { "DSI_HOST_LPCLK_CTRL",        kEsp32_RegisterDSI_HOST_LPCLK_CTRL        },
     { "DSI_HOST_PHY_TMR_CFG",       kEsp32_RegisterDSI_HOST_PHY_TMR_CFG       },
     { "DSI_HOST_PHY_TMR_LPCLK_CFG", kEsp32_RegisterDSI_HOST_PHY_TMR_LPCLK_CFG },
@@ -1557,13 +1762,53 @@ static const Esp32p4DriverMipiDsi_RegisterName s_dsiRegisters[] = {
     { "DSI_HOST_INT_ST1",           kEsp32_RegisterDSI_HOST_INT_ST1           },
     { "DSI_BRG_CLK_EN",             kEsp32_RegisterDSI_BRG_CLK_EN             },
     { "DSI_BRG_EN",                 kEsp32_RegisterDSI_BRG_EN                 },
+    { "DSI_BRG_DMA_REQ_CFG",        kEsp32_RegisterDSI_BRG_DMA_REQ_CFG        },
+    { "DSI_BRG_RAW_NUM_CFG",        kEsp32_RegisterDSI_BRG_RAW_NUM_CFG        },
+    { "DSI_BRG_RAW_BUF_CREDIT_CTL", kEsp32_RegisterDSI_BRG_RAW_BUF_CREDIT_CTL },
     { "DSI_BRG_FIFO_FLOW_STATUS",   kEsp32_RegisterDSI_BRG_FIFO_FLOW_STATUS   },
+    { "DSI_BRG_PIXEL_TYPE",         kEsp32_RegisterDSI_BRG_PIXEL_TYPE         },
+    { "DSI_BRG_DMA_BLOCK_INTERVAL", kEsp32_RegisterDSI_BRG_DMA_BLOCK_INTERVAL },
+    { "DSI_BRG_DMA_REQ_INTERVAL",   kEsp32_RegisterDSI_BRG_DMA_REQ_INTERVAL   },
+    { "DSI_BRG_DPI_V_CFG0",         kEsp32_RegisterDSI_BRG_DPI_V_CFG0         },
+    { "DSI_BRG_DPI_V_CFG1",         kEsp32_RegisterDSI_BRG_DPI_V_CFG1         },
+    { "DSI_BRG_DPI_H_CFG0",         kEsp32_RegisterDSI_BRG_DPI_H_CFG0         },
+    { "DSI_BRG_DPI_H_CFG1",         kEsp32_RegisterDSI_BRG_DPI_H_CFG1         },
+    { "DSI_BRG_DPI_MISC_CONFIG",    kEsp32_RegisterDSI_BRG_DPI_MISC_CONFIG    },
+    { "DSI_BRG_DPI_CONFIG_UPDATE",  kEsp32_RegisterDSI_BRG_DPI_CONFIG_UPDATE  },
     { "DSI_BRG_HOST_CTRL",          kEsp32_RegisterDSI_BRG_HOST_CTRL          },
+    { "DSI_BRG_INT_ENA",            kEsp32_RegisterDSI_BRG_INT_ENA            },
+    { "DSI_BRG_INT_RAW",            kEsp32_RegisterDSI_BRG_INT_RAW            },
     { "DSI_BRG_INT_ST",             kEsp32_RegisterDSI_BRG_INT_ST             },
+    { "DSI_BRG_DMA_FRAME_INTERVAL", kEsp32_RegisterDSI_BRG_DMA_FRAME_INTERVAL },
+    { "DSI_BRG_DMA_FLOW_CTRL",      kEsp32_RegisterDSI_BRG_DMA_FLOW_CTRL      },
+    { "DSI_BRG_RAW_EMPTY_THRD",     kEsp32_RegisterDSI_BRG_RAW_BUF_ALMOST_EMPTY_THRD },
+};
+
+static const Esp32p4DriverMipiDsi_RegisterName s_gdmaRegisters[] = {
+    { "GDMA_CFG0",       kEsp32_RegisterGDMA_CFG0 },
+    { "GDMA_CHEN0",      kEsp32_RegisterGDMA_CHEN0 },
+    { "GDMA_CHEN1",      kEsp32_RegisterGDMA_CHEN1 },
+    { "GDMA_INT_ST0",     ESP32_REG_BASE(GDMA) + 0x30 },
+    { "GDMA_COMMON_ST0",  ESP32_REG_BASE(GDMA) + 0x50 },
+    { "GDMA_CH0_SAR0",   ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_SAR0 },
+    { "GDMA_CH0_DAR0",   ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_DAR0 },
+    { "GDMA_CH0_BLOCK",  ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_BLOCK_TS0 },
+    { "GDMA_CH0_CTL0",   ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_CTL0 },
+    { "GDMA_CH0_CTL1",   ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_CTL1 },
+    { "GDMA_CH0_CFG0",   ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_CFG0 },
+    { "GDMA_CH0_CFG1",   ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_CFG1 },
+    { "GDMA_CH0_LLP0",   ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_LLP0 },
+    { "GDMA_CH0_LLP1",   ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_LLP1 },
+    { "GDMA_CH0_STATUS0", ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + 0x30 },
+    { "GDMA_CH0_STATUS1", ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + 0x34 },
+    { "GDMA_CH0_INT_ENA", ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_INT_ST_ENA0 },
+    { "GDMA_CH0_INT_ST", ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_INT_ST0 },
+    { "GDMA_CH0_INT_SIG", ESP32_REG_BASE(GDMA) + kEsp32_Gdma_ChannelBase + kEsp32_RegisterGDMA_CH_INT_SIG_ENA0 },
 };
 
 #define kClockRegisterCount     (sizeof(s_clockRegisters) / sizeof(s_clockRegisters[0]))
 #define kDsiRegisterCount       (sizeof(s_dsiRegisters) / sizeof(s_dsiRegisters[0]))
+#define kGdmaRegisterCount      (sizeof(s_gdmaRegisters) / sizeof(s_gdmaRegisters[0]))
 
 static void Esp32p4DriverMipiDsi_DumpRegisterTable(const Esp32p4DriverMipiDsi_RegisterName *pTable,
                                                    u32 nEntries,
@@ -1586,6 +1831,53 @@ static void Esp32p4DriverMipiDsi_DumpRegisters(Esp32p4DriverMipiDsi *dsi,
         Esp32p4DriverMipiDsi_DumpRegisterTable(s_dsiRegisters, kDsiRegisterCount,
                                                pRegisterProc, pClientData);
     }
+    if (ESP32_REG(HP_CLKRST_SOC_CLK_CTRL1) & ESP32_REG_MASK(HP_CLKRST_SOC_CLK_CTRL1, GDMA_SYS_CLK_EN)) {
+        Esp32p4DriverMipiDsi_DumpRegisterTable(s_gdmaRegisters, kGdmaRegisterCount,
+                                               pRegisterProc, pClientData);
+    }
+
+    #define DUMP_DIAGNOSTIC(name, value) pRegisterProc((name), 0, (value), pClientData)
+    DUMP_DIAGNOSTIC("DIAG_WAFER_REV", Esp32p4DriverMipiDsi_WaferRevision());
+    DUMP_DIAGNOSTIC("DIAG_ISR_COUNT", s_nIsrCount);
+    DUMP_DIAGNOSTIC("DIAG_DMA_ISR_COUNT", s_nDmaIsrCount);
+    DUMP_DIAGNOSTIC("DIAG_DMA_DONE_COUNT", s_nDmaCompletionCount);
+    DUMP_DIAGNOSTIC("DIAG_DMA_REARM_COUNT", s_nDmaRearmCount);
+    DUMP_DIAGNOSTIC("DIAG_BRG_UNDERRUNS", s_nBridgeUnderrunCount);
+    DUMP_DIAGNOSTIC("DIAG_LAST_HOST_ST0", s_nLastHostStatus0);
+    DUMP_DIAGNOSTIC("DIAG_LAST_HOST_ST1", s_nLastHostStatus1);
+    DUMP_DIAGNOSTIC("DIAG_LAST_BRG_ST", s_nLastBridgeStatus);
+    DUMP_DIAGNOSTIC("DIAG_LAST_DMA_ST", s_nLastDmaStatus);
+    DUMP_DIAGNOSTIC("DIAG_DESC_ADDR",
+                    (u32)(LT_SIZE)Esp32p4DriverMipiDsi_PixelDescriptor(
+                        s_nActivePixelDescriptor));
+    DUMP_DIAGNOSTIC("DIAG_DESC_CTL_HI",
+                    Esp32p4DriverMipiDsi_PixelDescriptor(
+                        s_nActivePixelDescriptor)->nControlHigh);
+    DUMP_DIAGNOSTIC("DIAG_DESC_ACTIVE", s_nActivePixelDescriptor);
+    DUMP_DIAGNOSTIC("DIAG_DESC_QUEUED", s_nQueuedPixelDescriptor);
+    DUMP_DIAGNOSTIC("DIAG_DESC0_ADDR",
+                    (u32)(LT_SIZE)Esp32p4DriverMipiDsi_PixelDescriptor(0));
+    DUMP_DIAGNOSTIC("DIAG_DESC0_SRC",
+                    Esp32p4DriverMipiDsi_PixelDescriptor(0)->nSourceAddressLow);
+    DUMP_DIAGNOSTIC("DIAG_DESC0_CTL",
+                    Esp32p4DriverMipiDsi_PixelDescriptor(0)->nControlHigh);
+    DUMP_DIAGNOSTIC("DIAG_DESC1_ADDR",
+                    (u32)(LT_SIZE)Esp32p4DriverMipiDsi_PixelDescriptor(1));
+    DUMP_DIAGNOSTIC("DIAG_DESC1_SRC",
+                    Esp32p4DriverMipiDsi_PixelDescriptor(1)->nSourceAddressLow);
+    DUMP_DIAGNOSTIC("DIAG_DESC1_CTL",
+                    Esp32p4DriverMipiDsi_PixelDescriptor(1)->nControlHigh);
+    DUMP_DIAGNOSTIC("DIAG_FB_ADDR", (u32)(LT_SIZE)dsi->pFrameBuffer);
+    DUMP_DIAGNOSTIC("DIAG_FB_BYTES", dsi->nFrameBufferBytes);
+    DUMP_DIAGNOSTIC("DIAG_CACHE_WB_RC", s_nCacheWritebackResult);
+    DUMP_DIAGNOSTIC("DIAG_CACHE_INV_RC", s_nCacheInvalidateResult);
+    DUMP_DIAGNOSTIC("DIAG_FB0_BEFORE", s_frameBufferSamplesBefore[0]);
+    DUMP_DIAGNOSTIC("DIAG_FBM_BEFORE", s_frameBufferSamplesBefore[1]);
+    DUMP_DIAGNOSTIC("DIAG_FBL_BEFORE", s_frameBufferSamplesBefore[2]);
+    DUMP_DIAGNOSTIC("DIAG_FB0_AFTER", s_frameBufferSamplesAfter[0]);
+    DUMP_DIAGNOSTIC("DIAG_FBM_AFTER", s_frameBufferSamplesAfter[1]);
+    DUMP_DIAGNOSTIC("DIAG_FBL_AFTER", s_frameBufferSamplesAfter[2]);
+    #undef DUMP_DIAGNOSTIC
 }
 
 /*__________________________________________
