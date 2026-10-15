@@ -694,13 +694,14 @@ static void WSM_QueueInput(WSM_Queue *queue, WSM_Input *input) {
     // prior DRIVER events pending.
     if (input->state > WS_DriverStates) {
         // Queue it to head:
-        if (queue->head) input->next = queue->head->next;
+        input->next = queue->head;
         queue->head = input;
         if (!queue->tail) queue->tail = input;
     } else {
         // Queue it to tail:
         if (queue->tail) queue->tail->next = input;
         if (!queue->head) queue->head = input;
+        queue->tail = input;
         input->next = NULL;
     }
     queue->mutex->API->Unlock(queue->mutex);
