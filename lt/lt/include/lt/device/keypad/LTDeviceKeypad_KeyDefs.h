@@ -169,6 +169,15 @@ typedef_LTENUM_SIZED(LTKey, u32) {
     kLTKey_(Purple                  , 122)
     kLTKey_(LiveTV                  , 123)
 
+    kLTKey_(Region_Btn1             , 124)
+    kLTKey_(Region_Btn2             , 125)
+    kLTKey_(Region_Btn3             , 126)
+    kLTKey_(Region_Btn4             , 127)
+    kLTKey_(InputTuner              , 128)
+    kLTKey_(Text                    , 129)
+    kLTKey_(VirtualKeyboard         , 130)
+    kLTKey_(TV30                    , 131)
+
                                     #if defined(LT_INCLUDE_LT_DEVICE_KEYPAD_LTDEVICEKEYPAD__KEYDEFS_GENNAMETABLE)
                                     #     undef LT_INCLUDE_LT_DEVICE_KEYPAD_LTDEVICEKEYPAD__KEYDEFS_GENNAMETABLE
                                     };
