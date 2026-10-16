@@ -77,6 +77,7 @@ static LTDeviceMipiDsi_Config   s_scratch;
 
 static u8               * s_pFrameBuffer    = NULL;
 static u32                s_nFrameBufferBytes = 0;
+static u8               * s_pAnimationFrameBuffer = NULL;
 
 static u8                 s_packetBuffer[kMaxPacketBytes];
 static u8                 s_readBuffer[kMaxReadBytes];
@@ -210,8 +211,11 @@ static void DsiErrorEventProc(LTDeviceMipiDsi_Error errors, void * pClientData) 
 
 static void FreeFrameBuffer(void) {
     if (s_pFrameBuffer == NULL) return;
+    if (s_pDsi && s_pDsi->API->IsVideoActive(s_pDsi)) s_pDsi->API->StopVideo(s_pDsi);
     if (s_pDsi) s_pDsi->API->SetFrameBuffer(s_pDsi, NULL, 0);
+    lt_free(s_pAnimationFrameBuffer);
     lt_free(s_pFrameBuffer);
+    s_pAnimationFrameBuffer = NULL;
     s_pFrameBuffer      = NULL;
     s_nFrameBufferBytes = 0;
 }
@@ -430,6 +434,99 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
             if (nBytesPerPixel == 3) pPixel[2] = (u8)((nColour >> 16) & 0xff);
         }
         iShell->Print(hShell, "colour bars over %u pixels\n", (unsigned)nPixels);
+        return 0;
+    }
+
+    if (0 == lt_strcmp(argv[2], "grid")) {
+        if (nBytesPerPixel != 2) {
+            iShell->PutString(hShell, "the grid currently requires rgb565\n");
+            return -1;
+        }
+        u32 nWidth  = s_config.timing.nHorizontalActive;
+        u32 nHeight = s_config.timing.nVerticalActive;
+        for (u32 y = 0; y < nHeight; ++y) {
+            for (u32 x = 0; x < nWidth; ++x) {
+                u16 nColour = (x < nWidth / 2) ? 0x4000 : 0x0010;
+                if ((x % 32) == 0) nColour = 0xffff;
+                if ((y % 32) == 0) nColour = 0x8410;
+                if (x + 1 >= nWidth / 2 && x <= nWidth / 2 + 1) nColour = 0xffe0;
+                u32 nPixel = y * nWidth + x;
+                s_pFrameBuffer[nPixel * 2]     = (u8)nColour;
+                s_pFrameBuffer[nPixel * 2 + 1] = (u8)(nColour >> 8);
+            }
+        }
+        iShell->Print(hShell, "32-pixel grid over %ux%u\n",
+                      (unsigned)nWidth, (unsigned)nHeight);
+        return 0;
+    }
+
+    if (0 == lt_strcmp(argv[2], "animate")) {
+        if (nBytesPerPixel != 2) {
+            iShell->PutString(hShell, "the animation currently requires rgb565\n");
+            return -1;
+        }
+
+        u32 nFrames = 300;
+        if (argc > 3 && (! ParseU32(argv[3], &nFrames) || ! nFrames)) {
+            iShell->PutString(hShell, "usage: dsi fb animate [frames]\n");
+            return -1;
+        }
+
+        u32 nWidth  = s_config.timing.nHorizontalActive;
+        u32 nHeight = s_config.timing.nVerticalActive;
+        if (! s_pAnimationFrameBuffer) {
+            LTMemoryRegion region = LT_GetCore()->GetNamedMemoryRegion("psram");
+            s_pAnimationFrameBuffer = (u8 *)lt_malloc_from_region(region, s_nFrameBufferBytes);
+            if (! s_pAnimationFrameBuffer) {
+                iShell->PutString(hShell, "cannot allocate the second framebuffer\n");
+                return -1;
+            }
+        }
+        u32 nSquare = nWidth / 8;
+        u32 nTravel = nWidth - nSquare;
+        u32 nPeriod = nTravel ? nTravel * 2 : 1;
+        u32 nTop    = (nHeight - nSquare) / 2;
+        static const u16 s_background[8] = {
+            0xf800, 0xfd20, 0xffe0, 0x07e0, 0x07ff, 0x001f, 0x801f, 0xf81f
+        };
+        LTOThread *pThread = LT_GetCore()->GetCurrentThreadObject();
+
+        iShell->Print(hShell, "animating %u frames\n", (unsigned)nFrames);
+        for (u32 nFrame = 0; nFrame < nFrames; ++nFrame) {
+            u8 *pDrawBuffer = (nFrame & 1) ? s_pAnimationFrameBuffer : s_pFrameBuffer;
+            u32 nPhase = (nFrame * 8) % nPeriod;
+            u32 nLeft  = (nPhase <= nTravel) ? nPhase : nPeriod - nPhase;
+            for (u32 y = 0; y < nHeight; ++y) {
+                for (u32 x = 0; x < nWidth; ++x) {
+                    u16 nColour = s_background[(x * 8) / nWidth];
+                    if (x >= nLeft && x < nLeft + nSquare
+                     && y >= nTop && y < nTop + nSquare) {
+                        nColour = 0xffff;
+                    }
+                    u32 nPixel = y * nWidth + x;
+                    pDrawBuffer[nPixel * 2]     = (u8)nColour;
+                    pDrawBuffer[nPixel * 2 + 1] = (u8)(nColour >> 8);
+                }
+            }
+
+            if (s_pDsi->API->IsVideoActive(s_pDsi)) {
+                u32 nWaits = 0;
+                while (! s_pDsi->API->SetFrameBuffer(
+                           s_pDsi, pDrawBuffer, s_nFrameBufferBytes)
+                       && nWaits++ < 100) {
+                    pThread->API->Sleep(LTTime_Milliseconds(1));
+                }
+                if (nWaits > 100) {
+                    iShell->PutString(hShell, "framebuffer swap timed out\n");
+                    return -1;
+                }
+            } else if (! s_pDsi->API->StartVideo(s_pDsi)) {
+                iShell->PutString(hShell, "video start failed during animation\n");
+                return -1;
+            }
+            pThread->API->Sleep(LTTime_Milliseconds(40));
+        }
+        iShell->PutString(hShell, "animation complete\n");
         return 0;
     }
 
@@ -719,7 +816,7 @@ static int SelftestVideo(LTShell hShell) {
     CHECK(true, "StartVideo began the stream");
     CHECK(s_pDsi->API->IsVideoActive(s_pDsi), "IsVideoActive agrees");
     CHECK(s_pDsi->API->StartVideo(s_pDsi), "StartVideo again is a no-op that succeeds");
-    CHECK(! s_pDsi->API->SetFrameBuffer(s_pDsi, s_pFrameBuffer, s_nFrameBufferBytes), "SetFrameBuffer mid-stream is refused");
+    CHECK(s_pDsi->API->SetFrameBuffer(s_pDsi, s_pFrameBuffer, s_nFrameBufferBytes), "SetFrameBuffer queues a frame-boundary swap");
     CHECK(! s_pDsi->API->EnterUltraLowPowerState(s_pDsi), "ULPS mid-stream is refused");
     CHECK(! s_pDsi->API->WriteFrame(s_pDsi, s_pFrameBuffer, s_nFrameBufferBytes), "WriteFrame in a video mode is refused");
     CHECK(! s_pDsi->API->Configure(s_pDsi, &s_config), "Configure mid-stream is refused");
@@ -895,6 +992,8 @@ static void ShellHelpDsi(LTShell hShell, int argc, const char ** argv) { LT_UNUS
     iShell->PutString(hShell, "       dsi fb free\n");
     iShell->PutString(hShell, "       dsi fb fill <colour>          - one colour, in the configured format\n");
     iShell->PutString(hShell, "       dsi fb bars                   - eight vertical colour bars\n");
+    iShell->PutString(hShell, "       dsi fb grid                   - static 32-pixel mapping grid\n");
+    iShell->PutString(hShell, "       dsi fb animate [frames]       - moving square over colour bars\n");
     iShell->PutString(hShell, "       dsi video <start|stop>\n");
     iShell->PutString(hShell, "       dsi lanes                     - the clock and data lane states\n");
     iShell->PutString(hShell, "       dsi hs <on|off>               - send panel commands in high speed\n");

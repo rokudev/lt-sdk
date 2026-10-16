@@ -134,8 +134,9 @@ typedef_LTObject(LTDriverMipiDsi, 1) {
          * @param[in] nBytes the size of the framebuffer in bytes
          * @return true if the hardware can scan out that buffer
          *
-         * @note the buffer is not copied, and the Device level does not call this while
-         *       the pixel stream is running.
+         * @note the buffer is not copied.  While the pixel stream is running,
+         *       a driver may queue the new buffer for a frame-boundary swap or
+         *       return false if its controller does not support that.
          *
          * @note the Device level does not call this in command mode.
          */

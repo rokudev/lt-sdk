@@ -177,6 +177,11 @@ enum Esp32_GdmaChannelEvents {
     kEsp32_GdmaEvent_DstDecodeError      = 0x01u << 6,
     kEsp32_GdmaEvent_SrcSlaveError       = 0x01u << 7,
     kEsp32_GdmaEvent_DstSlaveError       = 0x01u << 8,
+    kEsp32_GdmaEvent_LliReadDecodeError  = 0x01u << 9,
+    kEsp32_GdmaEvent_LliWriteDecodeError = 0x01u << 10,
+    kEsp32_GdmaEvent_LliReadSlaveError   = 0x01u << 11,
+    kEsp32_GdmaEvent_LliWriteSlaveError  = 0x01u << 12,
+    kEsp32_GdmaEvent_LliInvalidError     = 0x01u << 13,
     kEsp32_GdmaEvent_Disabled            = 0x01u << 30,
     kEsp32_GdmaEvent_Aborted             = 0x01u << 31,
 };
@@ -220,11 +225,12 @@ enum Esp32_GdmaTransferWidth {
     kEsp32_GdmaTransferWidth_512         = 6,
 };
 
-/* CTL0.SRC_MSIZE / DST_MSIZE, log2 of the number of items in a burst */
+/* CTL0.SRC_MSIZE / DST_MSIZE.  Not log2: the encoding skips 2 items, so it
+   runs 1, 4, 8, 16 ... 1024 for 0 through 9. */
 enum Esp32_GdmaBurstSize {
     kEsp32_GdmaBurstSize_1               = 0,
-    kEsp32_GdmaBurstSize_256             = 8,
-    kEsp32_GdmaBurstSize_512             = 9,
+    kEsp32_GdmaBurstSize_256             = 7,
+    kEsp32_GdmaBurstSize_512             = 8,
 };
 
 /*

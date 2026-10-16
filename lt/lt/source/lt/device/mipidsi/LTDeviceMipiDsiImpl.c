@@ -215,8 +215,8 @@ static bool LTDeviceMipiDsiImpl_SetFrameBuffer(LTDeviceMipiDsiImpl *dsi, const v
         return false;
     }
     if (dsi->bVideoActive) {
-        LTLOG_YELLOWALERT("setframebuffer.videoactive", NULL);
-        return false;
+        if (! pPixels || ! nBytes) return false;
+        return dsi->driver->API->SetFrameBuffer(dsi->driver, pPixels, nBytes);
     }
     if (pPixels && ! nBytes) return false;
     if (! dsi->driver->API->SetFrameBuffer(dsi->driver, pPixels, nBytes)) return false;
