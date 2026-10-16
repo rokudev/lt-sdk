@@ -22,6 +22,106 @@ typedef_LTObjectImpl(LTSystemShellCommands, LTSystemShellCommandsImpl) {
     /* I am a singleton so nothing goes here (for now) */
 } LTOBJECT_API;
 
+/* LTList */
+
+typedef struct {
+    LTArray   * pOpenedLibs;
+    LTArray   * pInstalledLibs;
+} LTLibEnumLibsClientData;
+
+static int
+ShellCommand_SortOpenLibrariesArrayCompareFunction(const void * pElement1, const void * pElement2, void * pClientData) {
+    LT_UNUSED(pClientData);
+    return lt_strcmp(((LTCore_LibrarySnapshot *)pElement1)->name, ((LTCore_LibrarySnapshot *)pElement2)->name);
+}
+
+static int
+ShellCommand_SortInstalledLibrariesArrayCompareFunction(const void * pElement1, const void * pElement2, void * pClientData) {
+    LT_UNUSED(pClientData);
+    return lt_strcmp((const char *)pElement1, (const char *)pElement2);
+}
+
+static bool
+ShellCommand_RecordInstalledLibsEnumProc(const char * pLibName, void * pClientData) {
+    LTLibEnumLibsClientData * pCD = (LTLibEnumLibsClientData *)pClientData;
+    u32 nCount = pCD->pOpenedLibs->API->GetCount(pCD->pOpenedLibs);
+    bool bFound = false;
+    for (u32 i = 0; i < nCount && !bFound; ++i) {
+        bFound = (lt_strcasecmp(pCD->pOpenedLibs->API->Get(pCD->pOpenedLibs, i, NULL), pLibName) == 0);
+    }
+    if (!bFound) {
+        // installed lib is not opened; therefore we haven't printed it yet!!
+        pCD->pInstalledLibs->API->Append(pCD->pInstalledLibs, pLibName);
+    }
+
+    return true; /* continue enumerating */
+}
+
+static void
+ShellCommand_EnumOpenLibrariesProc(LTCore_LibrarySnapshot * pSnapshot, void * pClientData) {
+    LTLibEnumLibsClientData * pCD = (LTLibEnumLibsClientData *)pClientData;
+    pCD->pOpenedLibs->API->Append(pCD->pOpenedLibs, pSnapshot);
+}
+
+#ifdef LT_DEBUG
+    // sanity check to assert during compile in debug mode if kLTLibraryMaxNameLen or kLTInterface_MaxNameLen ever changes.
+    // If it does we will want to revisit the tabulation algorithm in ListLibraries below
+    typedef int LTList_NameLengthCheck[kLTLibrary_MaxNameLen == 39 ? 1 : -1];
+    typedef int LTList_InterfaceNameLengthCheck[kLTInterface_MaxNameLen == 39 ? 1 : -1];
+#endif
+
+static int ShellCommand_LTList(LTSystemSchell *shell, int argc, const char ** argv) {
+    LT_UNUSED(argv);
+    LTCore * pCore = LT_GetCore();
+    LTLibEnumLibsClientData clientData;
+    if (argc > 1) return shell->API->PutString(shell, "usage: ltlist\n"), 0;
+
+    clientData.pOpenedLibs    = LTArray_CreateStructArray(sizeof(LTCore_LibrarySnapshot));
+    clientData.pInstalledLibs = LTArray_CreateStructArray(kLTLibrary_MaxNameBufferSize);
+
+    // snapshot the open libraries
+    pCore->SnapshotOpenLibraries(&ShellCommand_EnumOpenLibrariesProc, &clientData);
+    u32 nNumSnapshots = clientData.pOpenedLibs->API->GetCount(clientData.pOpenedLibs);
+    if (nNumSnapshots > 0) {
+        // print out the opened libraries snapshots
+        clientData.pOpenedLibs->API->Sort(clientData.pOpenedLibs, ShellCommand_SortOpenLibrariesArrayCompareFunction, NULL);
+        shell->API->PutString(shell, "Installed LT Libraries:\n______________\nCURRENTLY OPEN\n");
+        shell->API->PutString(shell, "  LIB NAME                           LIB INTERFACE                            LIB TYPE    OPEN COUNT\n");
+        //shell->API->PutString(shell, "   123456789012345678901234567890    123456789012345678901234567890 v12345    12345678      12345678\n");
+        for (u32 i = 0; i < nNumSnapshots; i++) {
+            LTCore_LibrarySnapshot * pSnapshot = clientData.pOpenedLibs->API->Get(clientData.pOpenedLibs, i, NULL);
+            shell->API->Print(shell, "   %-30s    %s v%lu", pSnapshot->name, pSnapshot->rootInterfaceName, LT_Pu32(pSnapshot->nRootInterfaceVersion));
+            int padding = pSnapshot->nRootInterfaceVersion;
+            padding = (padding < 10) ? 3 : (padding < 100) ? 4 : (padding < 1000) ? 5 : (padding < 10000) ? 6 : 7; // " vN"
+            padding += lt_strlen(pSnapshot->rootInterfaceName) > 30 ? 30 : lt_strlen(pSnapshot->rootInterfaceName);
+            padding = (30 + 7) - padding;
+            padding = (padding < 0) ? 0  : padding;
+            padding += 4;
+            if (padding > kLTInterface_MaxNameLen) padding = kLTInterface_MaxNameLen;
+            pSnapshot->rootInterfaceName[padding] = 0;
+            while (padding--) pSnapshot->rootInterfaceName[padding] = ' ';
+            shell->API->Print(shell, "%s%-8s%14lu\n",
+                pSnapshot->rootInterfaceName,
+                (pSnapshot->rootInterfaceType == kLTInterfaceType_DeviceLibraryRoot) ? "Device" : (pSnapshot->rootInterfaceType == kLTInterfaceType_DriverLibraryRoot) ? "Driver" : "Standard",
+                LT_Pu32(pSnapshot->nOpenCount));
+        }
+    }
+
+    // now gather all of the 'installed' library names; the enum cb will trim the names of libraries we've already reported
+    pCore->EnumerateInstalledLibraries(&ShellCommand_RecordInstalledLibsEnumProc, &clientData);
+    u32 nCount = clientData.pInstalledLibs->API->GetCount(clientData.pInstalledLibs);
+    if (nCount > 0) {
+        clientData.pInstalledLibs->API->Sort(clientData.pInstalledLibs, ShellCommand_SortInstalledLibrariesArrayCompareFunction, NULL);
+        shell->API->PutString(shell, "_________________\nAVAILABLE TO OPEN\n");
+        for (u32 i = 0; i < nCount; i++) shell->API->Print(shell, "   %s\n", (const char *)clientData.pInstalledLibs->API->Get(clientData.pInstalledLibs, i, NULL));
+    }
+
+    lt_destroyobject(clientData.pOpenedLibs);
+    lt_destroyobject(clientData.pInstalledLibs);
+
+    return 0;
+}
+
 /* LTRun */
 
 typedef struct {
@@ -340,6 +440,7 @@ void LTSystemSchellCommands_Cleanup(void) {
 static const LTSystemShell_CommandDesc s_commands[] = {
     { "?",          ShellCommand_Help,      "displays this list",                        NULL  },
     { "help",       ShellCommand_Help,      "provides help on a command",                NULL  },
+    { "ltlist",     ShellCommand_LTList,    "lists open and available LT Libraries",     NULL  },
     { "ltrun",      ShellCommand_LTRun,     "opens LT Library, calls Run() and closes",  NULL  },
     { "memstat",    ShellCommand_Memstat,   "memory usage",                              NULL  },
     { "ps",         ShellCommand_PS,        "reports running threads",                   NULL  },
