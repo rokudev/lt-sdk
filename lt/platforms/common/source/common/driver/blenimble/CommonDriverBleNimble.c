@@ -548,44 +548,40 @@ static void HandleConnectEvent(struct ble_gap_event *event, LTBleDeviceHandle hD
     // Record the link before anything can fail, so its disconnect is still forwarded.
     if (event->connect.status == 0) devCtx->connHandle = event->connect.conn_handle;
 
-    struct ble_gap_conn_desc *desc = lt_malloc(sizeof(struct ble_gap_conn_desc));
-    if (desc) {
-        P("ge.0", "connect 0x%x ch 0x%02x", event->connect.status, event->connect.conn_handle);
-        if (event->connect.status == 0) {
-            if (0 == ble_gap_conn_find(event->connect.conn_handle, desc)) {
-                LTAtomic_Store(&s_state, kLTDeviceBle_State_Connected);
-                s_mtu = ble_att_mtu(event->connect.conn_handle);
-                P("MTU", "%u", s_mtu);
-                lt_memcpy(s_peerMacAddr.octet, desc->peer_ota_addr.val, sizeof(desc->peer_ota_addr.val));
-                devCtx->remoteMac = s_peerMacAddr;
-                P("rmt",
-                  "%02X:%02X:%02X:%02X:%02X:%02X",
-                  s_peerMacAddr.octet[5],
-                  s_peerMacAddr.octet[4],
-                  s_peerMacAddr.octet[3],
-                  s_peerMacAddr.octet[2],
-                  s_peerMacAddr.octet[1],
-                  s_peerMacAddr.octet[0]);
-                P("conn.params",
-                  "itvl %.2fms, latency %d, timeout %dms",
-                  desc->conn_itvl * 1.25,
-                  desc->conn_latency,
-                  desc->supervision_timeout * 10);
-                devCtx->connInterval        = desc->conn_itvl; // need to convert to ms by * 1.25
-                devCtx->latency             = desc->conn_latency;
-                devCtx->supervision_timeout = desc->supervision_timeout;
+    // Keep the descriptor on the stack so a heap allocation failure cannot strand an unpublished link.
+    struct ble_gap_conn_desc desc;
+    P("ge.0", "connect 0x%x ch 0x%02x", event->connect.status, event->connect.conn_handle);
+    if (event->connect.status == 0) {
+        if (0 == ble_gap_conn_find(event->connect.conn_handle, &desc)) {
+            LTAtomic_Store(&s_state, kLTDeviceBle_State_Connected);
+            s_mtu = ble_att_mtu(event->connect.conn_handle);
+            P("MTU", "%u", s_mtu);
+            lt_memcpy(s_peerMacAddr.octet, desc.peer_ota_addr.val, sizeof(desc.peer_ota_addr.val));
+            devCtx->remoteMac = s_peerMacAddr;
+            P("rmt",
+              "%02X:%02X:%02X:%02X:%02X:%02X",
+              s_peerMacAddr.octet[5],
+              s_peerMacAddr.octet[4],
+              s_peerMacAddr.octet[3],
+              s_peerMacAddr.octet[2],
+              s_peerMacAddr.octet[1],
+              s_peerMacAddr.octet[0]);
+            P("conn.params",
+              "itvl %.2fms, latency %d, timeout %dms",
+              desc.conn_itvl * 1.25,
+              desc.conn_latency,
+              desc.supervision_timeout * 10);
+            devCtx->connInterval        = desc.conn_itvl;  // need to convert to ms by * 1.25
+            devCtx->latency             = desc.conn_latency;
+            devCtx->supervision_timeout = desc.supervision_timeout;
 
-                S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Connected, NULL);
-            }
-        } else {
-            // Connection failed
-            LTAtomic_Store(&s_state, kLTDeviceBle_State_Started);
-            S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Disconnected, NULL);
-            devCtx->connHandle = BLE_HS_CONN_HANDLE_NONE;
+            S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Connected, NULL);
         }
-        lt_free(desc);
     } else {
-        LTLOG_YELLOWALERT("ge.0.fail", "failed to allocate memory for ble_gap_conn_desc");
+        // Connection failed
+        LTAtomic_Store(&s_state, kLTDeviceBle_State_Started);
+        S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Disconnected, NULL);
+        devCtx->connHandle = BLE_HS_CONN_HANDLE_NONE;
     }
     // Release only after the connection state above is published.
     LTAtomic_Store(&s_directedAdvInProgress, 0);
@@ -619,13 +615,19 @@ static void HandleConnUpdateEvent(struct ble_gap_event *event, LTBleDeviceHandle
         return;
     }
 
+    // A reset may have cleared the link before this queued update runs.
+    if (event->conn_update.conn_handle != devCtx->connHandle) {
+        S.core->ReleaseHandlePrivateData(devCtx->hDev, devCtx);
+        return;
+    }
+
     struct ble_gap_conn_desc *desc = lt_malloc(sizeof(struct ble_gap_conn_desc));
     if (desc) {
         PLOG("ge.3", "conn upd status 0x%x ch 0x%02x", event->conn_update.status, event->conn_update.conn_handle);
         if (event->conn_update.status != 0) {
             LTLOG_YELLOWALERT("conn.update.failed", "reason code 0x%x", event->conn_update.status);
             S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Conn_Update_Failed, NULL);
-        } else if (0 == ble_gap_conn_find(event->connect.conn_handle, desc)) {
+        } else if (0 == ble_gap_conn_find(event->conn_update.conn_handle, desc)) {
             PLOG("conn.update.success",
                  "conn handle 0x%02x, itvl %.2fms, latency %d, timeout %dms",
                  event->conn_update.conn_handle,
