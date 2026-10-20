@@ -47,6 +47,8 @@ LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pwr.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pwr_ex.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_rcc.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_rcc_ex.c
+LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_spi.c
+LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_spi_ex.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_tim.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_tim_ex.c
 LT_PROJECT_SOURCE_FILES += Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_uart.c
@@ -62,3 +64,4 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 ###############################################################################
 #   10-Jul-2026	augustus    created
 #   12-Aug-2026	connor      added ADC HAL module (stm32h7xx_hal_adc, _adc_ex)
+#   19-Oct-2026	connor      added SPI HAL module (stm32h7xx_hal_spi, _spi_ex)
