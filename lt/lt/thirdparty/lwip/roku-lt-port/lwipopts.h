@@ -60,7 +60,9 @@
 #define LWIP_IPV6 0
 
 // Enable TCP, ARP, ETHERNET
+#ifndef LWIP_TCP
 #define LWIP_TCP        1
+#endif
 #define LWIP_ARP        1
 #define LWIP_ETHERNET   1
 

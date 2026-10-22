@@ -93,5 +93,24 @@ endif
 ifneq ($(strip $(LT_MEMP_NUM_TCP_PCB)),)
 LT_CFLAGS_GENERIC += -DLT_MEMP_NUM_TCP_PCB=$(LT_MEMP_NUM_TCP_PCB)
 endif
+LT_LWIP_TCP := $(shell $(LT_TARGET_DIR_BUILDTOOLS)/bin/peekjson "config/product/lwip/LT_LWIP_TCP" $(LT_PRODUCT_CONFIG_ARBOLATED_JSON_FILE))
+ifneq ($(strip $(LT_LWIP_TCP)),)
+LT_CFLAGS_GENERIC += -DLWIP_TCP=$(LT_LWIP_TCP)
+endif
 # get Rules.mk and build-o-rama
 include $(LT_PROJECT_RULES_MAKEFILE)
+
+# LWIP_TCP changes struct layouts and MEMP_MAX, so objects built under one
+# selection must not be mixed with objects built under another.  Make every
+# object depend on a stamp holding the effective value; the stamp is only
+# rewritten when that value changes, so incremental builds are unaffected.
+LT_LWIP_TCP_STAMP := $(LT_PROJECT_OBJ_DIR)/lwip-tcp-selection.stamp
+$(LT_LWIP_TCP_STAMP): LT_LWIP_TCP_VALUE := $(strip $(LT_LWIP_TCP))
+$(LT_PROJECT_ALL_OBJ_FILES): $(LT_LWIP_TCP_STAMP)
+
+.PHONY: lwip-tcp-selection-force
+lwip-tcp-selection-force:
+
+$(LT_LWIP_TCP_STAMP): lwip-tcp-selection-force
+	$(LT_EXEC_CMD) mkdir -p $(@D)
+	$(LT_EXEC_CMD) printf '%s\n' '$(LT_LWIP_TCP_VALUE)' | cmp -s - $@ || printf '%s\n' '$(LT_LWIP_TCP_VALUE)' > $@
