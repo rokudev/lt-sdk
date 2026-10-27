@@ -17,6 +17,8 @@
 
 #include "LTSystemSchellCommandsInternal.h"
 
+DEFINE_LTLOG_SECTION("ltsystemschell");
+
 #define ROKU_LT_BANNER                                              \
 "\n      ____          __             __  ______"                   \
 "\n     / __ \\ ____   / /__ __  __   / / /_  __/"                  \
@@ -686,19 +688,23 @@ static bool LTSystemScellImpl_LibInit(void) {
         /* We are running on a unit that has been secured - it has an LTDeviceIdentity library
            and that library has reported that the unit is not unsecured, i.e. it is secured.
            We can only run the shell if we have an LTAT entitlement to do so. */
-        if (deviceIdentity->CheckLTATClaims(kLTSecurityClaimGroup2, kLTSecurityClaimGroup2_EnableConsoleInput) != kLTSecurityStatus_Success) {
+        if (deviceIdentity->CheckLTATClaims(kLTSecurityClaimGroup2, kLTSecurityClaimGroup2_EnableConsoleInput) != kLTSecurityStatus_Success ||
+            deviceIdentity->CheckLTATClaims(kLTSecurityClaimGroup2, kLTSecurityClaimGroup2_EnableConsoleOutput) != kLTSecurityStatus_Success) {
             /* This is a secured unit that doesn't have the LTAT entitlement for running LTSystemShell; refuse loading */
+            LTLOG("disabled", "Secured unit, no entitlement present, LTSystemSchell disabled");
             lt_closelibrary(deviceIdentity);
             s_core->EnableSerialConsole(false);
             return false;
         }
         LT_GetCore()->EnableSerialConsole(true);
+        LTLOG("enabled.secured", "Secured unit, entitlement present, LTSystemSchell enabled");
     } else {
         /* This unit is not secured. Either it has no LTDeviceIdentity library which
            means it can't be secured, or it does and the LTDeviceIdentity library has
            reported the unit is unsecured. We allow running LTSystemShell on
            unsecured units. */
         s_core->EnableSerialConsole(true);
+        LTLOG("enabled.unsecured", "Unsecured unit, LTSystemSchell enabled");
     }
     if (deviceIdentity) lt_closelibrary(deviceIdentity);
 

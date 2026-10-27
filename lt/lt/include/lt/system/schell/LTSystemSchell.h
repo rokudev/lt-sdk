@@ -186,7 +186,7 @@ typedef_LTObject(LTSystemSchellConsole, 1) {
 /** Helper function for obtaining the console shell */
 LT_INLINE LTSystemSchell *LTSystemSchellConsole_GetConsoleShell(void) {
     LTSystemSchellConsole *console = lt_createobject(LTSystemSchellConsole);
-    LTSystemSchell        *shell   = console->API->GetConsoleShell();
+    LTSystemSchell        *shell   = console ? console->API->GetConsoleShell() : NULL;
     lt_destroyobject(console);
     return shell;
 }
