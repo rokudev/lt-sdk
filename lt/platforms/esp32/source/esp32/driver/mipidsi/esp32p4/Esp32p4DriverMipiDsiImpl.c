@@ -134,9 +134,83 @@ enum Esp32p4DriverMipiDsiConstants {
     kPixelDmaBurstLength            = 15,
 
     /* One less than the outstanding AXI requests a channel may have in flight.
-       These match Espressif's qualified DSI path: five reads and two writes. */
+       These match Espressif's qualified DSI path: five reads and two writes.
+
+       A prior round of diagnostics blamed a swap to a *different* physical
+       framebuffer address for a reproducible ~7 bridge FIFO underruns on
+       essentially every Esp32p4DriverMipiDsi_SetFrameBuffer call - that read
+       on the evidence available at the time, but it was wrong, and two fixes
+       aimed at an address-change cost (raising this limit to eight; having
+       the CPU read a word every kilobyte across the new buffer right after
+       FlushFrameBuffer invalidates it, to pre-pay a PSRAM row-activation cost)
+       both correctly made no difference, because neither touched the real
+       cause:
+
+       The underrun is caused by the CPU *writing* a large span of the
+       framebuffer - eg. 'dsi fb fill', or the per-pixel loop in 'dsi fb
+       animate' - while GDMA is concurrently streaming out of PSRAM.  Proof:
+       'dsi fb fill' on the live, already-active buffer, with no
+       SetFrameBuffer call anywhere near it - no descriptor touch, no LLP
+       rewrite, no explicit cache maintenance call, source address never
+       leaving the one physical buffer the whole time - still produces
+       6-9 underruns, every time.  'dsi fb reswap' alone (re-submitting
+       already-flushed, untouched pixels through SetFrameBuffer) stays at
+       zero, which is what previously looked like proof the address mattered;
+       it actually just happened to be the one op in the old test matrix that
+       never wrote fresh pixels first.  Every earlier "different address"
+       trial also redrew the frame right before swapping, so the one write
+       that actually mattered was never isolated from the address change
+       until 'dsi fb fill' with no follow-on swap took that variable out
+       entirely.  This also explains why chunking FlushFrameBuffer's cache
+       writeback/invalidate (tried and reverted a different night) did
+       nothing: that chunked the wrong operation - the pixel-drawing stores
+       that generate the contending PSRAM traffic happen earlier, in the
+       caller's draw loop, not inside FlushFrameBuffer at all.
+
+       Two more things were tried after that and are worth recording so they
+       are not retried: raising this driver's one GDMA channel to the
+       highest AXI arbitration priority (see kPixelDmaChannelPriority below)
+       made no difference, ruling out matrix arbitration weight as the
+       mechanism; and throttling the *draw* loop itself with Sleep()-based
+       yields between chunks does suppress the underrun (confirmed with
+       'dsi fb fillchunked'), but costs 10-40ms per yield on this RTOS's
+       tick-bound Sleep() - far too slow for a 40ms animation frame budget.
+
+       What actually works, with no RTOS cost at all: writing less.  The
+       caller does not need to touch the whole framebuffer every frame - see
+       the dirty-rectangle update in LTShellDsi.c's 'dsi fb animate', which
+       redraws only the pixels that actually changed (a moving square's two
+       edges, not the static background) instead of the full frame.  That
+       alone cut the write volume ~100x and the underrun rate from ~6-9 per
+       full-frame write down to ~10% of frames for that animation - still
+       downstream of this same PSRAM/MSPI contention, just proportionally
+       smaller because there is so much less to contend over.  See
+       'dsi fb swaploop2' and 'dsi fb touch' for how that was isolated, and
+       the comment above the dirty-rectangle code for the full writeup. */
     kPixelDmaSourceOutstandingLimit = 4,
     kPixelDmaDestOutstandingLimit   = 1,
+
+    /*
+     * The GDMA channel's own arbitration priority on the shared bus/matrix,
+     * 0 (lowest) to 7 (highest).  Tried at the maximum as a diagnostic for
+     * the CPU-write-vs-GDMA-read PSRAM contention documented above (this is
+     * the one channel this driver uses, so there is nothing else for it to
+     * out-arbitrate) - confirmed applied via a GDMA_CH0_CFG1 register
+     * readback after flashing (CH_PRIOR read back as 7), and made no
+     * difference at all: the same 'dsi fb fill' isolation (no swap, no
+     * address change, just CPU writes against a live GDMA read) still
+     * produced 6-9 underruns per call, same as at priority 1.  That rules out
+     * AXI/matrix arbitration weight as the mechanism - with only one GDMA
+     * channel active, winning every arbitration round outright should have
+     * helped if that were where the stall was happening.  The serialization
+     * is downstream of the matrix: most likely the PSRAM/MSPI controller's
+     * own command queue, which does not appear to expose a priority or
+     * requester-aware scheduling knob in what this driver can reach.  Left
+     * at the qualified value; the next candidate is throttling the CPU side
+     * - chunking the *draw* loop that writes the pixels, not the cache
+     * maintenance call - rather than trying to out-arbitrate it.
+     */
+    kPixelDmaChannelPriority        = 1,
 
     /*
      * The bridge's pixel FIFO is 1024 words deep.  Asking the DMA for more when
@@ -255,12 +329,22 @@ typedef_LTObjectImpl(LTDriverMipiDsi, Esp32p4DriverMipiDsi) {
  * and LTCore's allocator has no aligned entry point.  There is one DSI host on
  * this part, so there is never a second driver instance wanting its own.
  */
-static Esp32_GdmaDescriptor LT_ALIGNED(kCacheLineBytes) s_pixelDescriptors[2];
+/* Each slot gets its own cache line.  The descriptor itself is 64 bytes, so
+   without this padding two entries would share one 128 byte line, and
+   Esp32p4DriverMipiDsi_FlushPixelDescriptor writing back one descriptor would
+   also write back whatever stale, cached copy of the sibling descriptor's
+   fields happened to be sitting in that same line - clobbering fields the ISR
+   or the hardware had just updated in the one GDMA is actively consuming. */
+typedef struct {
+    Esp32_GdmaDescriptor descriptor;
+    u8                   _padding[kCacheLineBytes - sizeof(Esp32_GdmaDescriptor)];
+} Esp32_GdmaDescriptorSlot;
+static Esp32_GdmaDescriptorSlot LT_ALIGNED(kCacheLineBytes) s_pixelDescriptors[2];
 static volatile u32 s_nActivePixelDescriptor;
 static volatile u32 s_nQueuedPixelDescriptor = 0xffffffffu;
 
 static Esp32_GdmaDescriptor * LT_ISR_SAFE Esp32p4DriverMipiDsi_PixelDescriptor(u32 nIndex) {
-    return &s_pixelDescriptors[nIndex & 1u];
+    return &s_pixelDescriptors[nIndex & 1u].descriptor;
 }
 
 static void LT_ISR_SAFE Esp32p4DriverMipiDsi_FlushPixelDescriptor(
@@ -860,7 +944,7 @@ static void Esp32p4DriverMipiDsi_ArmPixelDma(Esp32p4DriverMipiDsi *dsi) {
           (kEsp32_GdmaFlow_MemToPeri_Dmac << ESP32_REG_SHIFT(GDMA_CH_CFG1, TT_FC))
         | ESP32_REG_MASK(GDMA_CH_CFG1, HS_SEL_SRC)
         | (kEsp32_GdmaHandshake_MipiDsi << ESP32_REG_SHIFT(GDMA_CH_CFG1, DST_PER))
-        | (1u << ESP32_REG_SHIFT(GDMA_CH_CFG1, CH_PRIOR))
+        | (kPixelDmaChannelPriority << ESP32_REG_SHIFT(GDMA_CH_CFG1, CH_PRIOR))
         | (kPixelDmaSourceOutstandingLimit << ESP32_REG_SHIFT(GDMA_CH_CFG1, SRC_OSR_LMT))
         | (kPixelDmaDestOutstandingLimit << ESP32_REG_SHIFT(GDMA_CH_CFG1, DST_OSR_LMT));
 
