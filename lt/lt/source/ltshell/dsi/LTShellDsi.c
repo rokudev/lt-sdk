@@ -418,6 +418,168 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
         return 0;
     }
 
+    if (0 == lt_strcmp(argv[2], "fillchunked")) {
+        /* Diagnostic only: identical to 'fill', except the CPU write burst is
+           broken into chunks with a sleep between them.  'fill' alone (no
+           SetFrameBuffer call at all) was what isolated the CPU-write-vs-live-
+           GDMA-read PSRAM contention as the underrun's real cause; this lets
+           that same isolated repro be re-run with the write burst spread out,
+           to test whether shortening it gives GDMA's reads room to keep the
+           bridge fed, without touching the driver or the unchunked 'fill' and
+           'animate' paths other callers already rely on. */
+        u32 nColour = 0, nChunkPixels = 0, nSleepMs = 0;
+        if (argc < 6
+         || ! ParseU32(argv[3], &nColour)
+         || ! ParseU32(argv[4], &nChunkPixels) || ! nChunkPixels
+         || ! ParseU32(argv[5], &nSleepMs)) {
+            iShell->PutString(hShell, "usage: dsi fb fillchunked <colour> <chunk pixels> <sleep ms>\n");
+            return -1;
+        }
+        LTOThread *pThread = LT_GetCore()->GetCurrentThreadObject();
+        u32 nSinceYield = 0;
+        for (u32 i = 0; i < nPixels; ++i) {
+            u8 * pPixel = &s_pFrameBuffer[i * nBytesPerPixel];
+            pPixel[0] = (u8)(nColour & 0xff);
+            pPixel[1] = (u8)((nColour >> 8) & 0xff);
+            if (nBytesPerPixel == 3) pPixel[2] = (u8)((nColour >> 16) & 0xff);
+            if (++nSinceYield >= nChunkPixels) {
+                nSinceYield = 0;
+                pThread->API->Sleep(LTTime_Milliseconds(nSleepMs));
+            }
+        }
+        iShell->Print(hShell, "filled %u pixels in chunks of %u, %u ms apart\n",
+                      (unsigned)nPixels, (unsigned)nChunkPixels, (unsigned)nSleepMs);
+        return 0;
+    }
+
+    if (0 == lt_strcmp(argv[2], "touch")) {
+        /* Diagnostic only: repeatedly overwrite just the first <pixels>
+           pixels of the live, already-active buffer, back to back with no
+           sleep between repeats - no SetFrameBuffer, no address change, no
+           chunking.  Used to separate two theories for the underruns that
+           remain after shrinking 'animate' to a dirty-rectangle update: (a)
+           a near-fixed per-write stall regardless of size, vs (b) a real
+           size threshold below which a write is small enough not to matter.
+           Sweeping <pixels> down and watching where the underrun rate drops
+           answers that. */
+        u32 nTouchPixels = 0, nRepeats = 0;
+        if (argc < 5 || ! ParseU32(argv[3], &nTouchPixels) || ! nTouchPixels
+         || ! ParseU32(argv[4], &nRepeats) || ! nRepeats
+         || nTouchPixels > nPixels) {
+            iShell->PutString(hShell, "usage: dsi fb touch <pixels> <repeats>\n");
+            return -1;
+        }
+        for (u32 r = 0; r < nRepeats; ++r) {
+            u32 nColour = (r & 1) ? 0xf800 : 0x001f;
+            for (u32 i = 0; i < nTouchPixels; ++i) {
+                u8 * pPixel = &s_pFrameBuffer[i * nBytesPerPixel];
+                pPixel[0] = (u8)(nColour & 0xff);
+                pPixel[1] = (u8)((nColour >> 8) & 0xff);
+                if (nBytesPerPixel == 3) pPixel[2] = (u8)((nColour >> 16) & 0xff);
+            }
+        }
+        iShell->Print(hShell, "touched %u pixels, %u times\n",
+                      (unsigned)nTouchPixels, (unsigned)nRepeats);
+        return 0;
+    }
+
+    if (0 == lt_strcmp(argv[2], "swaploop2")) {
+        /* Diagnostic only: per iteration, write a <rows> x <cols> block
+           starting at row <row> into the current ping-pong buffer,
+           SetFrameBuffer it, sleep <delay ms>, repeat <repeats> times - the
+           same loop shape as 'animate', but with a trivial fixed write
+           instead of the moving square, and done as a single native
+           on-device loop (not round-tripped shell commands, which stayed
+           near zero underruns even for the same write sizes - the native
+           loop's tighter pacing is part of what reproduces 'animate's
+           ~1/frame rate).  Varying <row>/<rows>/<cols> is what showed the
+           underrun rate tracks per-row write *width*, not location or
+           scatter shape: ~20-25% at 32 cols, ~94% at 126 cols (matching the
+           dirty-rectangle union-bounding-box width that was in 'animate'
+           before it was narrowed to just the two edges). */
+        u32 nHeight = s_config.timing.nVerticalActive;
+        u32 nWidth  = s_config.timing.nHorizontalActive;
+        if (! s_pDsi->API->IsVideoActive(s_pDsi)) {
+            iShell->PutString(hShell, "video is not active\n");
+            return -1;
+        }
+        u32 nRow = 0, nRows = 0, nCols = 0, nRepeats = 0, nDelayMs = 0;
+        if (argc < 8 || nWidth == 0 || nHeight == 0
+         || ! ParseU32(argv[3], &nRow)
+         || ! ParseU32(argv[4], &nRows) || ! nRows || nRow + nRows > nHeight
+         || ! ParseU32(argv[5], &nCols) || ! nCols || nCols > nWidth
+         || ! ParseU32(argv[6], &nRepeats) || ! nRepeats
+         || ! ParseU32(argv[7], &nDelayMs)) {
+            iShell->PutString(hShell, "usage: dsi fb swaploop2 <row> <rows> <cols> <repeats> <delay ms>\n");
+            return -1;
+        }
+        if (! s_pAnimationFrameBuffer) {
+            LTMemoryRegion region = LT_GetCore()->GetNamedMemoryRegion("psram");
+            s_pAnimationFrameBuffer = (u8 *)lt_malloc_from_region(region, s_nFrameBufferBytes);
+            if (! s_pAnimationFrameBuffer) {
+                iShell->PutString(hShell, "cannot allocate the second framebuffer\n");
+                return -1;
+            }
+        }
+        LTOThread *pThread = LT_GetCore()->GetCurrentThreadObject();
+        for (u32 r = 0; r < nRepeats; ++r) {
+            u8 *pDrawBuffer = (r & 1) ? s_pAnimationFrameBuffer : s_pFrameBuffer;
+            u32 nColour = (r & 1) ? 0xf800 : 0x001f;
+            for (u32 y = nRow; y < nRow + nRows; ++y) {
+                for (u32 x = 0; x < nCols; ++x) {
+                    u32 i = y * nWidth + x;
+                    u8 * pPixel = &pDrawBuffer[i * nBytesPerPixel];
+                    pPixel[0] = (u8)(nColour & 0xff);
+                    pPixel[1] = (u8)((nColour >> 8) & 0xff);
+                    if (nBytesPerPixel == 3) pPixel[2] = (u8)((nColour >> 16) & 0xff);
+                }
+            }
+            u32 nWaits = 0;
+            while (! s_pDsi->API->SetFrameBuffer(s_pDsi, pDrawBuffer, s_nFrameBufferBytes)
+                   && nWaits++ < 100) {
+                pThread->API->Sleep(LTTime_Milliseconds(1));
+            }
+            if (nWaits > 100) {
+                iShell->PutString(hShell, "framebuffer swap timed out\n");
+                return -1;
+            }
+            pThread->API->Sleep(LTTime_Milliseconds(nDelayMs));
+        }
+        iShell->Print(hShell, "swaplooped row=%u rows=%u cols=%u, %u times, %u ms apart\n",
+                      (unsigned)nRow, (unsigned)nRows, (unsigned)nCols,
+                      (unsigned)nRepeats, (unsigned)nDelayMs);
+        return 0;
+    }
+
+    if (0 == lt_strcmp(argv[2], "dumprow")) {
+        /* Diagnostic only: print the colour (rgb565) at <cols> consecutive
+           x positions starting at <x>, for <rows> consecutive y positions
+           starting at <y> - one line per row, so a boundary that should be
+           a clean vertical edge can be checked for being crisp in the
+           stored framebuffer memory itself (as opposed to a tearing/timing
+           artifact that only shows up on the physical panel). */
+        u32 nWidth = s_config.timing.nHorizontalActive;
+        u32 x0 = 0, y0 = 0, nCols = 0, nRows = 0;
+        if (argc < 7 || nWidth == 0
+         || ! ParseU32(argv[3], &x0) || ! ParseU32(argv[4], &y0)
+         || ! ParseU32(argv[5], &nCols) || ! nCols
+         || ! ParseU32(argv[6], &nRows) || ! nRows) {
+            iShell->PutString(hShell, "usage: dsi fb dumprow <x> <y> <cols> <rows>\n");
+            return -1;
+        }
+        for (u32 r = 0; r < nRows; ++r) {
+            iShell->Print(hShell, "y=%u:", (unsigned)(y0 + r));
+            for (u32 c = 0; c < nCols; ++c) {
+                u32 i = (y0 + r) * nWidth + (x0 + c);
+                u8 * pPixel = &s_pFrameBuffer[i * nBytesPerPixel];
+                u16 nColour = pPixel[0] | (pPixel[1] << 8);
+                iShell->Print(hShell, " %04x", (unsigned)nColour);
+            }
+            iShell->PutString(hShell, "\n");
+        }
+        return 0;
+    }
+
     if (0 == lt_strcmp(argv[2], "bars")) {
         /* Eight vertical bars, so a panel that scans out at all shows whether
            the line length and the pixel format agree with what it expected. */
@@ -460,6 +622,33 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
         return 0;
     }
 
+    if (0 == lt_strcmp(argv[2], "reswap")) {
+        /* Diagnostic only: re-submits the buffer already on screen through
+           SetFrameBuffer unchanged, so a mid-stream swap can be exercised -
+           descriptor rebuild, cache flush, frame-boundary rearm and all -
+           without the pixel content or the physical address moving.  Useful
+           for telling a swap-bookkeeping cost apart from an address-change
+           cost (eg. a PSRAM bank/row switch) when the two are otherwise
+           always bundled together, as they are in 'dsi fb animate'. */
+        if (! s_pDsi->API->IsVideoActive(s_pDsi)) {
+            iShell->PutString(hShell, "video is not active; nothing to reswap\n");
+            return -1;
+        }
+        LTOThread *pThread = LT_GetCore()->GetCurrentThreadObject();
+        u32 nWaits = 0;
+        while (! s_pDsi->API->SetFrameBuffer(s_pDsi, s_pFrameBuffer, s_nFrameBufferBytes)
+               && nWaits++ < 100) {
+            pThread->API->Sleep(LTTime_Milliseconds(1));
+        }
+        if (nWaits > 100) {
+            iShell->PutString(hShell, "framebuffer swap timed out\n");
+            return -1;
+        }
+        iShell->Print(hShell, "reswapped the same %u byte buffer at %lx (diagnostic only)\n",
+                      (unsigned)s_nFrameBufferBytes, (unsigned long)(LT_SIZE)s_pFrameBuffer);
+        return 0;
+    }
+
     if (0 == lt_strcmp(argv[2], "animate")) {
         if (nBytesPerPixel != 2) {
             iShell->PutString(hShell, "the animation currently requires rgb565\n");
@@ -491,23 +680,88 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
         };
         LTOThread *pThread = LT_GetCore()->GetCurrentThreadObject();
 
+        /* Per (ping-pong) buffer dirty-rectangle tracking - see below. */
+        u32  nLastLeft[2]    = { 0, 0 };
+        bool bInitialized[2] = { false, false };
+
         iShell->Print(hShell, "animating %u frames\n", (unsigned)nFrames);
         for (u32 nFrame = 0; nFrame < nFrames; ++nFrame) {
-            u8 *pDrawBuffer = (nFrame & 1) ? s_pAnimationFrameBuffer : s_pFrameBuffer;
+            u32 nBuf = nFrame & 1;
+            u8 *pDrawBuffer = nBuf ? s_pAnimationFrameBuffer : s_pFrameBuffer;
             u32 nPhase = (nFrame * 8) % nPeriod;
             u32 nLeft  = (nPhase <= nTravel) ? nPhase : nPeriod - nPhase;
-            for (u32 y = 0; y < nHeight; ++y) {
-                for (u32 x = 0; x < nWidth; ++x) {
-                    u16 nColour = s_background[(x * 8) / nWidth];
-                    if (x >= nLeft && x < nLeft + nSquare
-                     && y >= nTop && y < nTop + nSquare) {
-                        nColour = 0xffff;
+
+            if (! bInitialized[nBuf]) {
+                /* First touch of this buffer this invocation: draw the whole
+                   frame, same as the original unconditional loop below. */
+                for (u32 y = 0; y < nHeight; ++y) {
+                    for (u32 x = 0; x < nWidth; ++x) {
+                        u16 nColour = s_background[(x * 8) / nWidth];
+                        if (x >= nLeft && x < nLeft + nSquare
+                         && y >= nTop && y < nTop + nSquare) {
+                            nColour = 0xffff;
+                        }
+                        u32 nPixel = y * nWidth + x;
+                        pDrawBuffer[nPixel * 2]     = (u8)nColour;
+                        pDrawBuffer[nPixel * 2 + 1] = (u8)(nColour >> 8);
                     }
-                    u32 nPixel = y * nWidth + x;
-                    pDrawBuffer[nPixel * 2]     = (u8)nColour;
-                    pDrawBuffer[nPixel * 2 + 1] = (u8)(nColour >> 8);
+                }
+                bInitialized[nBuf] = true;
+            } else {
+                /* Dirty-rectangle update.  The background bars are a pure
+                   function of x and never change once drawn, and the square
+                   only ever occupies rows [nTop, nTop + nSquare) - so the
+                   only pixels that can actually differ from what this
+                   (ping-pong) buffer already holds from its last use are the
+                   edge the square is vacating and the edge it is entering;
+                   the overlap in the middle is already the right colour
+                   either way and does not need touching.
+                   
+                   An earlier version of this wrote the whole union bounding
+                   box of the old and new square (vacated edge + overlap +
+                   entered edge) instead of just the two edges.  That still
+                   cut the write volume by ~100x versus a full-frame redraw
+                   and cut underruns 6-9x (195/200 -> still real, not zero),
+                   but 'dsi fb swaploop2' proved the overlap it was
+                   needlessly rewriting - ~110 cols wide there, not the ~16-32
+                   of the true edges - was most of what was left: dropping
+                   just the overlap (same row band, same cadence, same
+                   repeat count) took the measured rate from ~94% down to
+                   ~20-25%.  So: only the two edge strips, each at most
+                   nSquare wide but typically just the per-frame travel
+                   distance (8px * 2 real frames per buffer, ie ~16px) wide. */
+                u32 nPrevLeft = nLastLeft[nBuf];
+                u32 nOldEnd   = nPrevLeft + nSquare;
+                u32 nNewEnd   = nLeft + nSquare;
+                u32 vLo, vHi, eLo, eHi;
+                if (nLeft > nPrevLeft) {
+                    /* Moved right: vacated the left edge, entered the right. */
+                    vLo = nPrevLeft;
+                    vHi = (nLeft < nOldEnd) ? nLeft : nOldEnd;
+                    eLo = (nOldEnd > nLeft) ? nOldEnd : nLeft;
+                    eHi = nNewEnd;
+                } else {
+                    /* Moved left: vacated the right edge, entered the left. */
+                    vLo = (nNewEnd > nPrevLeft) ? nNewEnd : nPrevLeft;
+                    vHi = nOldEnd;
+                    eLo = nLeft;
+                    eHi = (nPrevLeft < nNewEnd) ? nPrevLeft : nNewEnd;
+                }
+                for (u32 y = nTop; y < nTop + nSquare; ++y) {
+                    for (u32 x = vLo; x < vHi; ++x) {
+                        u16 nColour = s_background[(x * 8) / nWidth];
+                        u32 nPixel  = y * nWidth + x;
+                        pDrawBuffer[nPixel * 2]     = (u8)nColour;
+                        pDrawBuffer[nPixel * 2 + 1] = (u8)(nColour >> 8);
+                    }
+                    for (u32 x = eLo; x < eHi; ++x) {
+                        u32 nPixel = y * nWidth + x;
+                        pDrawBuffer[nPixel * 2]     = 0xff;
+                        pDrawBuffer[nPixel * 2 + 1] = 0xff;
+                    }
                 }
             }
+            nLastLeft[nBuf] = nLeft;
 
             if (s_pDsi->API->IsVideoActive(s_pDsi)) {
                 u32 nWaits = 0;
@@ -524,6 +778,12 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
                 iShell->PutString(hShell, "video start failed during animation\n");
                 return -1;
             }
+            /* Jittering this (40 + (nFrame % 7)) was tried as a diagnostic
+               for a suspected sleep-phase-lock with the bridge's refill
+               cycle - see 'dsi fb swaploop2' and the outstanding-limit
+               comment above.  It made effectively no difference (189 vs 195
+               underruns per 200 frames), ruling that theory out, so this is
+               back to the plain fixed delay. */
             pThread->API->Sleep(LTTime_Milliseconds(40));
         }
         iShell->PutString(hShell, "animation complete\n");
@@ -991,9 +1251,18 @@ static void ShellHelpDsi(LTShell hShell, int argc, const char ** argv) { LT_UNUS
     iShell->PutString(hShell, "       dsi fb alloc [bytes]          - allocate a frame and hand it over\n");
     iShell->PutString(hShell, "       dsi fb free\n");
     iShell->PutString(hShell, "       dsi fb fill <colour>          - one colour, in the configured format\n");
+    iShell->PutString(hShell, "       dsi fb fillchunked <colour> <chunk px> <sleep ms>\n");
+    iShell->PutString(hShell, "                                     - diagnostic: fill with yields between chunks\n");
+    iShell->PutString(hShell, "       dsi fb touch <pixels> <repeats>\n");
+    iShell->PutString(hShell, "                                     - diagnostic: rewrite just <pixels>, back to back\n");
+    iShell->PutString(hShell, "       dsi fb swaploop2 <row> <rows> <cols> <repeats> <delay ms>\n");
+    iShell->PutString(hShell, "                                     - diagnostic: native write+swap loop at a chosen row band\n");
+    iShell->PutString(hShell, "       dsi fb dumprow <x> <y> <cols> <rows>\n");
+    iShell->PutString(hShell, "                                     - diagnostic: print rgb565 at a small region\n");
     iShell->PutString(hShell, "       dsi fb bars                   - eight vertical colour bars\n");
     iShell->PutString(hShell, "       dsi fb grid                   - static 32-pixel mapping grid\n");
     iShell->PutString(hShell, "       dsi fb animate [frames]       - moving square over colour bars\n");
+    iShell->PutString(hShell, "       dsi fb reswap                 - diagnostic: resubmit the same buffer mid-stream\n");
     iShell->PutString(hShell, "       dsi video <start|stop>\n");
     iShell->PutString(hShell, "       dsi lanes                     - the clock and data lane states\n");
     iShell->PutString(hShell, "       dsi hs <on|off>               - send panel commands in high speed\n");
