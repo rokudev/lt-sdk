@@ -60,6 +60,14 @@ DEFINE_LTLOG_SECTION("lt.net.iperf3");
 #define FUNC_CAST(F) (void (*)(void *))F
 #define GET_JITTER_REPORT(J, P) (double)((J) / 1000000000) / (P)
 #define GET_TPUT_REPORT(B, T) (((double)((B) << 3) / (T)) / 1000000)
+/* Server thread priority, supplied by the product (see LTNetIperf3.mk).  The correct
+ * value is the platform's WiFi thread priority: below it the server is starved on a
+ * saturated receive, above it the server preempts the WiFi task.  Unset leaves the
+ * LT default of 0, which preserves existing behaviour for products that do not set it. */
+#ifndef LT_IPERF_SERVER_PRIORITY
+#define LT_IPERF_SERVER_PRIORITY 0
+#endif
+
 
 enum {
     kDefaultIPerfPort = 5201,
@@ -1317,11 +1325,18 @@ void LTNetIperf3Impl_RunServer(LTNetIperf3_Parameters *p, LTNetIperf3_ReportCall
     LTNetIperf3Impl_KillServer(NULL);
     s_server_info.params = LTNetIperf3_ParametersDefault;
     if (p && p->port) s_server_info.params.port = p->port;
+    /* Receive side only; the transmit client keeps its own default.  Clamp before
+     * conversion so every reader of params.prio gets a value that survives LTThread's
+     * u8 argument. */
+    u16 wanted = (p && p->prio) ? p->prio : (u16)LT_IPERF_SERVER_PRIORITY;
+    s_server_info.params.prio = (wanted > kLTThread_PriorityHighest)
+                              ? (u16)kLTThread_PriorityHighest : wanted;
     s_server_info.common.data = lt_malloc(kWriteSize);
     s_server_info.common.callback = cb;
     s_server_info.common.callback_arg = cb_arg;
     s_server_info.common.hThread = S.pCore->CreateThread("Iperf3_Server");
     S.iThread->SetStackSize(s_server_info.common.hThread, 8192); /* server JSON parse overflows 2048 */
+    S.iThread->SetPriority(s_server_info.common.hThread, (u8)s_server_info.params.prio);
     S.iThread->Start(s_server_info.common.hThread, NULL, NULL);
     S.iThread->QueueTaskProc(s_server_info.common.hThread, Iperf3_Server_RunServer, NULL, &s_server_info);
 }

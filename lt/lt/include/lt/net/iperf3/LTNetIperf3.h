@@ -27,7 +27,8 @@ typedef struct LTNetIperf3_Parameters {
     u16 time;       // defaults to 10 (seconds)
     u32 bitrate;    // defaults to unlimited for TCP and 1Mbit/sec for UDP
     u16 dscp;       // defaults to 0, DC0
-    u16 prio;       // default to 0, priority 0
+    u16 prio;       // 0 selects the default: server LT_IPERF_SERVER_PRIORITY, client 0.
+                    // Clamped to [0..kLTThread_PriorityHighest]
     u16 mss;        // default to 1460
     u16 streams;    // default to 1
 } LTNetIperf3_Parameters;
