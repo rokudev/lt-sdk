@@ -12,9 +12,5 @@
 LT_PROJECT_SOURCE_DIR		:=	$(LT_PROJECT_SOURCE_DIR_BASE)/ltshell/sleep
 LT_PROJECT_SOURCE_FILES		:= 	LTShellSleep.c
 
-ifeq ($(notdir $(LT_PLATFORM_ROOT)),bl61x)
-LT_PROJECT_SOURCE_FILES := LTShellSleepControl.c
-endif
-
 # make
 include $(LT_PROJECT_RULES_MAKEFILE)

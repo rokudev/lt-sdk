@@ -15,7 +15,7 @@
 
 LT_EXTERN_C_BEGIN
 
-typedef_LTObject(LTDriverPowerClient, 1) {
+typedef_LTObject(LTDriverPowerClient, 2) {
 
     /* Individual device drivers that need to provide special handling to go into and out of sleep mode
        need to provide a specialization of LTDriverPowerClient where the specialization name is a concatination
@@ -30,7 +30,7 @@ typedef_LTObject(LTDriverPowerClient, 1) {
        for bringup/initialization order, and teardown order is the reverse. */
 
     void (* GoToSleep)(LTDriverPowerClient *client);
-        /**< Instructs device driver to go to sleep, unconditionally
+        /**< Instructs device driver to go to sleep, unconditionally; may be NULL for a client with nothing to do in sleep
          *
          * %GoToSleep is called by LTDevicePower in the context of the LTDevicePower thread,
          * running at the highest priority in the sysetm *WITH INTERRUPTS DISABLED*.  It's purpose is
@@ -56,7 +56,7 @@ typedef_LTObject(LTDriverPowerClient, 1) {
          */
 
     void (* WakeFromSleep)(LTDriverPowerClient *client);
-        /**< Instructs device driver to WakeFromSleep, unconditionally
+        /**< Instructs device driver to WakeFromSleep, unconditionally; may be NULL when %GoToSleep is
          *
          * %WakeFromSleep is called by LTDevicePower prior to the resumption of LT OS Facilities.
          * The same caveats regarding execution context and use of the scheduler apply as advised
@@ -70,6 +70,35 @@ typedef_LTObject(LTDriverPowerClient, 1) {
          * @note At this point the kernel time returned by LT_GetCore()->GetKernelTime() should not be
          *       relied upon except to determine durations between invocations called exclusively within this function.
          *
+         */
+
+    bool (* IsReadyToSleep)(LTDriverPowerClient *client, LTTime *pWakeupTime);
+        /**< Optional (may be NULL); returns false to skip hardware sleep for this attempt
+         *
+         * %IsReadyToSleep is called after every %GoToSleep, in the same reverse order as %GoToSleep (the first client
+         * listed is asked last), immediately before the power driver enters sleep, under the same constraints as
+         * %GoToSleep.  A client may lower *pWakeupTime to wake up earlier, e.g. when %GoToSleep put hardware to sleep
+         * that wakes up on its own deadline; clients asked after it must not lower it further if it has committed the
+         * deadline to hardware.  If any client returns false, the remaining
+         * clients are not asked and the power driver is not invoked, but every %WakeFromSleep is still called so that
+         * clients can restore their state, and the wakeup reason is set to kLTDevicePower_WakeupReason_SleepSkipped.
+         *
+         * @param  client       the power driver client
+         * @param  pWakeupTime  the absolute kernel time to wake up at, never zero; may only be lowered
+         * @return true if the hardware under the client's control can enter sleep now
+         */
+
+    void (* EnterShipmode)(LTDriverPowerClient *client);
+        /**< Optional (may be NULL); puts the hardware under the client's control into ship mode, with no way back
+         *
+         * %EnterShipmode is called by LTDevicePower->EnterShipmode, in the same reverse order as %GoToSleep, before
+         * the power driver's own EnterShipmode.  Unlike %GoToSleep it runs on the power thread with interrupts
+         * enabled and may block, e.g. to program a charger over I2C.  Finish the work before returning: work
+         * queued to another thread may never run.  A client may end ship mode itself (a charger cutting the
+         * power); it is then listed first, so it runs last.  There is no matching exit: if ship mode returns,
+         * the caller of LTDevicePower->EnterShipmode recovers.
+         *
+         * @param  client the power driver client
          */
 
 } LTOBJECT_API;

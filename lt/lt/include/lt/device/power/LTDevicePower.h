@@ -12,6 +12,7 @@
 #define ROKU_LT_INCLUDE_LT_DEVICE_POWER_LTDEVICEPOWER_H
 
 #include <lt/core/LTTime.h>
+#include <lt/core/LTThread.h>
 
 LT_EXTERN_C_BEGIN
 
@@ -22,9 +23,25 @@ typedef_LTENUM_SIZED(LTDevicePower_WakeupReason, u32) {
     kLTDevicePower_WakeupReason_ButtonPress,
     kLTDevicePower_WakeupReason_WiFiPacket,
     kLTDevicePower_WakeupReason_ChargeEvent,
+    kLTDevicePower_WakeupReason_GPIOEvent,
+    kLTDevicePower_WakeupReason_SleepSkipped,   /* hardware sleep was vetoed by a power client or not entered; the device never slept */
 };
 
-typedef_LTObject(LTDevicePower, 1) {
+typedef_LTObject(LTDevicePower, 2) {
+
+    void (* BindToCurrentThread)(void);
+        /**< runs power management on the calling thread
+         *
+         * call %BindToCurrentThread once during setup to make the calling thread (e.g., the main thread)
+         * the power thread instead of a dedicated one.  Sleep handling is set up on it right away, so the
+         * thread must already be started and remain valid for the lifetime of the LTDevicePower object.
+         *
+         * @note Call it before any other call that needs a power thread.  It is ignored once a power thread
+         *       is in use; without it, LTDevicePower creates its own dedicated thread on the first
+         *       EnableSleepMode() or DisableSleepMode() call
+         *
+         * @see EnableSleepMode
+         */
 
     void (* EnableSleepMode)(LTTime idleDelay, LTTime minimumSleepDuration);
         /**< enables low power sleep mode
@@ -83,6 +100,23 @@ typedef_LTObject(LTDevicePower, 1) {
          *
          *  @param wakeupReason - the wakeupReason to get the string name of
          *  @return the string name of the wakeupReason enum value
+         */
+
+    void (* EnterShipmode)(void);
+        /**< enters shipmode (deep sleep with minimal power consumption)
+         *
+         * call %EnterShipmode to put the device into the deepest low power state (shipmode),
+         * where the device will not wake up from software timers. This is typically used
+         * for shipping or long-term storage.  Every power client prepares its hardware first,
+         * then the power driver takes the final step, on the power thread.  Call it without
+         * external power: a charger cannot cut the battery while external power is present.
+         *
+         * @note On the power thread this function should not return under normal circumstances.
+         *       If it does return, ship mode entry failed; the power clients are not restored, so
+         *       the caller decides how to recover, e.g. by rebooting.  From another thread it is
+         *       queued to the power thread and returns at once, so that caller cannot see a failure.
+         *
+         * @see LTDriverPowerClient->EnterShipmode, LTDriverPower->EnterShipmode
          */
 
 } LTOBJECT_API;

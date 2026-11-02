@@ -15,7 +15,7 @@
 
 LT_EXTERN_C_BEGIN
 
-typedef_LTObject(LTDriverPower, 1) {
+typedef_LTObject(LTDriverPower, 2) {
 
     LTTime (*EnterSleep)(LTTime softwareRequiredWakeupTime, LTDevicePower_WakeupReason *wakeupReasonToSet);
     /**< Puts the device into low power sleep mode
@@ -30,6 +30,30 @@ typedef_LTObject(LTDriverPower, 1) {
       *        the function returns
       * @return the actual time duration the system spent in low power sleep
       *
+      */
+
+    void (*EnterShipmode)(void);
+    /**< Optional (may be NULL); the final ship mode step for the SoC
+      *
+      * EnterShipmode is called with interrupts disabled, after every power client's EnterShipmode, and puts the SoC
+      * into its deepest low power state, where it does not wake up from software timers.  A platform whose power is
+      * cut by a power client (e.g. a charger) leaves it NULL.
+      *
+      * @note This function should not return under normal circumstances. If it does return,
+      *       it indicates that shipmode entry failed.
+      *
+      */
+
+    bool (*Enable)(bool enable);
+    /**< Optional (may be NULL); tells the driver that LTDevicePower starts or stops handling sleep
+      *
+      * Enable(true) is called on the power thread, with interrupts enabled, when LTDevicePower starts
+      * handling sleep on it and before the first sleep; Enable(false) is called when it stops.  A driver
+      * that needs thread context around sleep registers its LTCore->OnSleepAction() handlers here, so
+      * they run on the power thread.
+      *
+      * @param enable true when sleep handling starts, false when it stops
+      * @return false if the driver cannot support sleep
       */
 
 } LTOBJECT_API;

@@ -221,6 +221,19 @@ typedef_LTObject(LTDeviceGpio, 1) {
          *
          * @returns The bitfield of the interrupting GPIOs.
          */
+
+    bool (*SetWakeupSource)(LTDeviceGpio *gpio, u16 gpioIndex, bool enable, LTDeviceGPIO_TriggerType triggerType);
+        /**<
+         * @brief Enables or disables the specified GPIO as a source that wakes the device from sleep
+         *
+         * @param gpioIndex - The index of this GPIO (ranging from 0 to GetNumberOfGpios - 1)
+         * @param enable - true to wake the device on this GPIO, false to stop
+         * @param triggerType - The edge or level that wakes the device; ignored when disabling
+         *
+         * @returns Success, or false if the platform does not support the trigger type
+         *
+         * @note Optional; NULL on platforms without per-GPIO sleep wakeup control
+         */
 } LTOBJECT_API;
 
 LT_EXTERN_C_END
