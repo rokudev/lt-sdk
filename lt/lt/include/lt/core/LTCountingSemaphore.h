@@ -112,8 +112,9 @@ typedef_LTObject(LTCountingSemaphore, 1) {
          *
          * @param[in] sem The semaphore.
          *
-         * @note ISR-safe.  Uses atomic increment and naked monitor Notify
-         *       (no Enter/Exit) per the LTMonitor ISR contract.
+         * @note ISR-safe.  In an ISR or with interrupts disabled, uses atomic
+         *       increment and naked monitor Notify per the LTMonitor ISR contract;
+         *       otherwise behaves as SignalFromThread().
          */
 
     void (* SignalFromThread)(LTCountingSemaphore *sem);
@@ -132,6 +133,8 @@ typedef_LTObject(LTCountingSemaphore, 1) {
          *
          * @note Thread-only.  It is illegal to call SignalFromThread() from
          *       an ISR — use Signal() instead.
+         * @note A waiter may destroy the semaphore once it takes the count this
+         *       call published; destruction waits for this call to leave the monitor.
          */
 
     u32 (* GetCount)(LTCountingSemaphore *sem) LT_ISR_SAFE;
