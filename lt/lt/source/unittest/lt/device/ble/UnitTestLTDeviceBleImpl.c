@@ -279,6 +279,38 @@ static void StopBleAdvertiseTest(Tilt *tilt) {
     TILT_EXPECT_TRUE(tilt, state==kLTDeviceBle_State_Started, "Stop Adv Failure");
 }
 
+static void LeRandEntropyTest(Tilt *tilt) {
+    S.thread->Sleep(LTTime_Milliseconds(s_ble_start_test_sleep_time));
+    TILT_EXPECT_TRUE(tilt, S.bleStartStatus, "Start Failure");
+
+    const u16 kHciOpcodeLeRand = 0x2018; // OGF=0x08 (LE), OCF=0x0018 (LE_Rand)
+    u8 samples[4][8] = {{0}};
+    u8 upperBytesOr[4] = {0};
+
+    for (u32 i = 0; i < 4; ++i) {
+        bool ok = S.devBle->SendHciCommand(kHciOpcodeLeRand, NULL, 0, samples[i], sizeof(samples[i]));
+        TILT_EXPECT_TRUE(tilt, ok, "HCI LE_Rand command failed");
+        TILT_INFO(tilt, "LE_Rand[%lu]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                  LT_Pu32(i),
+                  samples[i][0], samples[i][1], samples[i][2], samples[i][3],
+                  samples[i][4], samples[i][5], samples[i][6], samples[i][7]);
+        upperBytesOr[0] |= samples[i][2];
+        upperBytesOr[1] |= samples[i][3];
+        upperBytesOr[2] |= samples[i][6];
+        upperBytesOr[3] |= samples[i][7];
+        if (i > 0) {
+            TILT_EXPECT_TRUE(tilt, lt_memcmp(samples[i], samples[i - 1], 8) != 0,
+                             "Consecutive LE_Rand outputs are identical");
+        }
+    }
+
+    // Verify upper 16 bits of each 32-bit word are populated (not stuck at 0x0000).
+    TILT_EXPECT_TRUE(tilt, (upperBytesOr[0] | upperBytesOr[1]) != 0,
+                     "Bytes 2-3 of LE_Rand are always zero (sparse entropy)");
+    TILT_EXPECT_TRUE(tilt, (upperBytesOr[2] | upperBytesOr[3]) != 0,
+                     "Bytes 6-7 of LE_Rand are always zero (sparse entropy)");
+}
+
 /*******************************************************************************
  * Test Hook Functions
  ******************************************************************************/
@@ -458,6 +490,7 @@ static const TiltEngineTest s_tests[] = {
     { AdvertiseDeviceTest,  "AdvTest",            "Test Start Advertisement",   0 },
     { ConnectDeviceTest,    "ConnectTest",        "Test to connect",            0 },
     { StopBleAdvertiseTest, "StopAdvTest",        "Test to stop advertisement", 0 },
+    { LeRandEntropyTest,    "LeRandEntropyTest",  "Test HCI LE_Rand full 64-bit entropy", 0 },
 };
 
 /*******************************************************************************
