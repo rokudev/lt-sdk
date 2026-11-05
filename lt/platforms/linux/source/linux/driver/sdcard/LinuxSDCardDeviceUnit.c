@@ -61,15 +61,48 @@ static char s_mntCmd[64];
 static char s_mountOutput[256];
 
 enum {
-    kMaxMountAttempts     = 3,      // including the first
-    kMountRetryIntervalMs = 20000,
-    kUnmountBusyRetries   = 5,      // clean-unmount retries on EBUSY
-    kUnmountBusyWaitUs    = 200000,
+    kMaxMountAttempts        = 3,      // including the first
+    kMountRetryIntervalMs    = 20000,
+    kUnmountBusyRetries      = 5,      // clean-unmount retries on EBUSY
+    kUnmountBusyWaitUs       = 200000,
+    kPartitionReadyTimeoutMs = 3000,   // wait for /dev/mmcblk0p1 after fdisk/BLKRRPART or insertion
+    kPartitionReadyPollMs    = 50,
+    kMaxMkfsAttempts         = 3,      // including the first
+    kMkfsRetryWaitMs         = 500,
 };
 
 // Mount attempts made so far; only touched on the poll thread
 // (or in Init before polling is armed).
 static int s_mountAttempt = 0;
+
+// Whether auto-format has already been tried for the card currently
+// inserted -- without this, a card that can never format successfully
+// (e.g. a genuine read-path hardware fault) would retry-format forever:
+// give up -> auto-format fails -> Format() restarts the mount-retry timer ->
+// give up again -> ... Reset on a successful mount or on removal so a
+// different (or later-recovered) card still gets its own attempt.
+// Only touched on the poll thread.
+static bool s_autoFormatAttempted = false;
+
+// Whether the most recent fsck failure was operational (fsck killed by a
+// signal or otherwise never exited normally) rather than a completed run
+// reporting uncorrectable corruption. A readable boot sector alone does not
+// prove the card is corrupt -- an operational fsck failure (e.g. transient
+// resource exhaustion) can happen to a perfectly healthy card, and
+// auto-format must not run in that case. Only touched on the
+// poll thread.
+static bool s_lastFsckWasOperationalFailure = false;
+
+// Bumped every time Unmount() actually unmounts the card (e.g. a user eject),
+// so Format()'s failure path can tell whether an eject happened while it was
+// running and skip re-arming the mount-retry timer in that case -- otherwise
+// a card the user just ejected could spontaneously remount and resume
+// recording moments later. Touched under s_SDCardOpMutex.
+static unsigned s_cardGeneration = 0;
+
+// Generation at the start of the retry episode; unchanged by later attempts.
+// Used to reject recovery after an explicit Unmount().
+static unsigned s_failedCardGeneration = 0;
 
 // Whether the most recent still-mounted retry failure was a busy (EBUSY)
 // unmount specifically, vs. some other, non-transient failure.
@@ -234,6 +267,19 @@ static u64 ReadSysfsU64(const char *path) {
     return v;
 }
 
+// Polls for a path to appear, e.g. the partition device node after card
+// insertion or a BLKRRPART re-read -- its devtmpfs/udev entry can lag the
+// kernel's own view by tens to hundreds of ms, which otherwise looks like a
+// missing partition and sends fsck/mkfs at the wrong device.
+static bool WaitForPathReady(const char *path, int timeoutMs) {
+    struct stat st;
+    for (int waitedMs = 0; stat(path, &st) != 0; waitedMs += kPartitionReadyPollMs) {
+        if (waitedMs >= timeoutMs) return false;
+        usleep(kPartitionReadyPollMs * 1000);
+    }
+    return true;
+}
+
 static void ReadSysfsString(const char *path, char *out, LT_SIZE size) {
     snprintf(out, size, "?");
     FILE *f = fopen(path, "r");
@@ -343,6 +389,7 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
             // (it wasn't writable yet) -- tell listeners now that it is.
             s_previousPollInfo.mounted = true;
             NotifySDCardEvent(hUnit);
+            s_autoFormatAttempted = false; // card is usable again -- give it a fresh chance if it fails later
             return true;
         }
         // A lazy MNT_DETACH would "succeed" while a recorder still holds the
@@ -360,8 +407,10 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
         }
     }
 
-    struct stat st = {0};
-    const char *devicePath = (stat(SDCARD_PART_PATH, &st) == -1) ? SDCARD_PATH : SDCARD_PART_PATH;
+    // Wait briefly for the partition node to appear before falling back to the
+    // whole-device path -- on a just-inserted card it may not exist yet even
+    // though the card itself is already visible.
+    const char *devicePath = WaitForPathReady(SDCARD_PART_PATH, kPartitionReadyTimeoutMs) ? SDCARD_PART_PATH : SDCARD_PATH;
 
     // Run fsck before mount — the kernel mounts FAT32 even with cluster
     // chain corruption, so the old mount-then-fsck-on-failure approach
@@ -376,6 +425,10 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
         fsckRet = RunFsck(fsckType, devicePath);
     }
     if (!FsckSucceeded(fsckRet)) {
+        // Not exited normally (killed, crashed) means we learned nothing about
+        // the filesystem itself -- do not let auto-format treat this as
+        // confirmed corruption.
+        s_lastFsckWasOperationalFailure = !WIFEXITED(fsckRet);
         LTLOG_YELLOWALERT("mnt.fsck.fail", "fsck.%s failed on %s (%s %d), skipping mount",
             fsckType, devicePath, FsckExitDesc(fsckRet),
             WIFEXITED(fsckRet) ? WEXITSTATUS(fsckRet) : -1);
@@ -385,6 +438,7 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
         s_previousPollInfo.mounted = GetSDCardInfo(hUnit).mounted;
         return false;
     }
+    s_lastFsckWasOperationalFailure = false; // fsck completed and ran clean -- a real signal about the filesystem
     LTLOG_SERVER("mnt.fsck.ok", "fsck.%s on %s (exit %d)", fsckType, devicePath, WEXITSTATUS(fsckRet));
 
     int ret = TryMount(devicePath);
@@ -435,6 +489,7 @@ static bool Mount_Private(LTDeviceUnit hUnit) {
 
     s_previousPollInfo.mounted = true;
     NotifySDCardEvent(hUnit);
+    s_autoFormatAttempted = false; // card is usable again -- give it a fresh chance if it fails later
     return true;
 }
 
@@ -477,6 +532,11 @@ static void Unmount(LTDeviceUnit hUnit) {
     LTTime synced = LT_GetCore()->GetKernelTime();
 
     s_SDCardOpMutex->API->Lock(s_SDCardOpMutex);
+    // Bump unconditionally (not just on a successful unmount below) -- an
+    // eject on a card that is already unmounted (e.g. the give-up/failed-
+    // auto-format state) must still invalidate an in-flight Format()'s intent
+    // to re-arm the mount-retry timer (Cursor Bugbot).
+    s_cardGeneration++;
     // Prefer a clean unmount, waiting briefly for files to be released. A lazy
     // detach leaves dirty data in flight, so the user can pull the card too
     // early; it is only the fallback (and what works if the card was removed).
@@ -528,26 +588,48 @@ static bool RunFdisk(const char *cmd, int size) {
 static int PartitionAndMkfs(const char *fdiskCmd, int size, const char *mkfsCmd) {
     u64 startBefore = ReadSysfsU64("/sys/block/mmcblk0/mmcblk0p1/start");
     bool fdiskOk = RunFdisk(fdiskCmd, size);
+    // The partition node write is synchronous in the kernel, but its
+    // devtmpfs/udev entry is not -- give it a moment before mkfs opens it.
+    if (fdiskOk) WaitForPathReady(SDCARD_PART_PATH, kPartitionReadyTimeoutMs);
     u64 startAfter = ReadSysfsU64("/sys/block/mmcblk0/mmcblk0p1/start");
     LTLOG_SERVER("fmt.fdisk", "ok=%d p1start before=%llu after=%llu", fdiskOk,
         LT_Pu64(startBefore), LT_Pu64(startAfter));
-    int ret = system(mkfsCmd);
-    LTLOG_SERVER("fmt.mkfs", "%s ret=%d", mkfsCmd, ret);
+
+    // A card that just had its boot sector fully zeroed/corrupted (the common
+    // recoverable field case) can transiently fail mkfs once even when the
+    // reformat ultimately succeeds -- retry a couple of times before giving
+    // up.
+    int ret = 0;
+    for (int attempt = 1; attempt <= kMaxMkfsAttempts; attempt++) {
+        ret = system(mkfsCmd);
+        LTLOG_SERVER("fmt.mkfs", "%s ret=%d attempt=%d/%d", mkfsCmd, ret, attempt, kMaxMkfsAttempts);
+        if (ret == 0 || attempt == kMaxMkfsAttempts) break;
+        usleep(kMkfsRetryWaitMs * 1000);
+    }
     return ret;
 }
 
 static bool Format(LTHandle hUnit, LTDeviceSDCard_FormatOptions options) {
     // Before the checks below: an in-flight retry may still mount the card.
     CancelMountRetryTimer();
-    LTDeviceSDCard_SDCardInfo info = GetSDCardInfo(hUnit);
-    // SD card must be present
-    if (!info.present) return false;
-    // SD card should be unmounted in order to format
-    if (info.mounted) return false;
 
     bool success = false;
     bool mountTried = false;
+    bool rejected = false;
     s_SDCardOpMutex->API->Lock(s_SDCardOpMutex);
+
+    // Re-check presence/mounted state under the lock, not just before it --
+    // a concurrent Format() or Mount() call (e.g. a user command racing the
+    // auto-format-on-give-up path) could change either between an earlier
+    // unlocked check and now, letting two formats run back-to-back on the
+    // same card.
+    LTDeviceSDCard_SDCardInfo info = GetSDCardInfo(hUnit);
+    unsigned genAtStart = s_cardGeneration;
+    if (!info.present || info.mounted) {
+        rejected = true;
+        goto out;
+    }
+
     switch(options.format) {
     case LTDeviceSDCard_Format_EXFAT: {
         const char fdisk_cmd[] = "o\nn\np\n1\n \n \n \nt\n7\np\nw";
@@ -564,6 +646,7 @@ static bool Format(LTHandle hUnit, LTDeviceSDCard_FormatOptions options) {
     } break;
 
     default:
+        rejected = true; // unknown format option, not a real attempt
         goto out;
     }
 
@@ -574,9 +657,61 @@ static bool Format(LTHandle hUnit, LTDeviceSDCard_FormatOptions options) {
 out:
     s_SDCardOpMutex->API->Unlock(s_SDCardOpMutex);
     // A failed format leaves the card unmounted with no state change for the
-    // poll thread to react to, so retry the mount (the timer was cancelled above).
-    if (!success && GetSDCardInfo(hUnit).present) StartMountRetry(mountTried ? 1 : 0);
+    // poll thread to react to, so retry the mount (the timer was cancelled
+    // above). Not armed for a rejected call (card absent, already mounted, or
+    // an invalid option) -- nothing was attempted, so nothing needs retrying.
+    // Also not armed if an eject happened while this Format() was running
+    // (s_cardGeneration changed) -- the user asked to stop using the card,
+    // so do not let it spontaneously remount afterward.
+    if (!success && !rejected && genAtStart == s_cardGeneration && GetSDCardInfo(hUnit).present) {
+        StartMountRetry(mountTried ? 1 : 0);
+    }
     return success;
+}
+
+// After the mount-retry budget is exhausted, a corrupted-but-otherwise-healthy
+// card can usually be recovered by reformatting it (field data: ~75-90%
+// recovery for garbled or fully zeroed boot sectors). Skipped when the boot
+// sector itself cannot be read back -- that points to a read-path hardware
+// fault a destructive format cannot fix and would only waste a write cycle on
+// -- or when the failure was operational rather than confirmed corruption, or
+// the card was swapped out for a different one while retries were running.
+static void AttemptAutoFormatAfterGiveUp(void) {
+    if (s_autoFormatAttempted) {
+        LTLOG_YELLOWALERT("mnt.autoformat.skip.attempted", "Already attempted for this card, not retrying");
+        return;
+    }
+    if (s_lastFsckWasOperationalFailure) {
+        LTLOG_YELLOWALERT("mnt.autoformat.skip.operational", "Last fsck failure was operational, not confirmed corruption");
+        return;
+    }
+
+    const char *devicePath = WaitForPathReady(SDCARD_PART_PATH, kPartitionReadyTimeoutMs) ? SDCARD_PART_PATH : SDCARD_PATH;
+    u8 sector[512];
+    if (ReadBootSector(devicePath, sector, sizeof(sector)) != 0) {
+        LTLOG_YELLOWALERT("mnt.autoformat.skip.unreadable", "Boot sector unreadable, not attempting auto-format");
+        return;
+    }
+
+    // Verify the card present right now is still the one that actually failed
+    // the 3 mount attempts, not a replacement swapped in during the episode.
+    // Card swaps SDCardPoll does not observe (faster than its 500ms poll) are
+    // not covered here -- an accepted narrow corner case, not worth the extra
+    // sysfs-serial check for.
+    if (s_failedCardGeneration != s_cardGeneration) {
+        LTLOG_YELLOWALERT("mnt.autoformat.skip.generation", "Card generation changed since retry episode started, not formatting");
+        return;
+    }
+
+    bool exfat = memcmp(sector + 3, "EXFAT   ", 8) == 0;
+    LTDeviceSDCard_FormatOptions options = { exfat ? LTDeviceSDCard_Format_EXFAT : LTDeviceSDCard_Format_FAT32 };
+    const char *fsType = exfat ? "exfat" : "fat32";
+    s_autoFormatAttempted = true;
+    if (Format(DEFAULT_SDCARD_DEVICE_LTHANDLE, options)) {
+        LTLOG_SERVER("mnt.autoformat.success", "fsType=%s", fsType);
+    } else {
+        LTLOG_YELLOWALERT("mnt.autoformat.fail", "fsType=%s", fsType);
+    }
 }
 
 static void DispatchSDCardEventCB(LTEvent hEvent, void *pEventProc, LTArgs *pEventArgs, void *pEventProcClientData) {
@@ -597,6 +732,7 @@ static void DispatchSDCardEventComplete(LTEvent hEvent, LTArgs *pEventArgs) {
 // attemptsMade: mount attempts already made for this problem (0 if none was tried).
 static void StartMountRetry(int attemptsMade) {
     s_mountAttempt = attemptsMade;
+    s_failedCardGeneration = s_cardGeneration;
     s_iThread->SetTimer(s_hPollThread, LTTime_Milliseconds(kMountRetryIntervalMs), MountRetryTimerProc, NULL, NULL);
 }
 
@@ -634,6 +770,7 @@ static void MountRetryTimerProc(void *pClientData) {
         // SetTimer() repeats until killed, so stop it once retries are exhausted.
         LTLOG_YELLOWALERT("mnt.give_up", "Giving up after %d attempts", kMaxMountAttempts);
         StopMountRetry();
+        AttemptAutoFormatAfterGiveUp();
     }
 }
 
@@ -664,6 +801,7 @@ static void SDCardPoll(void *pClientData) {
      * Removed == state change from (present) -> (not present) */
     if (previousPresentState && !currentPresentState) {
         StopMountRetry();
+        s_autoFormatAttempted = false; // a different card may be inserted next
         Unmount(DEFAULT_SDCARD_DEVICE_LTHANDLE);
         return;
     }
