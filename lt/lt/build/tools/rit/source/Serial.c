@@ -71,6 +71,10 @@ int SerialOpen(const char * pDeviceName, u32 nBaudRate, u32 nTimeoutMilliseconds
         termOpts.c_cflag &= ~CSIZE;
         termOpts.c_cflag &= ~CRTSCTS;
         termOpts.c_cflag |= (CS8 | CLOCAL | CREAD);
+        // On a native-USB part the CDC control lines are the chip's reset and
+        // boot-strap pins, so letting close() drop them resets the part into
+        // download mode and the firmware just programmed never runs.
+        termOpts.c_cflag &= ~HUPCL;
         termOpts.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
         termOpts.c_iflag &= ~(IXON | IXOFF | IXANY);
         termOpts.c_iflag &= ~(INPCK | IGNPAR | PARMRK);

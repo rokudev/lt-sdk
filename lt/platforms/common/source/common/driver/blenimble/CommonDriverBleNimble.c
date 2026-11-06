@@ -66,6 +66,9 @@ static struct Statics {
 // Parameters used by BLE host, but not matter if initialized.
 static u16                    s_mtu;
 static LTAtomic               s_state;
+static LTAtomic               s_directedAdvInProgress;
+// Reboot reason kept across soft reboots; defined by the RCU platform adapters, absent on other products.
+extern u32                    s_AppBootReason LT_WEAK;
 static u8                     s_ownAddrType;
 static LTMacAddress           s_ownMacAddr;
 static LTMacAddress           s_peerMacAddr;
@@ -542,46 +545,46 @@ static void HandleConnectEvent(struct ble_gap_event *event, LTBleDeviceHandle hD
         return;
     }
 
-    struct ble_gap_conn_desc *desc = lt_malloc(sizeof(struct ble_gap_conn_desc));
-    if (desc) {
-        P("ge.0", "connect 0x%x ch 0x%02x", event->connect.status, event->connect.conn_handle);
-        if (event->connect.status == 0) {
-            if (0 == ble_gap_conn_find(event->connect.conn_handle, desc)) {
-                devCtx->connHandle = event->connect.conn_handle;
-                LTAtomic_Store(&s_state, kLTDeviceBle_State_Connected);
-                s_mtu = ble_att_mtu(event->connect.conn_handle);
-                P("MTU", "%u", s_mtu);
-                lt_memcpy(s_peerMacAddr.octet, desc->peer_ota_addr.val, sizeof(desc->peer_ota_addr.val));
-                devCtx->remoteMac = s_peerMacAddr;
-                P("rmt",
-                  "%02X:%02X:%02X:%02X:%02X:%02X",
-                  s_peerMacAddr.octet[5],
-                  s_peerMacAddr.octet[4],
-                  s_peerMacAddr.octet[3],
-                  s_peerMacAddr.octet[2],
-                  s_peerMacAddr.octet[1],
-                  s_peerMacAddr.octet[0]);
-                P("conn.params",
-                  "itvl %.2fms, latency %d, timeout %dms",
-                  desc->conn_itvl * 1.25,
-                  desc->conn_latency,
-                  desc->supervision_timeout * 10);
-                devCtx->connInterval        = desc->conn_itvl; // need to convert to ms by * 1.25
-                devCtx->latency             = desc->conn_latency;
-                devCtx->supervision_timeout = desc->supervision_timeout;
+    // Record the link before anything can fail, so its disconnect is still forwarded.
+    if (event->connect.status == 0) devCtx->connHandle = event->connect.conn_handle;
 
-                S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Connected, NULL);
-            }
-        } else {
-            // Connection failed
-            LTAtomic_Store(&s_state, kLTDeviceBle_State_Started);
-            S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Disconnected, NULL);
-            devCtx->connHandle = 0;
+    // Keep the descriptor on the stack so a heap allocation failure cannot strand an unpublished link.
+    struct ble_gap_conn_desc desc;
+    P("ge.0", "connect 0x%x ch 0x%02x", event->connect.status, event->connect.conn_handle);
+    if (event->connect.status == 0) {
+        if (0 == ble_gap_conn_find(event->connect.conn_handle, &desc)) {
+            LTAtomic_Store(&s_state, kLTDeviceBle_State_Connected);
+            s_mtu = ble_att_mtu(event->connect.conn_handle);
+            P("MTU", "%u", s_mtu);
+            lt_memcpy(s_peerMacAddr.octet, desc.peer_ota_addr.val, sizeof(desc.peer_ota_addr.val));
+            devCtx->remoteMac = s_peerMacAddr;
+            P("rmt",
+              "%02X:%02X:%02X:%02X:%02X:%02X",
+              s_peerMacAddr.octet[5],
+              s_peerMacAddr.octet[4],
+              s_peerMacAddr.octet[3],
+              s_peerMacAddr.octet[2],
+              s_peerMacAddr.octet[1],
+              s_peerMacAddr.octet[0]);
+            P("conn.params",
+              "itvl %.2fms, latency %d, timeout %dms",
+              desc.conn_itvl * 1.25,
+              desc.conn_latency,
+              desc.supervision_timeout * 10);
+            devCtx->connInterval        = desc.conn_itvl;  // need to convert to ms by * 1.25
+            devCtx->latency             = desc.conn_latency;
+            devCtx->supervision_timeout = desc.supervision_timeout;
+
+            S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Connected, NULL);
         }
-        lt_free(desc);
     } else {
-        LTLOG_YELLOWALERT("ge.0.fail", "failed to allocate memory for ble_gap_conn_desc");
+        // Connection failed
+        LTAtomic_Store(&s_state, kLTDeviceBle_State_Started);
+        S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Disconnected, NULL);
+        devCtx->connHandle = BLE_HS_CONN_HANDLE_NONE;
     }
+    // Release only after the connection state above is published.
+    LTAtomic_Store(&s_directedAdvInProgress, 0);
     S.core->ReleaseHandlePrivateData(devCtx->hDev, devCtx);
 }
 
@@ -592,9 +595,16 @@ static void HandleDisconnectEvent(struct ble_gap_event *event, LTBleDeviceHandle
     }
     
     PLOG("ge.1", "disconn 0x%x ch 0x%02x", event->disconnect.reason, event->disconnect.conn.conn_handle);
+    // After a stack sync, EndLinkOnSync has already reported this link's loss.
+    if (event->disconnect.conn.conn_handle != devCtx->connHandle) {
+        PLOG("ge.1.stale", "current ch 0x%02x", devCtx->connHandle);
+        S.core->ReleaseHandlePrivateData(devCtx->hDev, devCtx);
+        return;
+    }
     LTAtomic_Store(&s_state, kLTDeviceBle_State_Started);
+    LTAtomic_Store(&s_directedAdvInProgress, 0);
+    devCtx->connHandle = BLE_HS_CONN_HANDLE_NONE;
     S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Disconnected, NULL);
-    devCtx->connHandle = 0;
     
     S.core->ReleaseHandlePrivateData(devCtx->hDev, devCtx);
 }
@@ -605,13 +615,19 @@ static void HandleConnUpdateEvent(struct ble_gap_event *event, LTBleDeviceHandle
         return;
     }
 
+    // A reset may have cleared the link before this queued update runs.
+    if (event->conn_update.conn_handle != devCtx->connHandle) {
+        S.core->ReleaseHandlePrivateData(devCtx->hDev, devCtx);
+        return;
+    }
+
     struct ble_gap_conn_desc *desc = lt_malloc(sizeof(struct ble_gap_conn_desc));
     if (desc) {
         PLOG("ge.3", "conn upd status 0x%x ch 0x%02x", event->conn_update.status, event->conn_update.conn_handle);
         if (event->conn_update.status != 0) {
             LTLOG_YELLOWALERT("conn.update.failed", "reason code 0x%x", event->conn_update.status);
             S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Conn_Update_Failed, NULL);
-        } else if (0 == ble_gap_conn_find(event->connect.conn_handle, desc)) {
+        } else if (0 == ble_gap_conn_find(event->conn_update.conn_handle, desc)) {
             PLOG("conn.update.success",
                  "conn handle 0x%02x, itvl %.2fms, latency %d, timeout %dms",
                  event->conn_update.conn_handle,
@@ -635,7 +651,12 @@ static void HandleAdvCompleteEvent(struct ble_gap_event *event, LTBleDeviceHandl
     if (!devCtx || !devCtx->hDev) {
         return;
     }
-    
+    // A delayed completion must not end a newer advertising procedure.
+    if (ble_gap_adv_active()) {
+        S.core->ReleaseHandlePrivateData(devCtx->hDev, devCtx);
+        return;
+    }
+
     P("ge.9", "advcmpl 0x%x", event->adv_complete.reason);
     // no connection yet
     LTAtomic_CompareAndExchange(&s_state, kLTDeviceBle_State_ConnectedAdvertising, kLTDeviceBle_State_Connected);
@@ -649,8 +670,9 @@ static void HandleAdvCompleteEvent(struct ble_gap_event *event, LTBleDeviceHandl
         }
     } while (!LTAtomic_CompareAndExchange(&s_state, currentState, kLTDeviceBle_State_Started));
     
+    LTAtomic_Store(&s_directedAdvInProgress, 0);
     if (LTAtomic_Load(&s_state) != kLTDeviceBle_State_Connected) {
-        devCtx->connHandle = 0;
+        devCtx->connHandle = BLE_HS_CONN_HANDLE_NONE;
         S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Advertise_Complete, NULL);
     }
     
@@ -806,10 +828,13 @@ static int QueueSpecificAsyncHandler(AsyncEventHandler handler, struct ble_gap_e
         gap_data->device_handle = hDevice;
         gap_data->async_handler = handler;
         lt_memcpy(&gap_data->gap_event, event, sizeof(struct ble_gap_event));
-
-        S.thread->QueueTaskProc(devCtx->bleHostThr, ExecuteAsyncEventHandler, ReleaseGapEventData, gap_data);
-    } else {
-        LTLOG_YELLOWALERT("gap.event.cb", "failed to allocate memory for GapEventData");
+    }
+    // The release callback owns gap_data even when the queue rejects it.
+    if (!gap_data ||
+        !S.thread->QueueTaskProc(devCtx->bleHostThr, ExecuteAsyncEventHandler, ReleaseGapEventData, gap_data)) {
+        // A lost GAP event leaves the driver state wrong, and a stack reset would queue on this same thread.
+        if (&s_AppBootReason) s_AppBootReason = 0x1 << 3; // RCUApp::kBootFlagNimbleGapEventLost
+        LTLOG_REDALERT_AND_REBOOT("gap.event.cb", "event %d lost", event->type);
     }
     S.core->ReleaseHandlePrivateData(devCtx->hDev, devCtx);
     return 0;
@@ -1015,6 +1040,15 @@ static void get_nimble_adv_params(const LTBleAdvParams* advParams, struct ble_ga
 }
 
 // In blehost thread
+// A stack reset drops any recorded link, reported or not; report its loss before Started so NimBLE's late
+// disconnect is stale.
+static void EndLinkOnSync(LTBleDeviceCtx *devCtx) {
+    bool linked = devCtx->connHandle != BLE_HS_CONN_HANDLE_NONE;
+    if (linked) PLOG("sync.link.lost", "ch 0x%02x", devCtx->connHandle);
+    devCtx->connHandle = BLE_HS_CONN_HANDLE_NONE;
+    if (linked) S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Disconnected, NULL);
+}
+
 static void PeripheralOnSync(void) {
     P(__FUNCTION__, "bleHost Thread 0x%lx S.nim_ctx.bleHostThr 0x%lx",
         LT_PLT_HANDLE(S.thread->GetCurrentThread()),
@@ -1029,6 +1063,9 @@ static void PeripheralOnSync(void) {
     if (devCtx) {
         devCtx->mac = s_ownMacAddr;
         devCtx->bleHostThr = S.thread->GetCurrentThread();
+        LTAtomic_Store(&s_state, kLTDeviceBle_State_Started);
+        LTAtomic_Store(&s_directedAdvInProgress, 0);
+        EndLinkOnSync(devCtx);
         S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Started, NULL);
     }
     S.core->ReleaseHandlePrivateData(hDevice, devCtx);
@@ -1126,63 +1163,89 @@ done:
     return (0 == ret);
 }
 
+// NimBLE may hold the connection while its LT event is still queued.
+static bool IsPeerConnected(const ble_addr_t *peer) {
+    if (ble_gap_conn_find_by_addr(peer, NULL) != 0) return false;
+    PLOG("directed.adv.connected", "Connected already");
+    return true;
+}
+
 static bool CommonDriverBle_StartDirectedAdvertise(LTBleDeviceHandle hDevice, LTMacAddress peer) {
-    int ret = 0;
     P(__FUNCTION__, "th 0x%lx", LT_PLT_HANDLE(S.thread->GetCurrentThread()));
-    struct ble_gap_adv_params directed_adv_params = {0};
     if (!hDevice) {
         LTLOG_YELLOWALERT("no.dev.handle", "No device handle supplied");
         return false;
     }
+    if (LTAtomic_Load(&s_state) == kLTDeviceBle_State_Off) return false;
 
-    // Set high duty directed advertisement
+    struct ble_gap_adv_params directed_adv_params = {0};
     directed_adv_params.conn_mode = BLE_GAP_CONN_MODE_DIR;
     directed_adv_params.high_duty_cycle = 1;
 
-    // Convert peer addr from host to network
+    // NimBLE stores peer addresses in controller byte order.
     LTMacAddress h2n_peer_addr;
     CopyMacAddressH2N(h2n_peer_addr.octet, peer.octet);
     char peerStr[18];
     S.mac_lib->MacAddressToString(&peer, peerStr, ':');
     PLOG("directed.avd.peer.add", "%s", peerStr);
-
-    // Set peer addr to which the advertisement are directed.
     ble_addr_t adv_peer_addr;
     adv_peer_addr.type = BLE_ADDR_PUBLIC;
-    lt_memcpy(adv_peer_addr.val, h2n_peer_addr.octet, sizeof(LTMacAddress));
-    if (LTAtomic_Load(&s_state) == kLTDeviceBle_State_Connected && S.mac_lib->IsEqual(&s_peerMacAddr, &peer)) {
-        LTLOG_YELLOWALERT("directed.adv.connected", "Connected already");
-        return false;
+    lt_memcpy(adv_peer_addr.val, h2n_peer_addr.octet, sizeof(h2n_peer_addr.octet));
+
+    if (IsPeerConnected(&adv_peer_addr)) return true;
+
+    u32 state = LTAtomic_Load(&s_state);
+    if (state == kLTDeviceBle_State_Connected || state == kLTDeviceBle_State_ConnectedAdvertising) {
+        return S.mac_lib->IsEqual(&s_peerMacAddr, &h2n_peer_addr);
     }
-    LTAtomic_Store(&s_state, kLTDeviceBle_State_Started);
-    // Start directed advertisement
-    ret = ble_gap_adv_start(s_ownAddrType, &adv_peer_addr, BLE_HS_FOREVER, &directed_adv_params, GapEventCallbackWrapper, LTHANDLE_TO_VOIDPTR(hDevice));
-    // 0x20b (BLE_ERR_ACL_CONN_EXISTS + BLE_HS_ERR_HCI_BASE) means connection already exists error
-    // The controller is unable to recover from this. Reset controller
-    if (ret == (BLE_ERR_ACL_CONN_EXISTS + BLE_HS_ERR_HCI_BASE)) {
-        ble_hs_sched_reset(ret);
+    if (!LTAtomic_CompareAndExchange(&s_directedAdvInProgress, 0, 1)) return true;
+
+    u32 previousState = LTAtomic_Load(&s_state);
+    if (IsPeerConnected(&adv_peer_addr)) {
+        LTAtomic_Store(&s_directedAdvInProgress, 0);
+        return true;
     }
-    if (ret == BLE_HS_ENOMEM) { // Out of memory error. Unable to recover. Reboot system
-        LTBleDeviceCtx *devCtx = S.core->ReserveHandlePrivateData(hDevice);
-        if (devCtx) {
-            S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Nimble_DirAdv_fail, NULL);
-        }
-    }
+
+    int ret = ble_gap_adv_start(s_ownAddrType, &adv_peer_addr, BLE_HS_FOREVER,
+                               &directed_adv_params, GapEventCallbackWrapper, LTHANDLE_TO_VOIDPTR(hDevice));
     if (ret) {
-        LTLOG_REDALERT("directed.adv.start.fail", "failed to start directed advertising ret:%d", ret);
+        LTAtomic_Store(&s_directedAdvInProgress, 0);
+        // ENOMEM can mean the sole connection slot was taken during this call.
+        if (IsPeerConnected(&adv_peer_addr)) return true;
+
+        LTLOG_REDALERT("directed.adv.start.fail", "ret:%d state:%lu adv:%d", ret,
+                      LT_Pu32(LTAtomic_Load(&s_state)), ble_gap_adv_active());
+        if (ret == (BLE_ERR_ACL_CONN_EXISTS + BLE_HS_ERR_HCI_BASE)) {
+            // Connection already exists (0x20b); the controller cannot recover from this, so reset it.
+            ble_hs_sched_reset(ret);
+        } else if (ret == BLE_HS_ENOMEM) {
+            // Out of host resources with no link to the peer; unrecoverable, so the app reboots.
+            LTBleDeviceCtx *devCtx = S.core->ReserveHandlePrivateData(hDevice);
+            if (devCtx) {
+                S.event->NotifyEvent(devCtx->hEvent, devCtx->hDev, kLTDeviceBle_Event_Nimble_DirAdv_fail, NULL);
+                S.core->ReleaseHandlePrivateData(hDevice, devCtx);
+            }
+        }
     } else {
-        LTAtomic_Store(&s_state, kLTDeviceBle_State_Advertising);
+        // Preserve a connection callback that completed while advertising was starting.
+        LTAtomic_CompareAndExchange(&s_state, previousState, kLTDeviceBle_State_Advertising);
     }
-    return (0 == ret);
+    return ret == 0;
 }
 
 static void CommonDriverBle_StopAdvertise(void) {
     P(__FUNCTION__, "th 0x%lx", LT_PLT_HANDLE(S.thread->GetCurrentThread()));
-    ble_gap_adv_stop();
-    // keep all other non-advertising state - atomically change Advertising to Started
+    int ret = ble_gap_adv_stop();
+    if (ret != 0 && ret != BLE_HS_EALREADY) {
+        LTLOG_YELLOWALERT("adv.stop.failed", "ret:%d", ret);
+        return;
+    }
+    // Keep all other non-advertising state: Advertising -> Started, ConnectedAdvertising -> Connected.
     if (!LTAtomic_CompareAndExchange(&s_state, kLTDeviceBle_State_Advertising, kLTDeviceBle_State_Started)) {
         LTAtomic_CompareAndExchange(&s_state, kLTDeviceBle_State_ConnectedAdvertising, kLTDeviceBle_State_Connected);
     }
+    // Keep the latch until the stop and its state update are complete.
+    LTAtomic_Store(&s_directedAdvInProgress, 0);
 }
 
 static bool CommonDriverBle_Indicate(LTBleDeviceHandle hDevice, LTBleChrHandle hChr) {
@@ -1366,6 +1429,8 @@ static bool CommonDriverBle_Start(LTBleDeviceHandle hDevice) {
 
     // add handle contxt of control characteristic to gatt service
     LTBleDeviceCtx *dvcCtx = S.core->ReserveHandlePrivateData(hDevice);
+    // The context is created zeroed, and 0 is a valid handle.
+    dvcCtx->connHandle = BLE_HS_CONN_HANDLE_NONE;
 
     // Set callbacks
     ble_hs_cfg.reset_cb           = &PeripheralOnReset;    // Callback when the host resets itself and the controller due to fatal error.
@@ -1421,6 +1486,7 @@ done:
 
 // TODO: if stopped, only restart after reboot.
 static void CommonDriverBle_Stop(void) {
+    LTAtomic_Store(&s_directedAdvInProgress, 0);
     if (LTAtomic_Load(&s_state) == kLTDeviceBle_State_Off) return;
     LTAtomic_Store(&s_state, kLTDeviceBle_State_Off);
     ble_gap_adv_stop();
@@ -1452,6 +1518,7 @@ static s8 CommonDriverBle_GetRSSI(u16 connHandle, s8 *rssi) {
 }
 
 static bool CommonDriverBle_SendPrivVenCommand(const char *cmd, u8* resp, u32 respLen) {
+    if (!S.controller || !S.controller->SendPrivVenCommand) return false;
     P(__FUNCTION__, "Vendor Command = %s\n", cmd);
     u8 hci_buffer[32] = {}; //Max Length 32
     u32 len = 0;

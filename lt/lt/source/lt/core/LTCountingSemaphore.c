@@ -32,7 +32,12 @@ static bool LTCountingSemaphoreImpl_ConstructObject(LTCountingSemaphoreImpl *sem
 }
 
 static void LTCountingSemaphoreImpl_DestructObject(LTCountingSemaphoreImpl *sem) {
-    if (sem->monitor) lt_destroyobject(sem->monitor);
+    if (!sem->monitor) return;
+    /* A SignalFromThread() that published a count may still hold the
+     * monitor; wait for it to leave before freeing. */
+    sem->monitor->API->Enter(sem->monitor);
+    sem->monitor->API->Exit(sem->monitor);
+    lt_destroyobject(sem->monitor);
 }
 
 /*_____________________________________________
@@ -53,6 +58,9 @@ static bool LTCountingSemaphoreImpl_Wait(LTCountingSemaphoreImpl *sem, LTTime ti
         if (c == 0) break;
         if (LTAtomic_CompareAndExchange(&sem->count, c, c - 1)) return true;
     }
+
+    /* A zero timeout never waits, not even for the monitor. */
+    if (LTTime_IsLessThanOrEqual(timeout, LTTime_Zero())) return false;
 
     /* Slow path: block on monitor until we can CAS-decrement count, or timeout */
     mon->API->Enter(mon);
@@ -99,7 +107,15 @@ static bool LTCountingSemaphoreImpl_TryWait(LTCountingSemaphoreImpl *sem) LT_ISR
     }
 }
 
+static void LTCountingSemaphoreImpl_SignalFromThread(LTCountingSemaphoreImpl *sem);
+
 static void LTCountingSemaphoreImpl_Signal(LTCountingSemaphoreImpl *sem) LT_ISR_SAFE {
+    /* A thread that can enter the monitor signals as SignalFromThread() does, so
+     * a waiter may destroy the semaphore as soon as it takes the count. */
+    if (!LTKInsideInterruptContext() && !LTKInterruptsAreDisabled()) {
+        LTCountingSemaphoreImpl_SignalFromThread(sem);
+        return;
+    }
     for (;;) {
         u32 c = LTAtomic_Load(&sem->count);
         if (c >= sem->maxCount) return;
@@ -112,16 +128,18 @@ static void LTCountingSemaphoreImpl_Signal(LTCountingSemaphoreImpl *sem) LT_ISR_
 
 static void LTCountingSemaphoreImpl_SignalFromThread(LTCountingSemaphoreImpl *sem) {
     LTMonitor *mon = sem->monitor;
+    /* Publish the count inside the monitor, so DestructObject() waits for this
+     * signaller to leave even if a waiter destroys the semaphore at once. */
+    mon->API->Enter(mon);
     for (;;) {
         u32 c = LTAtomic_Load(&sem->count);
-        if (c >= sem->maxCount) return;
+        if (c >= sem->maxCount) break;
         if (LTAtomic_CompareAndExchange(&sem->count, c, c + 1)) {
-            mon->API->Enter(mon);
             mon->API->Notify(mon);
-            mon->API->Exit(mon);
-            return;
+            break;
         }
     }
+    mon->API->Exit(mon);
 }
 static u32 LTCountingSemaphoreImpl_GetCount(LTCountingSemaphoreImpl *sem) LT_ISR_SAFE {
     return LTAtomic_Load(&sem->count);

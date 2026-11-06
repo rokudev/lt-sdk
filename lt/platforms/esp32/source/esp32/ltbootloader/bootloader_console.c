@@ -6,20 +6,27 @@
 
 #include "sdkconfig.h"
 #include "bootloader_console.h"
+#include "soc/rtc.h"
+#if !CONFIG_IDF_TARGET_ESP32P4
+/* Everything here is named only from the CONFIG_ESP_CONSOLE_UART_CUSTOM block
+   below, which the esp32p4 does not use - its console is UART0 on the pads the
+   ROM already selected.  Skipping them avoids importing the v5.4 UART and clock
+   register-struct headers for dead code. */
 #include "soc/uart_periph.h"
 #include "soc/uart_channel.h"
 #include "soc/io_mux_reg.h"
 #include "soc/gpio_periph.h"
 #include "soc/gpio_sig_map.h"
-#include "soc/rtc.h"
 #include "hal/clk_gate_ll.h"
 #include "hal/gpio_hal.h"
+#endif
 #if CONFIG_IDF_TARGET_ESP32S2
 #include "esp32s2/rom/usb/cdc_acm.h"
 #include "esp32s2/rom/usb/usb_common.h"
 #elif CONFIG_IDF_TARGET_ESP32C3
 #include "esp32c3/rom/ets_sys.h"
 #include "esp32c3/rom/uart.h"
+#include "hal/usb_serial_jtag_ll.h"
 #elif CONFIG_IDF_TARGET_ESP32S3
 #include "esp32s3/rom/uart.h"
 #include "hal/usb_serial_jtag_ll.h"
@@ -145,9 +152,28 @@ static void bootloader_console_drain_rx(void)
  * until the next character goes out.  Nothing in the bootloader is silent for
  * long, so that has not been worth a timer.
  */
+#if CONFIG_IDF_TARGET_ESP32C3
+/*
+ * esp_rom_uart_putc is unusable here.  The IDF v4.4.8 esp32c3.rom.api.ld aliases
+ * it to ets_write_char_uart, a symbol the esp32c3 ROM never exports - there is no
+ * address for it in esp32c3.rom.ld, so referencing it fails the link.  IDF dropped
+ * the alias in a later release.  ets_write_char_uart is just CR translation over
+ * uart_tx_one_char, which the ROM does export, so open-code it.
+ */
+static void bootloader_console_putc(char c)
+{
+    if (c == '\n') {
+        esp_rom_uart_tx_one_char('\r');
+    }
+    esp_rom_uart_tx_one_char(c);
+}
+#else
+#define bootloader_console_putc esp_rom_uart_putc
+#endif
+
 static void bootloader_console_write_char_usb_serial_jtag(char c)
 {
-    esp_rom_uart_putc(c);
+    bootloader_console_putc(c);
     bootloader_console_drain_rx();
 }
 
@@ -156,9 +182,9 @@ void bootloader_console_init(void)
     UartDevice *uart = GetUartDevice();
     uart->buff_uart_no = ESP_ROM_USB_SERIAL_DEVICE_NUM;
 
-    /* esp_rom_uart_putc resolves to ROM's ets_write_char_uart, which is already
-     * what channel 1 holds by default.  Installing the wrapper therefore changes
-     * nothing about how output reaches the host - it only adds the drain. */
+    /* The wrapper emits characters exactly the way the ROM's own channel-1 putc
+     * does, so installing it changes nothing about how output reaches the host -
+     * it only adds the drain. */
     esp_rom_install_channel_putc(1, bootloader_console_write_char_usb_serial_jtag);
 
     /* The ROM printed its own banner before we got here, so the host may already

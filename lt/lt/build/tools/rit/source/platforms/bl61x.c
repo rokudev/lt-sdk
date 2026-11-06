@@ -27,6 +27,8 @@ enum {
     kDefaultSerialTimeoutMS        = 500,
     kChecksumSerialTimeoutMS       = 4000,
     kEraseSerialTimeoutMS          = 10000,
+    kSyncSerialTimeoutMS           = 100,
+    kSyncAttempts                  = 10,
 };
 
 /* Serial commands */
@@ -345,13 +347,25 @@ static int TargetInit(bool bAutoProgram) {
         else if (nTry == 0 && nRtn == -ETIMEDOUT) {
             nRtn = SerialSetSpeed(kSlowBaudRate);
             if (nRtn < 0) return nRtn;
-            /* Sync with target: Send Qty 150 0x55 and wait for ACK (0x4f 0x4b) */
+            /* Sync with target: Send Qty 150 0x55 and wait for ACK (0x4f 0x4b). The ROM
+             * periodically stops listening on UART (e.g. while polling USB), so a single
+             * burst can be lost; retry with a short timeout. */
             u8 burst[5] = { 0x55, 0x55, 0x55, 0x55, 0x55 };
-            for (u32 nIx = 0; nIx < 30; nIx++) {
-                nRtn = SerialSend(burst, sizeof(burst));
-                if (nRtn < 0) return nRtn;
+            nRtn = SerialSetTimeout(kSyncSerialTimeoutMS);
+            if (nRtn < 0) return nRtn;
+            for (u32 nAttempt = 0; nAttempt < kSyncAttempts; nAttempt++) {
+                for (u32 nIx = 0; nIx < 30; nIx++) {
+                    nRtn = SerialSend(burst, sizeof(burst));
+                    if (nRtn < 0) break;
+                }
+                if (nRtn < 0) break;
+                nRtn = WaitForOK();
+                if (nRtn == 0) break;
+                SerialFlush(); // Drop late/partial replies before retrying
             }
-            nRtn = WaitForOK();
+            int restoreRtn = SerialSetTimeout(kDefaultSerialTimeoutMS);
+            if (nRtn < 0) return nRtn;
+            if (restoreRtn < 0) return restoreRtn;
             if (nRtn == 0) usleep(40000); // Wait 40 ms.
             // It is recommended to delay communication by at least 20ms to prevent
             // subsequent communication data from being mixed with the previous handshake data

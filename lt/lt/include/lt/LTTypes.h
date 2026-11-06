@@ -281,6 +281,8 @@ typedef volatile struct { volatile u32 atomicValue; } LTAtomic;
 #if defined (__clang__)
    LT_INLINE  u32 LTAtomic_Load(const LTAtomic *atomic)                                               { return  (u32)__c11_atomic_load((_Atomic(u32)*)&atomic->atomicValue,               __ATOMIC_SEQ_CST); }
    LT_INLINE void LTAtomic_Store(LTAtomic *atomic, u32 value)                                         {              __c11_atomic_store((_Atomic(u32)*)&atomic->atomicValue,     value,   __ATOMIC_SEQ_CST); }
+   LT_INLINE  u32 LTAtomic_LoadRelaxed(const LTAtomic *atomic)                                        { return  (u32)__c11_atomic_load((_Atomic(u32)*)&atomic->atomicValue,               __ATOMIC_RELAXED); }
+   LT_INLINE void LTAtomic_StoreRelaxed(LTAtomic *atomic, u32 value)                                  {              __c11_atomic_store((_Atomic(u32)*)&atomic->atomicValue,     value,   __ATOMIC_RELAXED); }
    LT_INLINE  u32 LTAtomic_FetchAdd(LTAtomic *atomic, u32 operand)                                    { return  (u32)__c11_atomic_fetch_add((_Atomic(u32)*)&atomic->atomicValue, operand, __ATOMIC_SEQ_CST); }
    LT_INLINE  u32 LTAtomic_FetchSubtract(LTAtomic *atomic, u32 operand)                               { return  (u32)__c11_atomic_fetch_sub((_Atomic(u32)*)&atomic->atomicValue, operand, __ATOMIC_SEQ_CST); }
    LT_INLINE  u32 LTAtomic_FetchAnd(LTAtomic *atomic, u32 operand)                                    { return  (u32)__c11_atomic_fetch_and((_Atomic(u32)*)&atomic->atomicValue, operand, __ATOMIC_SEQ_CST); }
@@ -290,6 +292,8 @@ typedef volatile struct { volatile u32 atomicValue; } LTAtomic;
 #elif defined(__GNUC__)
    LT_INLINE  u32 LTAtomic_Load(LTAtomic *atomic)                                                     { return  (u32)__atomic_load_n(&atomic->atomicValue,                 __ATOMIC_SEQ_CST); }
    LT_INLINE void LTAtomic_Store(LTAtomic *atomic, u32 value)                                         {              __atomic_store_n(&atomic->atomicValue,       value,   __ATOMIC_SEQ_CST); }
+   LT_INLINE  u32 LTAtomic_LoadRelaxed(LTAtomic *atomic)                                              { return  (u32)__atomic_load_n(&atomic->atomicValue,                 __ATOMIC_RELAXED); }
+   LT_INLINE void LTAtomic_StoreRelaxed(LTAtomic *atomic, u32 value)                                  {              __atomic_store_n(&atomic->atomicValue,       value,   __ATOMIC_RELAXED); }
    LT_INLINE  u32 LTAtomic_FetchAdd(LTAtomic *atomic, u32 operand)                                    { return  (u32)__atomic_fetch_add(&atomic->atomicValue,     operand, __ATOMIC_SEQ_CST); }
    LT_INLINE  u32 LTAtomic_FetchSubtract(LTAtomic *atomic, u32 operand)                               { return  (u32)__atomic_fetch_sub(&atomic->atomicValue,     operand, __ATOMIC_SEQ_CST); }
    LT_INLINE  u32 LTAtomic_FetchAnd(LTAtomic *atomic, u32 operand)                                    { return  (u32)__atomic_fetch_and(&atomic->atomicValue,     operand, __ATOMIC_SEQ_CST); }
@@ -314,7 +318,11 @@ typedef volatile struct { volatile u32 atomicValue; } LTAtomic;
            #pragma         intrinsic(_InterlockedExchangeAdd)
 
     LT_INLINE u32 LTAtomic_Load(LTAtomic *atomic) { _WriteBarrier(); return atomic->atomicValue; }
-    LT_INLINE u32 LTAtomic_Store(LTAtomic *atomic, u32 value) { atomic->atomicValue = value; _WriteBarrier(); }
+    LT_INLINE void LTAtomic_Store(LTAtomic *atomic, u32 value) { atomic->atomicValue = value; _WriteBarrier(); }
+    /* No relaxed form here: the MS intrinsics have their ordering baked in.  These
+       alias the ordered versions -- correct, just not cheaper on this target. */
+    LT_INLINE u32 LTAtomic_LoadRelaxed(LTAtomic *atomic) { return LTAtomic_Load(atomic); }
+    LT_INLINE void LTAtomic_StoreRelaxed(LTAtomic *atomic, u32 value) { LTAtomic_Store(atomic, value); }
     LT_INLINE u32 LTAtomic_FetchAdd(LTAtomic *atomic, u32 operand) { u32 retVal = (u32)_InterlockedExchangeAdd(((volatile long *)(&atomic->atomicValue)), (long)(nValue32)); _WriteBarrier(); return retVal; }
     LT_INLINE u32 LTAtomic_FetchSubtract(LTAtomic *atomic, u32 operand) { u32 retVal = (u32)_InterlockedExchangeAdd(((volatile long *)(&atomic->atomicValue)), (long)((long)0 - (long)(nValue32))); _WriteBarrier(); return retVal; }
     LT_INLINE bool LTAtomic_CompareAndExchange(LTAtomic32 * atomic, u32 oldValue, u32 newValue) {
@@ -1000,6 +1008,15 @@ typedef     LTHandle   LTDeviceUnit;
 /* ___________________________
             LTMemoryRegion  */
 typedef u32 LTMemoryRegion;
+
+typedef_LTENUM_SIZED(LTMemoryRegionFlags, u32) {
+    kLTMemoryRegionFlags_Malloc            = (1 << 0),     /**< available to lt_malloc */
+    kLTMemoryRegionFlags_MallocFromRegion  = (1 << 1),     /**< available to lt_malloc_from_region (implied by kLTCore_MemoryRegionFlags_Malloc) */
+    kLTMemoryRegionFlags_NoStackMalloc     = (1 << 2),     /**< prevents regions available to lt_malloc from being used for thread stacks */
+    kLTMemoryRegionFlags_SRAM              = (1 << 3),     /**< indicates region is in SRAM (fast) */
+    kLTMemoryRegionFlags_External          = (1 << 4),     /**< indicates region is in external DRAM or PSRAM */
+    kLTMemoryRegionFlags_NoInit            = (1 << 5)      /**< uninitialized memory that survives software/watchdog reboot (excluded from all mallocs) */
+};
 
 /* ______________________________________________
  * LTLibrary name string length/size constants */
@@ -2583,4 +2600,5 @@ typedef struct LTLibrary_MacroCreateObjectParms {
  *  18-Mar-23   augustus    made GetLibraryExtrinsicName only be a member of LTLIBRARY_ROOT_INTERFACEs; added GetResourceTree() impl
  *  05-Apr-26   augustus    use LT_GetCore()->GetLTCoreLibraryBuildVersion() for LTLibrary's GetLibraryBuildVersion on systems with LT_NO_DYNAMIC_LOADER to save space
  *  27-Apr-26   augustus    added LTMemoryRegion
+ *  25-Aug-26   augustus    added LTMemoryRegionFlags
  */

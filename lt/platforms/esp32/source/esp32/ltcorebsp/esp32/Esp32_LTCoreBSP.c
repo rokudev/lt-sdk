@@ -57,7 +57,7 @@ extern int _heap4_end;
 static LTCoreBSP_HeapRegion s_heapRegions[ESP32_MAX_HEAP_REGIONS];
 /* nRegions is filled in by LTCoreBSP_Initialize once the PSRAM probe has run,
  * so a board with no PSRAM fitted registers no zero-sized trailing region */
-static LTCoreBSP_LTHeapConfig LTHeapConfig = { 0, s_heapRegions };
+static LTCoreBSP_LTHeapConfig LTHeapConfig = { s_heapRegions, 0 };
 #define HEAP_REGION_SIZE(n) (u32)(((u8*)&_heap##n##_end) - ((u8*)&_heap##n##_start))
 
 /*___________________
@@ -80,10 +80,10 @@ LTCoreBSP_Initialize(const LTCoreBSP_LTCoreCallbacks * pCallbacks) {
     bool bHavePSRAM = Esp32_PSRAM_Initialize(&psram);
     u8   nRegions;
 
-    s_heapRegions[0] = (LTCoreBSP_HeapRegion) { (u8*)&_heap0_start, HEAP_REGION_SIZE(0), false };
-    s_heapRegions[1] = (LTCoreBSP_HeapRegion) { (u8*)&_heap1_start, HEAP_REGION_SIZE(1), false };
-    s_heapRegions[2] = (LTCoreBSP_HeapRegion) { (u8*)&_heap2_start, HEAP_REGION_SIZE(2), false };
-    s_heapRegions[3] = (LTCoreBSP_HeapRegion) { (u8*)&_heap3_start, HEAP_REGION_SIZE(3), false };
+    s_heapRegions[0] = (LTCoreBSP_HeapRegion) { (u8*)&_heap0_start, HEAP_REGION_SIZE(0), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
+    s_heapRegions[1] = (LTCoreBSP_HeapRegion) { (u8*)&_heap1_start, HEAP_REGION_SIZE(1), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
+    s_heapRegions[2] = (LTCoreBSP_HeapRegion) { (u8*)&_heap2_start, HEAP_REGION_SIZE(2), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
+    s_heapRegions[3] = (LTCoreBSP_HeapRegion) { (u8*)&_heap3_start, HEAP_REGION_SIZE(3), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
     nRegions = 4;
 
     if (bHavePSRAM) {
@@ -100,7 +100,7 @@ LTCoreBSP_Initialize(const LTCoreBSP_LTCoreCallbacks * pCallbacks) {
              * bank-switched 4MB window, so it is exclusive: general
              * allocations stay in internal RAM, and callers that want PSRAM
              * ask for it by region. */
-            s_heapRegions[nRegions++] = (LTCoreBSP_HeapRegion) { pStart, (u32)(pEnd - pStart), true };
+            s_heapRegions[nRegions++] = (LTCoreBSP_HeapRegion) { pStart, (u32)(pEnd - pStart), kLTMemoryRegionFlags_NoStackMalloc | kLTMemoryRegionFlags_External | kLTMemoryRegionFlags_MallocFromRegion };
         }
     }
 

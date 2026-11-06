@@ -22,8 +22,22 @@ LT_PROJECT_SOURCE_DIR    := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/esp32-lt-
 LT_PROJECT_SOURCE_FILES  := Esp32_LTOSAdapter.c
 LT_PROJECT_SOURCE_FILES  += intrs.S
 
+# The per-chip directory supplies sdkconfig.h, which is what selects the target
+# shape of coex_adapter_funcs_t and wifi_osi_funcs_t in the shared headers.  The
+# chip conditionals in the sources therefore read CONFIG_IDF_TARGET_*, exactly as
+# the IDF sources they mirror do.
 LT_PUBLIC_INCLUDE_FLAGS  += -I$(LT_PLATFORM_PUBLIC_INCLUDE_DIR)/esp-wireless-drivers-3rdparty/include
-LT_PUBLIC_INCLUDE_FLAGS  += -I$(LT_PLATFORM_PUBLIC_INCLUDE_DIR)/esp-wireless-drivers-3rdparty/include/esp32
+LT_PUBLIC_INCLUDE_FLAGS  += -I$(LT_PLATFORM_PUBLIC_INCLUDE_DIR)/esp-wireless-drivers-3rdparty/include/$(SOC_PLATFORM_NAME)
+
+# The esp32s3 register, clock and timer entry points the shared table needs.
+# The extra include reaches the WPA supplicant port's rom/ets_sys.h, which is
+# where the ETSTimer declarations this file defines against live - the esp32
+# takes the same seven entry points from ROM instead.  That directory holds
+# nothing else.
+ifeq ($(SOC_PLATFORM_NAME),esp32s3)
+LT_PROJECT_SOURCE_FILES  += Esp32s3_LTOSAdapter.c
+LT_PUBLIC_INCLUDE_FLAGS  += -I$(LT_PROJECT_SOURCE_DIR_BASE)/esp32/thirdparty/wpa_supplicant/roku-lt-port/esp32s3
+endif
 
 # make
 include $(LT_PROJECT_RULES_MAKEFILE)

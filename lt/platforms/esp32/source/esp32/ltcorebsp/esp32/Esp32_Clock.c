@@ -147,8 +147,23 @@ u32 Esp32_ClockGetMHz(void) {
     return speed;
 }
 
+/* Enable the clock the Wi-Fi and BT radios share.  The caller reference counts. */
+void Esp32_ClockEnableRadioCommonClock(void) {
+    u32 mask = Esp32DisableInterrupts();
+    ESP32_REG(DPORT_WIFI_CLK_EN) |= ESP32_REG_MASK(DPORT_WIFI_CLK_EN, WIFI_BT_COMMON);
+    Esp32EnableInterrupts(mask);
+}
+
+/* Disable the clock the Wi-Fi and BT radios share. */
+void Esp32_ClockDisableRadioCommonClock(void) {
+    u32 mask = Esp32DisableInterrupts();
+    ESP32_REG(DPORT_WIFI_CLK_EN) &= ~ESP32_REG_MASK(DPORT_WIFI_CLK_EN, WIFI_BT_COMMON);
+    Esp32EnableInterrupts(mask);
+}
+
 /*******************************************************************************
  *  LOG
  *******************************************************************************
  *  02-Jun-22   tiberius    created
+ *  28-Aug-26   claudius    added Esp32_Clock{Enable,Disable}RadioCommonClock
  */

@@ -283,6 +283,20 @@ SECTIONS
     _btdm_data_end = ABSOLUTE(.);
     *libphy.a:(.rodata .rodata.*)
 
+    /* Buffers the app places by name with LT_SECTION().  These need explicit
+       homes: as orphans ld appends them to the DROM run, which is read-only
+       mapped flash, and one of an odd size there leaves the next section at an
+       unaligned vaddr - which makes elf2image emit a padding segment of
+       unaligned length that the bootloader rejects.  bl70x gives them TCM; the
+       esp32s3 has none, so DRAM is the nearest equivalent.  */
+    . = ALIGN(4);
+    *(.tcm_data)
+    . = ALIGN(4);
+    *(.log_buf)
+    . = ALIGN(4);
+    *(.blechar_buf)
+    . = ALIGN(4);
+
     _data_end = ABSOLUTE(.);
     . = ALIGN(4);
   } > dram_app0_seg

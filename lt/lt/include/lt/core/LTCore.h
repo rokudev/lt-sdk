@@ -113,6 +113,16 @@ typedef void (LTCore_CrashdumpWriteCallback)(const u8 * pBuffer, LT_SIZE nBuffer
  * @ingroup ltcore_cb
  */
 
+typedef bool (LTCore_MemoryRegionEnumProc)(LTMemoryRegion region, const char * pRegionName, void * pRegionAddress, u32 nRegionSize, u32 nRegionFlags, void * pClientData);
+/**< LTCore enumeration callback for examining memory regions
+ *
+ * @param region the memory region
+ * @param pCallerAddress the source address where the disallowance grant was requested
+ * @return true to continue enumeration, false to abort
+ *
+ * @see EnumerateMemoryRegions
+ */
+
 typedef bool (LTCore_HeapAllocatedBlockInfoEnumCB)(const LTCore_HeapAllocatedBlockInfo * pBlockInfoStructs, u32 nNumBlockInfoStructs, void * pClientData);
 /**< LTCore callback for enumerating allocated heap blocks
  *
@@ -493,8 +503,12 @@ struct LTCoreApi {
          * @param nBytes    Number of bytes to allocate.
          * @return Pointer to allocated memory, or NULL if region is invalid,
          *         the region is exhausted, or nBytes is zero.
-         * Memory is freed via Free() — the region is determined from the in-band
-         * block header, not from a region argument at free time.
+         *
+         * @see GetNamedMemoryRegion, EnumerateMemoryRegions, GetMemoryRegionInfo, GetMemoryRegionName
+         *
+         * @note Memory is freed via Free() — the region is determined from the in-band
+         *       block header, not from a region argument at free time.
+         *
          */
 
     void *              (* ReAlloc)(void * pMem, LT_SIZE nBytes LT_CALLSITE_FUNCTION_PARAMETER);
@@ -623,6 +637,32 @@ struct LTCoreApi {
          *         </pre>
          *         The region numbers must be valid indices into reserved memory regions defined
          *         in the LTHeapConfig struct in the platform variant's LTCoreBSP implementation.
+         */
+
+    bool (* EnumerateMemoryRegions)(LTCore_MemoryRegionEnumProc * pEnumProc, void * pClientData);
+        /**< enumerates the LTMemoryRegions
+         *
+         * @param pEnumProc the memory region enumeration proc to call for each LTMemoryRegion available
+         * @param pClientData the client data to pass back to the pEnumProc
+         * @return true if enumeration continued through completion, false if enumeration was aborted
+         */
+
+    const char * (* GetMemoryRegionName)(LTMemoryRegion region);
+        /**< gets the name of a memory region
+         *
+         * @param region the region to get the name for
+         * @return the name of the memory region or NULL if the memory region does not exist
+         */
+
+    void (* GetMemoryRegionInfo)(LTMemoryRegion region, void ** ppRegionAddressToSet, u32 *pRegionSizeToSet, u32 *pRegionFlagsToSet);
+        /**< gets the address, size and flags of a memory region
+         *
+         * @param region the region to get the info for
+         * @param ppRegionAddressToSet the address of the void * that will bet set to the address of the region or NULL if the region does not exist
+         * @param pRegionSizeToSet the address of the u32 that will be set to the byte size of the region or 0 if the region does not exist
+         * @param pRegionFlagsToSet the address of the u32 that will be set to the flags of the region or 0 if the region does not exist
+         *
+         * @note if any of ppRegionAddressToSet, pRegionSizeToSet, or pRegionFlagsToSet are NULL, they will not be set.
          */
 
 /*  _____________
@@ -1002,7 +1042,7 @@ struct LTCoreApi {
          * to narrow the scope of the key to the subtree that starts at that offset.
          *
          * @param resourceTree the resourceTree to read from
-         * @param offset a tree offset that can be used to specify a subtree for searching or 0 search the whole tree
+         * @param offset a tree offset that can be used to specify a subtree for searching or 0 to search the whole tree
          * @param resourceKey the resource key of the value to find the offset of
          * @return the absolute offset from the start of resourceTree where the internal tree node with specified
          *         resourceKey lives or 0 if the specified resourceKey wasn't found
@@ -1013,8 +1053,8 @@ struct LTCoreApi {
          * Call %CountResourceChildren() to obtain the number of children of the resource value with key resourceKey.
          *
          * @param resourceTree the resourceTree to read from
-         * @param offset a tree offset that can be used to specify a subtree for searching or 0 search the whole tree
-         * @param resourceKey the resource key of the value to find the offset of
+         * @param offset a tree offset that can be used to specify a subtree for searching or 0 to search the whole tree
+         * @param resourceKey the resource key of the value to count the number of children of
          * @return the number of children of the resource value with specified resourceKey.
          */
     const char* (*ResourceTypeToString)(LTResourceValueType type);

@@ -85,6 +85,19 @@ typedef enum {
     kLTDeviceWiFiPowerState_Invalid = 255
 } LTDeviceWiFiPowerState;
 
+/**
+ * JoinAp() deadline.  A join fails JoinTimeoutSeconds after it starts unless the
+ * driver has reported kLTWiFi_JoinStatus_Associating or later by then; such a
+ * join has until JoinMaxSeconds from the start.  A client that waits on or
+ * retries a join must allow at least JoinMaxSeconds: a JoinAp() for the same AP
+ * while one is still running is merged into it rather than starting a new attempt.
+ * @ingroup ltdevice_wifi_enum
+ */
+enum {
+    kLTDeviceWiFi_JoinTimeoutSeconds = 9,
+    kLTDeviceWiFi_JoinMaxSeconds     = 12,
+};
+
 /*******************************************************************************
 ** WiFi Callback Definitions
 *******************************************************************************/

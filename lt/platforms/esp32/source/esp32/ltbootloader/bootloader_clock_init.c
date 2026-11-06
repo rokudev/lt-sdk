@@ -7,7 +7,16 @@
 #include "soc/soc.h"
 #include "soc/rtc.h"
 #include "soc/efuse_periph.h"
+#if CONFIG_IDF_TARGET_ESP32P4
+/* No RTC_CNTL block on this part; the same interrupt enables live in the LP
+   domain, spread over four peripherals. */
+#include "soc/lp_wdt_reg.h"
+#include "soc/lp_timer_reg.h"
+#include "soc/lp_analog_peri_reg.h"
+#include "soc/pmu_reg.h"
+#else
 #include "soc/rtc_cntl_reg.h"
+#endif
 #if CONFIG_IDF_TARGET_ESP32
 #include "soc/dport_reg.h"
 #endif
@@ -34,6 +43,11 @@ __attribute__((weak)) void bootloader_clock_configure(void)
      * back. The esp32 arm still leaves the CPU at 80 MHz for its own BSP to raise.
      */
     int cpu_freq_mhz = CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ;
+#elif CONFIG_IDF_TARGET_ESP32P4
+    /* The only three rates reachable off this part's 360MHz CPLL are 360, 180
+     * and 90; soc.h names the bootloader stage's choice, and APB_CLK_FREQ below
+     * is derived from it. The BSP raises the part further. */
+    int cpu_freq_mhz = CPU_CLK_FREQ_MHZ_BTLD;
 #else
     /* Set CPU to 80MHz. Keep other clocks unmodified. */
     int cpu_freq_mhz = 80;
@@ -52,6 +66,19 @@ __attribute__((weak)) void bootloader_clock_configure(void)
     }
 #endif
 
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* The p4 cannot share the arm below: RTC_CLK_CONFIG_DEFAULT() here reads a
+       CONFIG_XTAL_FREQ this tree does not define, and the slow/fast members are
+       named for clock sources rather than frequencies.  The vendored
+       rtc_clk_init() for this part reads only the two members set here. */
+    if (rtc_clk_apb_freq_get() < APB_CLK_FREQ || esp_rom_get_reset_reason(0) != RESET_REASON_CPU0_SW) {
+        rtc_clk_config_t clk_cfg = {
+            .xtal_freq = SOC_XTAL_FREQ_40M,
+            .cpu_freq_mhz = (uint32_t) cpu_freq_mhz,
+        };
+        rtc_clk_init(clk_cfg);
+    }
+#else
     if (rtc_clk_apb_freq_get() < APB_CLK_FREQ || esp_rom_get_reset_reason(0) != RESET_REASON_CPU0_SW) {
         rtc_clk_config_t clk_cfg = RTC_CLK_CONFIG_DEFAULT();
 #if CONFIG_IDF_TARGET_ESP32
@@ -63,6 +90,7 @@ __attribute__((weak)) void bootloader_clock_configure(void)
         clk_cfg.fast_freq = rtc_clk_fast_freq_get();
         rtc_clk_init(clk_cfg);
     }
+#endif
 
     /* As a slight optimization, if 32k XTAL was enabled in sdkconfig, we enable
      * it here. Usually it needs some time to start up, so we amortize at least
@@ -75,6 +103,20 @@ __attribute__((weak)) void bootloader_clock_configure(void)
     }
 #endif // CONFIG_ESP_SYSTEM_RTC_EXT_XTAL
 
+#if CONFIG_IDF_TARGET_ESP32P4
+    CLEAR_PERI_REG_MASK(LP_WDT_INT_ENA_REG, LP_WDT_SUPER_WDT_INT_ENA);
+    CLEAR_PERI_REG_MASK(LP_TIMER_LP_INT_ENA_REG, LP_TIMER_MAIN_TIMER_LP_INT_ENA);
+    CLEAR_PERI_REG_MASK(LP_ANALOG_PERI_LP_INT_ENA_REG, LP_ANALOG_PERI_BOD_MODE0_LP_INT_ENA);
+    CLEAR_PERI_REG_MASK(LP_WDT_INT_ENA_REG, LP_WDT_LP_WDT_INT_ENA);
+    CLEAR_PERI_REG_MASK(PMU_HP_INT_ENA_REG, PMU_SOC_WAKEUP_INT_ENA);
+    CLEAR_PERI_REG_MASK(PMU_HP_INT_ENA_REG, PMU_SOC_SLEEP_REJECT_INT_ENA);
+
+    SET_PERI_REG_MASK(LP_WDT_INT_CLR_REG, LP_WDT_SUPER_WDT_INT_CLR);
+    SET_PERI_REG_MASK(LP_TIMER_LP_INT_CLR_REG, LP_TIMER_MAIN_TIMER_LP_INT_CLR);
+    SET_PERI_REG_MASK(LP_ANALOG_PERI_LP_INT_CLR_REG, LP_ANALOG_PERI_BOD_MODE0_LP_INT_CLR);
+    SET_PERI_REG_MASK(LP_WDT_INT_CLR_REG, LP_WDT_LP_WDT_INT_CLR);
+#else
     REG_WRITE(RTC_CNTL_INT_ENA_REG, 0);
     REG_WRITE(RTC_CNTL_INT_CLR_REG, UINT32_MAX);
+#endif
 }

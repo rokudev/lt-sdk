@@ -332,7 +332,6 @@ enum {
     WiFiConfig_StartTimeoutSeconds = 2,
     WiFiConfig_CheckDriverSeconds = 2,
     WiFiConfig_ScanTimeoutSeconds = 15,
-    WiFiConfig_JoinTimeoutSeconds = 9,
     WiFiConfig_LinkCheckSeconds = 4,
 };
 
@@ -540,6 +539,10 @@ static bool WSM_InitThread(void) {
 
 static void WSM_ExitThread(void) {
     LT_GetCore()->NoSleepAction(&WSM_SleepActionEventProc);
+    if (WSM_DisallowanceGrant) {
+        lt_reallowsleepmode(WSM_DisallowanceGrant);
+        WSM_DisallowanceGrant = 0;
+    }
     LTThread hThread = iThread->GetCurrentThread();
     iThread->KillTimer(hThread, WSM_GotTimer, LTHANDLE_TO_VOIDPTR(hThread));
     lt_destroyobject(WSM_ScanMutex);
@@ -691,13 +694,14 @@ static void WSM_QueueInput(WSM_Queue *queue, WSM_Input *input) {
     // prior DRIVER events pending.
     if (input->state > WS_DriverStates) {
         // Queue it to head:
-        if (queue->head) input->next = queue->head->next;
+        input->next = queue->head;
         queue->head = input;
         if (!queue->tail) queue->tail = input;
     } else {
         // Queue it to tail:
         if (queue->tail) queue->tail->next = input;
         if (!queue->head) queue->head = input;
+        queue->tail = input;
         input->next = NULL;
     }
     queue->mutex->API->Unlock(queue->mutex);
@@ -821,6 +825,7 @@ static void WSM_DoNext(WSM_Input *input) {
     static LTTime expired_time;
     static LTTime rejoin_time;
     static LTTime link_check_time;
+    static LTTime join_deadline;  // join start + JoinMaxSeconds, the deadline once the join progresses
     static LTTime metrics_check_time = LTTimeInitializer_Seconds(METRICS_SAMPLING_PERIOD);
     LTTime now;
 
@@ -1133,7 +1138,8 @@ static void WSM_DoNext(WSM_Input *input) {
             if(!WSM_DisallowanceGrant) {
                 WSM_DisallowanceGrant = lt_disallowsleepmode();
             }
-            SET_TIMEOUT(WiFiConfig_JoinTimeoutSeconds);
+            SET_TIMEOUT(kLTDeviceWiFi_JoinTimeoutSeconds);
+            join_deadline = LTTime_Add(pCore->GetKernelTime(), LTTime_Seconds(kLTDeviceWiFi_JoinMaxSeconds));
             if (WSM_RejoinEnabled) WSM_JoinSpec.options |= kLTWiFi_JoinOption_Retry;
             LTAtomic_Store(&WSM_JoinStatus, kLTWiFi_JoinStatus_Starting);
             LTAtomic_Store(&WSM_LastJoinStatus, kLTWiFi_JoinStatus_Starting);
@@ -1146,9 +1152,13 @@ static void WSM_DoNext(WSM_Input *input) {
             /* Pull the driver's latest status before checking the timeout --
              * otherwise a join that just succeeded this same tick reads as
              * stale (still Authenticating) and a timeout at the same poll
-             * clobbers it into Failed before the callback below can land. */
+             * clobbers it into Failed before the callback below can land.
+             * Progress reported this tick likewise moves the deadline first. */
             DRV_WiFi->JoinCheck(DRV_Unit);
-            if (IS_TIMEOUT && LTAtomic_Load(&WSM_JoinStatus) < kLTWiFi_JoinStatus_Failed) {
+            u32 status = LTAtomic_Load(&WSM_JoinStatus);
+            if (status >= kLTWiFi_JoinStatus_Associating && status < kLTWiFi_JoinStatus_Failed)
+                expired_time = join_deadline;
+            if (IS_TIMEOUT && status < kLTWiFi_JoinStatus_Failed) {
                 LTAtomic_Store(&WSM_JoinStatus, kLTWiFi_JoinStatus_Failed);
             }
             // Sequence through the connection states:
@@ -1281,6 +1291,11 @@ static void WSM_DoNext(WSM_Input *input) {
             LTAtomic_Store(&WSM_LinkConnected, 0);
             // Metrics.disconnects++;  // intentional disconnects should not be counted
             WSM_RejoinCount = 0;
+            // No rejoin follows. Requests only run from Idle, so no scan holds the grant here.
+            if (WSM_DisallowanceGrant) {
+                lt_reallowsleepmode(WSM_DisallowanceGrant);
+                WSM_DisallowanceGrant = 0;
+            }
             DRV_WiFi->Disconnect(DRV_Unit);
             // Always notify, even if not connected (allows user-side state changes)
             iEvent->NotifyEvent(WSM_StatEvent, kLTDeviceWiFi_Status_Disconnected, DRV_Unit);

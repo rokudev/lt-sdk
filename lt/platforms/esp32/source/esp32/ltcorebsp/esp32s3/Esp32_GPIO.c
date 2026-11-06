@@ -240,6 +240,37 @@ void Esp32GPIO_ConfigPinDriveStrength(u8 nPin, u8 nDriveStrength) {
 }
 
 /******************************************************************************
+ * sets just the pull for a pin, leaving the function, input enable and drive
+ * strength fields as they are
+ ****************************************************************************/
+void Esp32GPIO_ConfigPinPull(u8 nPin, Esp32GPIO_PullType pull) {
+    if (!Esp32GPIO_IsValidPin(nPin)) {
+        return;
+    }
+
+    u32 nIOMuxVal = ESP32_IO_MUX_PAD_REG(nPin);
+    nIOMuxVal &= ~(ESP32_REG_MASK(IO_MUX, FUN_WPU) | ESP32_REG_MASK(IO_MUX, FUN_WPD));
+    nIOMuxVal |= (pull == kEsp32GPIO_PullUp   ? ESP32_REG_MASK(IO_MUX, FUN_WPU) : 0);
+    nIOMuxVal |= (pull == kEsp32GPIO_PullDown ? ESP32_REG_MASK(IO_MUX, FUN_WPD) : 0);
+    ESP32_IO_MUX_PAD_REG(nPin) = nIOMuxVal;
+}
+
+/******************************************************************************
+ * sets just the IO_MUX input enable for a pin.  An output pad with the input
+ * enabled also feeds the GPIO input register and the GPIO matrix.
+ ****************************************************************************/
+void Esp32GPIO_ConfigPinInputEnable(u8 nPin, bool bEnable) {
+    if (!Esp32GPIO_IsValidPin(nPin)) {
+        return;
+    }
+
+    u32 nIOMuxVal = ESP32_IO_MUX_PAD_REG(nPin);
+    if (bEnable) nIOMuxVal |=  ESP32_REG_MASK(IO_MUX, FUN_IE);
+    else         nIOMuxVal &= ~ESP32_REG_MASK(IO_MUX, FUN_IE);
+    ESP32_IO_MUX_PAD_REG(nPin) = nIOMuxVal;
+}
+
+/******************************************************************************
  * Configures the given pin to hold the current value or clears that
  * functionality.  Both hold registers are cleared at reboot in
  * Esp32_LTChipStart.
@@ -399,7 +430,47 @@ void Esp32GPIO_WritePin(u8 nPin, bool bVal) {
 }
 
 /******************************************************************************
+ * Reads back a pad's configuration
+ *****************************************************************************/
+bool Esp32GPIO_GetPinConfig(u8 nPin, Esp32GPIO_PinConfig *pConfig) {
+    if (!Esp32GPIO_IsValidPin(nPin) || pConfig == NULL) {
+        return false;
+    }
+
+    u32 nIOMuxVal = ESP32_IO_MUX_PAD_REG(nPin);
+
+    pConfig->direction     = ESP32_GPIO_IS_OUTPUT(nPin) ? kEsp32GPIO_Direction_Output :
+                                                          kEsp32GPIO_Direction_Input;
+    pConfig->bInputEnabled = (nIOMuxVal & ESP32_REG_MASK(IO_MUX, FUN_IE)) != 0;
+    pConfig->func          = (nIOMuxVal & ESP32_REG_MASK(IO_MUX, MCU_SEL)) >>
+                             ESP32_REG_SHIFT(IO_MUX, MCU_SEL);
+    pConfig->pull          = (nIOMuxVal & ESP32_REG_MASK(IO_MUX, FUN_WPU)) ? kEsp32GPIO_PullUp   :
+                             (nIOMuxVal & ESP32_REG_MASK(IO_MUX, FUN_WPD)) ? kEsp32GPIO_PullDown :
+                                                                             kEsp32GPIO_PullNone;
+    return true;
+}
+
+/******************************************************************************
+ * Clears a pending interrupt for the pin.  Esp32GPIO_Isr() clears the whole
+ * status register as it dispatches, so this is only needed for a pin whose
+ * interrupt is enabled with no ISR attached.
+ *****************************************************************************/
+void Esp32GPIO_ClearPendingIRQ(u8 nPin) {
+    if (!Esp32GPIO_IsValidPin(nPin)) {
+        return;
+    }
+
+    if (nPin < 32) {
+        ESP32_REG(GPIO_STATUS_W1TC)  = (1u << nPin);
+    } else {
+        ESP32_REG(GPIO_STATUS1_W1TC) = (1u << (nPin - 32));
+    }
+}
+
+/******************************************************************************
  *  LOG
  ******************************************************************************
  *  29-Jul-26   claudius    created
+ *  08-Sep-26   claudius    added pull, input enable and pad config readback
+ *                          accessors for Esp32DriverGpio
  */

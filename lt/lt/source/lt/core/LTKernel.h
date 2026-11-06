@@ -405,48 +405,39 @@ bool LTKMonitorWait(void * pMonitor, s64 nTimeoutNanoseconds);
  * Memory Allocator */
 
 #define LTK_MAX_HEAP_REGIONS 8
-    /**< Maximum number of heap regions tracked in the slot table.  Returned by
-     *   LTKHeapAddRegionEx() as a sentinel when the table is full. */
+    /**< Maximum number of heap regions tracked in the slot table. */
 
 void LTKHeapInitialize(void);
     /**< Initialize allocator heap.
      *
-     * @param[in] pHeapChangeCallback pointer to the heap change callback
      */
-void LTKHeapAddRegion(u8 * pRegionBuffer, u32 nSizeInBytes);
-    /**< Add a non-exclusive region to the heap.  Shortcut for
-     *   LTKHeapAddRegionEx(buffer, size, false). */
-
-u32 LTKHeapAddRegionEx(u8 * pRegionBuffer, u32 nSizeInBytes, bool bExclusive);
-    /**< Add a heap region with optional exclusivity.
+void LTKHeapAddRegion(u8 * pRegionBuffer, u32 nSizeInBytes, u32 nFlags);
+    /**< Add a region to the heap
      *
      * @param pRegionBuffer  start of the region buffer (must live for program lifetime)
      * @param nSizeInBytes   buffer size
-     * @param bExclusive     if true, the region is skipped by default lt_malloc() /
-     *                       LTKAlloc() walks; reachable only via lt_malloc_from_region() /
-     *                       LTKAllocFromRegion().  Use for DMA-only RAM.
-     * @return Internal 0-based slot (registration order) on success, or
-     *         LTK_MAX_HEAP_REGIONS if the internal region table is full; in the
-     *         latter case the block is still added to the unified free list for
-     *         non-exclusive regions, so existing platforms that do not care about
-     *         region indices see no behavioural change.
+     * @param nFlags         the region flags - see LTMemoryRegionFlags in LTTypes.h
      *
-     *         IMPORTANT: this return value is the *internal slot*, NOT an
-     *         LTMemoryRegion.  LTMemoryRegion is 1-based and reserves 0 as the
-     *         "no specific region" sentinel that routes lt_malloc_from_region
-     *         back to lt_malloc.  Convert to a public LTMemoryRegion via
-     *         (LTMemoryRegion)(slot + 1) before passing to lt_malloc_from_region
-     *         or exposing in LTDeviceConfig.json. */
-
+     */
 bool LTKHeap_IsExclusiveByPtr(const void * p);
-    /**< Returns true if @p p points inside a heap region that was registered with
-     *   bExclusive=true.  Returns false for non-exclusive regions, for unmapped
+    /**< Returns true if @p p points inside a heap region that was registered with flags that include
+     *   kLTMemoryRegionFlags_MallocFromRegion but not kLTMemoryRegionFlags_Malloc.  Returns false for non-exclusive regions, for unmapped
      *   pointers, and for the NULL pointer.  Used by callers (e.g. LTCoreImpl_ReAlloc)
      *   to distinguish a deliberate refusal-to-move from an out-of-memory failure. */
-
+u32 LTKHeapScrubLTMemoryRegionFlags(u32 nFlags);
+    /**< scrubs heap memory flags of mutually exclusive flags
+     *
+     * @param nFlags the flags to scrubs
+     * @return the scrubbed flags
+     *
+     * @note This function is used to sanitize the memory region flags set by the BSP to
+     *       ensure deterministic operation of the allocator.
+     * @see LTMemoryRegionFlags
+     */
 void * LTKAlloc(LT_SIZE nBytes);
+void * LTKAllocStack(LT_SIZE nBytes);
 void * LTKAllocFromRegion(LTMemoryRegion region, LT_SIZE nBytes);
-    /**< Allocate from a specific region previously registered via LTKHeapAddRegion(Ex).
+    /**< Allocate from a specific region previously registered via LTKHeapAddRegion.
      *   The @p region argument is an LTMemoryRegion (typically obtained via
      *   LT_GetCore()->GetNamedMemoryRegion(name)).  A value of 0 is a sentinel that
      *   falls through to the unrestricted allocator (equivalent to LTKAlloc).  Non-zero

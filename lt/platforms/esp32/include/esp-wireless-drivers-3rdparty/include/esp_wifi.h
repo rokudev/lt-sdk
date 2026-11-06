@@ -94,6 +94,11 @@ extern "C" {
 /**
  * @brief WiFi stack configuration parameters passed to esp_wifi_init call.
  */
+/* Roku: the three CONFIG_IDF_TARGET_ESP32S3 fields below are absent from the
+ * older ESP-IDF the esp32 blobs were cut from.  Adding them unconditionally
+ * shifts feature_caps, sta_disconnected_pm and magic past where that blob reads
+ * them, so wifi_menuconfig_init rejects the config with ESP_ERR_INVALID_ARG.
+ */
 typedef struct {
     system_event_handler_t event_handler;          /**< WiFi event handler */
     wifi_osi_funcs_t*      osi_funcs;              /**< WiFi OS functions */
@@ -103,6 +108,10 @@ typedef struct {
     int                    tx_buf_type;            /**< WiFi TX buffer type */
     int                    static_tx_buf_num;      /**< WiFi static TX buffer number */
     int                    dynamic_tx_buf_num;     /**< WiFi dynamic TX buffer number */
+#if CONFIG_IDF_TARGET_ESP32S3
+    int                    rx_mgmt_buf_type;       /**< WiFi RX MGMT buffer type */
+    int                    rx_mgmt_buf_num;        /**< WiFi RX MGMT buffer number */
+#endif
     int                    cache_tx_buf_num;       /**< WiFi TX cache buffer number */
     int                    csi_enable;             /**< WiFi channel state information enable flag */
     int                    ampdu_rx_enable;        /**< WiFi AMPDU RX feature enable flag */
@@ -116,6 +125,9 @@ typedef struct {
     int                    mgmt_sbuf_num;          /**< WiFi management short buffer number, the minimum value is 6, the maximum value is 32 */
     uint64_t               feature_caps;           /**< Enables additional WiFi features and capabilities */
     bool                   sta_disconnected_pm;    /**< WiFi Power Management for station at disconnected status */
+#if CONFIG_IDF_TARGET_ESP32S3
+    int                    espnow_max_encrypt_num; /**< Maximum encrypt number of peers supported by espnow */
+#endif
     int                    magic;                  /**< WiFi init magic number, it should be the last field */
 } wifi_init_config_t;
 
@@ -208,6 +220,39 @@ extern uint64_t g_wifi_feature_caps;
 #define WIFI_STA_DISCONNECTED_PM_ENABLED false
 #endif
 
+/* Roku: the esp32s3 blobs were cut from a later ESP-IDF than the esp32 ones and
+ * read three extra wifi_init_config_t fields - see the struct above.  These fill
+ * them in, and expand to nothing on the chips whose blobs have no such fields.
+ */
+#ifdef CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF
+#define WIFI_RX_MGMT_BUF_NUM_DEF CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF
+#else
+#define WIFI_RX_MGMT_BUF_NUM_DEF 5
+#endif
+
+#ifdef CONFIG_ESP_WIFI_DYNAMIC_RX_MGMT_BUF
+#define WIFI_DYNAMIC_RX_MGMT_BUF CONFIG_ESP_WIFI_DYNAMIC_RX_MGMT_BUF
+#else
+#define WIFI_DYNAMIC_RX_MGMT_BUF 0
+#endif
+
+#ifdef CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM
+#define WIFI_ESPNOW_MAX_ENCRYPT_NUM CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM
+#else
+#define WIFI_ESPNOW_MAX_ENCRYPT_NUM 7
+#endif
+
+#if CONFIG_IDF_TARGET_ESP32S3
+#define WIFI_INIT_CONFIG_RX_MGMT_FIELDS \
+    .rx_mgmt_buf_type = WIFI_DYNAMIC_RX_MGMT_BUF,\
+    .rx_mgmt_buf_num = WIFI_RX_MGMT_BUF_NUM_DEF,
+#define WIFI_INIT_CONFIG_ESPNOW_FIELDS \
+    .espnow_max_encrypt_num = WIFI_ESPNOW_MAX_ENCRYPT_NUM,
+#else
+#define WIFI_INIT_CONFIG_RX_MGMT_FIELDS
+#define WIFI_INIT_CONFIG_ESPNOW_FIELDS
+#endif
+
 #define CONFIG_FEATURE_WPA3_SAE_BIT     (1<<0)
 #define CONFIG_FEATURE_CACHE_TX_BUF_BIT (1<<1)
 #define CONFIG_FEATURE_FTM_INITIATOR_BIT (1<<2)
@@ -222,6 +267,7 @@ extern uint64_t g_wifi_feature_caps;
     .tx_buf_type = CONFIG_ESP32_WIFI_TX_BUFFER_TYPE,\
     .static_tx_buf_num = WIFI_STATIC_TX_BUFFER_NUM,\
     .dynamic_tx_buf_num = WIFI_DYNAMIC_TX_BUFFER_NUM,\
+    WIFI_INIT_CONFIG_RX_MGMT_FIELDS \
     .cache_tx_buf_num = WIFI_CACHE_TX_BUFFER_NUM,\
     .csi_enable = WIFI_CSI_ENABLED,\
     .ampdu_rx_enable = WIFI_AMPDU_RX_ENABLED,\
@@ -235,6 +281,7 @@ extern uint64_t g_wifi_feature_caps;
     .mgmt_sbuf_num = WIFI_MGMT_SBUF_NUM, \
     .feature_caps = g_wifi_feature_caps, \
     .sta_disconnected_pm = WIFI_STA_DISCONNECTED_PM_ENABLED,  \
+    WIFI_INIT_CONFIG_ESPNOW_FIELDS \
     .magic = WIFI_INIT_CONFIG_MAGIC\
 };
 

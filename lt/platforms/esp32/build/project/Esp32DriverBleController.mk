@@ -13,7 +13,7 @@
 BLE_DRV_DIR  = esp-wireless-drivers-3rdparty
 
 # source dir and files
-LT_PROJECT_SOURCE_DIR	     :=	$(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/blecontroller
+LT_PROJECT_SOURCE_DIR	     :=	$(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/blecontroller/esp32
 LT_PROJECT_SOURCE_FILES      += Esp32DriverBleController.c
 
 LT_PUBLIC_INCLUDE_FLAGS      += -I$(LT_PROJECT_SOURCE_DIR)
@@ -30,3 +30,5 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #   15-Aug-22   vespasian   created
 #   12-Sep-22   vespasian   cleaned up
 #   12-Feb-23   gallienus   revised
+#   27-Aug-26   claudius    moved down into driver/blecontroller/esp32, alongside
+#                           the esp32s3 driver sharing the platform root

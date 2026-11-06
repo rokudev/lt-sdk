@@ -5,7 +5,7 @@
  * If a copy of the MPL was not distributed with this file, you can obtain one at
  * https://mozilla.org/MPL/2.0/.
  *
- * Copyright 2023, Roku, Inc.  All rights reserved.
+ * Copyright 2023-2026, Roku, Inc.  All rights reserved.
  ******************************************************************************/
 
 #include "LTKArchRISC_V_Vectors.h"
@@ -38,6 +38,28 @@ _LTK_nTrapNestingCounter:
     .text
     .global   _LTKDispatcher
     .global   _LTKFaultHandler
+
+    /* Trap vector table for mtvec.MODE = 1 (standard RISC-V vectored mode).
+     *   In vectored mode mtvec.BASE is a table of jumps rather than the handler
+     *   itself: exceptions enter at entry 0 and interrupt cause N at entry N.
+     *   Cores that hardwire MODE = 1 also tend to hardwire the low BASE bits,
+     *   forcing a 256 byte boundary - the esp32c3 reads mtvec back as
+     *   (BASE & ~0xff) | 1 whatever is written - so the table is aligned to 256
+     *   rather than the 4 the base ISA asks for.
+     *   Every entry targets the one handler, which decodes mcause as it does in
+     *   direct mode; the table exists only to satisfy the hardware.  rvc must be
+     *   off across it or the assembler compresses a j to 2 bytes and every entry
+     *   past the first lands at the wrong stride. */
+    .global   _LTKMachineTrapVectorTable
+    .type     _LTKMachineTrapVectorTable, @function
+    .balign   256, 0
+_LTKMachineTrapVectorTable:
+    .option   push
+    .option   norvc
+    .irp      entry, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    j         _LTKMachineTrapHandler
+    .endr
+    .option   pop
 
     /* Both exceptions and interrupts are considered traps and are handled here.
      *   64 byte alignment is needed for CLIC direct vector MODE = 2. */

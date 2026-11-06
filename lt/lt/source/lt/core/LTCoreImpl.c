@@ -21,6 +21,7 @@
 #include "LTStdlibImpl.h"
 #include "LTResourceTreeImpl.h"
 #include "LTConsoleConnector.h"
+#include "LTKernel.h"
 #include <lt/core/LTArray.h>
 #include <lt/core/bsp/LTCoreBSP.h>
 #include <lt/core/bsp/LTHostAPI.h>
@@ -1274,6 +1275,41 @@ LTCoreImpl_GetNamedMemoryRegion(const char *name) {
     return s_coreImpl.pDeviceKonfig ? s_coreImpl.pDeviceKonfig->API->GetNamedMemoryRegion(s_coreImpl.pDeviceKonfig, name) : (LTMemoryRegion)0;
 }
 
+static const char *
+LTCoreImpl_GetMemoryRegionName(LTMemoryRegion region) {
+    return s_coreImpl.pDeviceKonfig ? s_coreImpl.pDeviceKonfig->API->GetMemoryRegionName(s_coreImpl.pDeviceKonfig, region) : NULL;
+}
+
+static bool
+LTCoreImpl_EnumerateMemoryRegions(LTCore_MemoryRegionEnumProc * pEnumProc, void * pClientData) {
+    if (pEnumProc && s_pBSP && s_pBSP->pLTHeapConfig) {
+        for (u8 i = 0; i < s_pBSP->pLTHeapConfig->nRegions; i++) {
+            if (! pEnumProc((LTMemoryRegion)(i+1),
+                             LTCoreImpl_GetMemoryRegionName((LTMemoryRegion)(i+1)),
+                             s_pBSP->pLTHeapConfig->pRegions[i].pRegionBuffer,
+                             s_pBSP->pLTHeapConfig->pRegions[i].nSizeInBytes,
+                             LTKHeapScrubLTMemoryRegionFlags(s_pBSP->pLTHeapConfig->pRegions[i].nFlags),
+                             pClientData)) return false;
+        }
+    }
+    return true;
+}
+
+static void
+LTCoreImpl_GetMemoryRegionInfo(LTMemoryRegion region, void ** ppRegionAddressToSet, u32 *pRegionSizeToSet, u32 *pRegionFlagsToSet) {
+    if (region && s_pBSP && s_pBSP->pLTHeapConfig && region <= s_pBSP->pLTHeapConfig->nRegions) {
+        region--;
+        if (ppRegionAddressToSet) *ppRegionAddressToSet = s_pBSP->pLTHeapConfig->pRegions[region].pRegionBuffer;
+        if (pRegionSizeToSet)     *pRegionSizeToSet     = s_pBSP->pLTHeapConfig->pRegions[region].nSizeInBytes;
+        if (pRegionFlagsToSet)    *pRegionFlagsToSet    = s_pBSP->pLTHeapConfig->pRegions[region].nFlags;
+    }
+    else {
+        if (ppRegionAddressToSet) *ppRegionAddressToSet = 0;
+        if (pRegionSizeToSet)     *pRegionSizeToSet     = 0;
+        if (pRegionFlagsToSet)    *pRegionFlagsToSet    = 0;
+    }
+}
+
 static const char * LTCoreImpl_FindLibraryFromObjectMap(const char * pObjectName, const char * pSpecialization) {
     extern LTLibrary_LTObjectMapEntry * g_pStaticallyBoundLTObjectMapEntries;
     LTLibrary_LTObjectMapEntry * pCurrEntry = g_pStaticallyBoundLTObjectMapEntries;
@@ -2324,6 +2360,9 @@ define_LTLIBRARY_ROOT_INTERFACE(LTCore, 0, 0, 1)
     .FormatCanonicalMemstatString       = &LTCoreImpl_FormatCanonicalMemstatString,
 
     .GetNamedMemoryRegion               = &LTCoreImpl_GetNamedMemoryRegion,
+    .EnumerateMemoryRegions             = &LTCoreImpl_EnumerateMemoryRegions,
+    .GetMemoryRegionName                = &LTCoreImpl_GetMemoryRegionName,
+    .GetMemoryRegionInfo                = &LTCoreImpl_GetMemoryRegionInfo,
 
     .CreateEvent                        = &LTEventImpl_CreateEvent,
     .CreateThread                       = &LTThreadImpl_CreateThread,

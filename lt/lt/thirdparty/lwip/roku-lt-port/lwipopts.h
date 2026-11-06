@@ -60,7 +60,9 @@
 #define LWIP_IPV6 0
 
 // Enable TCP, ARP, ETHERNET
+#ifndef LWIP_TCP
 #define LWIP_TCP        1
+#endif
 #define LWIP_ARP        1
 #define LWIP_ETHERNET   1
 
@@ -159,8 +161,12 @@
 
 // Provide an LT implementation for timers
 #define LWIP_TIMERS_CUSTOM 1
-
+/* Disable lwIP assertion overhead for BL61x throughput */
+#ifdef BL618DG
+#define LWIP_ASSERT_CORE_LOCKED()
+#else
 #define LWIP_ASSERT_CORE_LOCKED() lt_lwip_check_locking(__FUNCTION__)
+#endif
 
 #if LT_ARCHITECTURE_BITS == 32
 #define MEM_ALIGNMENT 4
@@ -201,6 +207,10 @@ void sys_timeouts_destroy(void);
 #define MEM_STATS 1
 #define LWIP_STATS 1
 #define LWIP_STATS_DISPLAY 1
+#endif
+
+#ifdef BL618DG
+#define LWIP_NOASSERT 1
 #endif
 
 #endif // lwipopts

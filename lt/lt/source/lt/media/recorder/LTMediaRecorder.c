@@ -402,7 +402,7 @@ static void OnContinuousRecordingMetadata(LTMediaMP4Recording *recording, LTMedi
             ContinuousRecordingNextMinute();
         }
     } else if (dataType == kMetadataType_WriteErrorStop) {
-        LTLOG("contrec.abort", "Failed to write continuous recording, abort");
+        LTLOG_SERVER("contrec.abort", "Failed to write continuous recording, abort");
         if (s_camState.record.recording) s_camState.record.recording->API->Cancel(s_camState.record.recording);
         lt_destroyobject(s_camState.record.recording);
         s_camState.record.recording = NULL;

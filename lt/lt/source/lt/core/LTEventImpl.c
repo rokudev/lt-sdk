@@ -601,9 +601,9 @@ LTEventImpl_NotifyEvent(LTEvent hEvent, ...) { LTCOREIMPL_ASSERT_INSIDE_THREADCO
     LTHandle_ReleasePrivateData(hEvent, pEventImpl);
 }
 
-static void
+static bool
 LTEventImpl_NotifyEventFromISR(LTEvent_ISRThreadProxyNotifyProc *pThreadProxyNotifyProc, void *pClientData) LT_ISR_SAFE {
-    LTThreadImpl_QueueTaskProc(LTCoreImpl_GetLTCoreImpl()->hThreadCore, pThreadProxyNotifyProc, NULL, pClientData);
+    return LTThreadImpl_QueueTaskProc(LTCoreImpl_GetLTCoreImpl()->hThreadCore, pThreadProxyNotifyProc, NULL, pClientData);
 }
 
 /*__________________________________________

@@ -54,7 +54,7 @@ extern int _heap3_end;
 static LTCoreBSP_HeapRegion s_heapRegions[ESP32_MAX_HEAP_REGIONS];
 /* nRegions is filled in by LTCoreBSP_Initialize once the PSRAM probe has run,
  * so a board with no PSRAM fitted registers no zero-sized trailing region */
-static LTCoreBSP_LTHeapConfig LTHeapConfig = { 0, s_heapRegions };
+static LTCoreBSP_LTHeapConfig LTHeapConfig = { s_heapRegions, 0 };
 #define HEAP_REGION_SIZE(n) (u32)(((u8*)&_heap##n##_end) - ((u8*)&_heap##n##_start))
 
 /*___________________
@@ -78,9 +78,9 @@ LTCoreBSP_Initialize(const LTCoreBSP_LTCoreCallbacks * pCallbacks) {
     bool bHavePSRAM = Esp32_PSRAM_Initialize(&psram);
     u8   nRegions;
 
-    s_heapRegions[0] = (LTCoreBSP_HeapRegion) { (u8*)&_heap0_start, HEAP_REGION_SIZE(0), false };
-    s_heapRegions[1] = (LTCoreBSP_HeapRegion) { (u8*)&_heap1_start, HEAP_REGION_SIZE(1), false };
-    s_heapRegions[2] = (LTCoreBSP_HeapRegion) { (u8*)&_heap3_start, HEAP_REGION_SIZE(3), false };
+    s_heapRegions[0] = (LTCoreBSP_HeapRegion) { (u8*)&_heap0_start, HEAP_REGION_SIZE(0), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
+    s_heapRegions[1] = (LTCoreBSP_HeapRegion) { (u8*)&_heap1_start, HEAP_REGION_SIZE(1), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
+    s_heapRegions[2] = (LTCoreBSP_HeapRegion) { (u8*)&_heap3_start, HEAP_REGION_SIZE(3), kLTMemoryRegionFlags_SRAM | kLTMemoryRegionFlags_Malloc };
     nRegions = 3;
 
     if (bHavePSRAM) {
@@ -90,7 +90,7 @@ LTCoreBSP_Initialize(const LTCoreBSP_LTCoreCallbacks * pCallbacks) {
          * There is no linker segment behind it: flash rodata and PSRAM share
          * the same 0x3C000000 data region and the MMU decides per page which
          * one a page targets, so the base can only be known at runtime. */
-        s_heapRegions[nRegions++] = (LTCoreBSP_HeapRegion) { psram.pBase, psram.nSizeInBytes, true };
+        s_heapRegions[nRegions++] = (LTCoreBSP_HeapRegion) { psram.pBase, psram.nSizeInBytes, kLTMemoryRegionFlags_NoStackMalloc |  kLTMemoryRegionFlags_External | kLTMemoryRegionFlags_Malloc };
     }
 
     LTHeapConfig.nRegions = nRegions;
