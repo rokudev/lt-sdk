@@ -39,8 +39,10 @@ enum {
     kResponseSizeMD5Extra          = 16,
     kResponseSizeMax               = kResponseSizeROM + kResponseSizeMD5Extra,
 
-    // Location of the chip magic word. This one address is common to every
-    // ESP32-family part; all other registers below are chip-specific.
+    // Location of the chip magic word. Readable on every ESP32-family part in
+    // this table except the P4, which is selected by name instead; see the
+    // bByNameOnly field of ChipInfo. All other registers below are
+    // chip-specific.
     kRegisterChipID                = 0x40001000,
 
     // Original ESP32 (Xtensa LX6) only. These addresses are unmapped on the
@@ -113,8 +115,11 @@ typedef u32 static_assert_CommandHeader[(sizeof(CommandHeader) == 8) ? 0 : -1];
 // Supported ESP32 ChipIDs
 typedef u32 ChipID;
 enum ChipID {
-    kChipID_esp32       = 0x00f01d83,
-    kChipID_esp32s3     = 0x00000009,
+    kChipID_esp32         = 0x00f01d83,
+    kChipID_esp32s3       = 0x00000009,
+    // The ESP32-C3 reports one of two magic values, eco1/eco2 or eco3
+    kChipID_esp32c3_eco12 = 0x6921506f,
+    kChipID_esp32c3_eco3  = 0x1b31506f,
 };
 
 //
@@ -127,6 +132,9 @@ typedef struct ChipInfo {
     const char * pName;                    // Also selects the stub in LTFlasher.json
     bool         bEFuseRevision;           // Has the ESP32 eFuse revision/auto-encrypt layout
     bool         bRomFlashBeginEncryptArg; // ROM SPIFlashBegin takes a trailing 'encrypted' word
+    // Set on parts that cannot be auto-detected and must be named with
+    // '-x chip=<name>'; nChipID is unused on such an entry
+    bool         bByNameOnly;
     // RTC watchdog registers, zero on parts with no native USB peripheral
     u32          nRegRtcWdtWProtect;
     u32          nRegRtcWdtConfig0;
@@ -155,6 +163,39 @@ static const ChipInfo s_chipInfo[] = {
         .nRegRtcSwdWProtect       = 0x600080b8,
         .nRegRtcSwdConf           = 0x600080b4,
         .nRtcSwdWriteKey          = 0x8f1d312a,
+    },
+    {   // ESP32-C3 (RISC-V RV32IMC), eco1 and eco2 silicon
+        .nChipID                  = kChipID_esp32c3_eco12,
+        .pName                    = "esp32c3",
+        .bEFuseRevision           = false,
+        .bRomFlashBeginEncryptArg = true,
+        .nRegRtcWdtWProtect       = 0x600080a8,
+        .nRegRtcWdtConfig0        = 0x60008090,
+        .nRtcWdtWriteKey          = 0x50d83aa1,
+        .nRegRtcSwdWProtect       = 0x600080b0,
+        .nRegRtcSwdConf           = 0x600080ac,
+        .nRtcSwdWriteKey          = 0x8f1d312a,
+    },
+    {   // ESP32-C3 eco3 silicon.  Identical to the entry above but for the magic
+        // value the ROM reports, which GetChipInfoFromID() matches one per entry.
+        .nChipID                  = kChipID_esp32c3_eco3,
+        .pName                    = "esp32c3",
+        .bEFuseRevision           = false,
+        .bRomFlashBeginEncryptArg = true,
+        .nRegRtcWdtWProtect       = 0x600080a8,
+        .nRegRtcWdtConfig0        = 0x60008090,
+        .nRtcWdtWriteKey          = 0x50d83aa1,
+        .nRegRtcSwdWProtect       = 0x600080b0,
+        .nRegRtcSwdConf           = 0x600080ac,
+        .nRtcSwdWriteKey          = 0x8f1d312a,
+    },
+    {   // ESP32-P4 (RISC-V RV32IMAFC). Selected by name, never auto-detected:
+        // kRegisterChipID is the flash cache window rather than ROM on this part,
+        // and reading it wedges the download loader until the next reset.
+        .pName                    = "esp32p4",
+        .bByNameOnly              = true,
+        .bEFuseRevision           = false,
+        .bRomFlashBeginEncryptArg = true,
     },
 };
 
@@ -233,9 +274,21 @@ static int SlipRecv(u8 * pRecvBuffer, u16 nMaxLength) {
 // Returns the descriptor for _supported_ ESP32 ChipIDs
 static const ChipInfo * GetChipInfoFromID(u32 nChipID) {
     for (u32 nIdx = 0; nIdx < countof(s_chipInfo); nIdx++) {
+        if (s_chipInfo[nIdx].bByNameOnly) continue;
         if (s_chipInfo[nIdx].nChipID == nChipID) return &s_chipInfo[nIdx];
     }
     // Invalid or non-supported Chip-ID...
+    return NULL;
+}
+
+// Returns the descriptor for a chip named with '-x chip=<name>'
+static const ChipInfo * GetChipInfoFromName(const char * pName, size_t nLength) {
+    for (u32 nIdx = 0; nIdx < countof(s_chipInfo); nIdx++) {
+        const char * pEntry = s_chipInfo[nIdx].pName;
+        if (strlen(pEntry) == nLength && strncmp(pEntry, pName, nLength) == 0) {
+            return &s_chipInfo[nIdx];
+        }
+    }
     return NULL;
 }
 
@@ -657,13 +710,17 @@ static int TargetInit(bool bAutoProgram) {
     int nRtn = Sync();
     if (nRtn < 0) return nRtn;
 
-    // Read and verify the ChipID
-    nRtn = ReadRegister(kRegisterChipID, &s_nChipID);
-    if (nRtn < 0) return nRtn;
-    s_pChipInfo = GetChipInfoFromID(s_nChipID);
+    // Read and verify the ChipID, unless '-x chip=<name>' already named the part.
+    // The read is skipped rather than merely ignored in that case: it is fatal on
+    // a part whose entry carries bByNameOnly.
     if (s_pChipInfo == NULL) {
-        printf("ESP32 chip ID 0x%08x not supported\n", s_nChipID);
-        return -1;
+        nRtn = ReadRegister(kRegisterChipID, &s_nChipID);
+        if (nRtn < 0) return nRtn;
+        s_pChipInfo = GetChipInfoFromID(s_nChipID);
+        if (s_pChipInfo == NULL) {
+            printf("ESP32 chip ID 0x%08x not supported\n", s_nChipID);
+            return -1;
+        }
     }
 
     // Silence the watchdogs before they can reset the board mid-operation. The
@@ -960,12 +1017,23 @@ static int Esp32Read(Area * pArea, Image * pImage) {
 //   nostub     do not load or use the flasher stub image
 //   usbjtag    force the native USB (USB-Serial/JTAG) reset and flash sequence
 //   nousbjtag  force the classic DTR/RTS auto-reset sequence
+//   chip=NAME  skip auto-detection and treat the part as NAME
 //
 static int ParsePlatformArgs(const char * pPlatformArgs) {
+    static const char kChipPrefix[] = "chip=";
+    const size_t      nChipPrefix   = sizeof(kChipPrefix) - 1;
+
     while (pPlatformArgs && *pPlatformArgs != '\0') {
         const char * pComma = strchr(pPlatformArgs, ',');
         size_t nLength = pComma ? (size_t)(pComma - pPlatformArgs) : strlen(pPlatformArgs);
-        if (nLength == 7 && strncmp(pPlatformArgs, "encrypt", nLength) == 0) {
+        if (nLength > nChipPrefix && strncmp(pPlatformArgs, kChipPrefix, nChipPrefix) == 0) {
+            s_pChipInfo = GetChipInfoFromName(pPlatformArgs + nChipPrefix, nLength - nChipPrefix);
+            if (s_pChipInfo == NULL) {
+                printf("ESP32 chip '%.*s' not supported\n",
+                       (int)(nLength - nChipPrefix), pPlatformArgs + nChipPrefix);
+                return -1;
+            }
+        } else if (nLength == 7 && strncmp(pPlatformArgs, "encrypt", nLength) == 0) {
             s_bAutoEncrypt = true;
         } else if (nLength == 6 && strncmp(pPlatformArgs, "nostub", nLength) == 0) {
             s_bNostub = true;
@@ -1063,6 +1131,22 @@ static int Erase(u32 nAreaIdx) {
 
 static int Reboot(void) {
     printf("Rebooting\n");
+    if (s_bNativeUSB) {
+        // The USB Serial/JTAG peripheral emulates EN from RTS and the GPIO9 boot
+        // strap from DTR, and the strap is sampled as the chip leaves reset -- so
+        // DTR has to be released here, or the part reboots into download mode
+        // instead of running the firmware.  RTS is written twice for the same
+        // reason as in ResetIntoDownloadModeUSBJTAG(): Windows only propagates a
+        // DTR change while RTS is set, so the second write carries the new DTR.
+        SerialSetDTR(false);
+        SerialSetRTS(true);    // Reset, passing through (1,1) to keep the USB link
+        SerialSetDTR(false);
+        SerialSetRTS(true);
+        usleep(100000);
+        SerialSetDTR(false);
+        SerialSetRTS(false);   // Chip out of reset, strap high -> boot from flash
+        return 0;
+    }
     SerialSetDTR(false);
     SerialSetRTS(true);
     usleep(100000);

@@ -18,10 +18,16 @@ WIFI_DRV_DIR  = esp-wireless-drivers-3rdparty
 #WIFI_DRV_URL     = https://github.com/espressif/esp-wireless-drivers-3rdparty/archive
 
 # source dir and files
-LT_PROJECT_SOURCE_DIR	     :=	$(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/wifi
+LT_PROJECT_SOURCE_DIR	     :=	$(LT_PROJECT_SOURCE_DIR_BASE)/esp32/driver/wifi/esp32
 LT_PROJECT_SOURCE_FILES      :=	Esp32DriverWiFi.c
 
 LT_PUBLIC_INCLUDE_FLAGS      += -I$(LT_PLATFORM_PUBLIC_INCLUDE_DIR)/$(WIFI_DRV_DIR)/include -I$(LT_PLATFORM_PUBLIC_INCLUDE_DIR)/$(WIFI_DRV_DIR)/include/esp32
 
 # make
 include $(LT_PROJECT_RULES_MAKEFILE)
+
+################################################################################
+#   LOG
+################################################################################
+#   27-Aug-26   claudius    moved down into driver/wifi/esp32, alongside the
+#                           esp32s3 driver sharing the platform root

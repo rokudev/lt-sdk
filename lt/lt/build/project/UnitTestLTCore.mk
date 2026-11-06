@@ -13,6 +13,7 @@ LT_PROJECT_SOURCE_DIR   := $(LT_PROJECT_SOURCE_DIR_BASE)/unittest/lt/core
 LT_PROJECT_SOURCE_FILES := UnitTestLTCoreImpl.c
 LT_PROJECT_SOURCE_FILES += UnitTestLTCoreAssertTests.c
 LT_PROJECT_SOURCE_FILES += UnitTestLTCoreConsoleTests.c
+LT_PROJECT_SOURCE_FILES += UnitTestLTCoreCountingSemaphoreTests.c
 LT_PROJECT_SOURCE_FILES += UnitTestLTCoreEventTests.c
 LT_PROJECT_SOURCE_FILES += UnitTestLTCoreHelpers.c
 LT_PROJECT_SOURCE_FILES += UnitTestLTCoreKernelTimeTests.c

@@ -1085,6 +1085,8 @@ LT_CFLAGS_GENERIC                   := -nostdlib                                
 ifneq (apple, $(LT_PLATFORM_FAMILY))
 LT_CFLAGS_GENERIC                   += -fno-defer-pop -fno-function-cse
 endif
+# Embed __FILE__ relative to the roots base: keeps absolute build paths out of the image and saves flash
+LT_CFLAGS_GENERIC                   += -fmacro-prefix-map=$(LT_ROOTS_BASE)/=
 LT_CFLAGS_DEBUG                     := -DLT_DEBUG -g -O0
 LT_CFLAGS_RELEASE                   := -g -Os
 LT_CXXFLAGS_GENERIC                 := $(patsubst -Wstrict-prototypes,,$(LT_CFLAGS_GENERIC)) \

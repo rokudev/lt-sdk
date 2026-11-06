@@ -121,7 +121,7 @@ ble_store_config_persist_sec_set(const char *setting_name,
 
     if (sec_size) {
         uint32_t output_len = s_pUtilityByteOps->Base64Encode((u8*)secs, sec_size, buf, BLE_STORE_CONFIG_SEC_SET_ENCODE_SZ);
-        LTLOG("sec.set", "Base64Encoded %s: %s, len %ld", setting_name, buf, output_len);
+        LTLOG_DEBUG("sec.set", "Stored %s, encoded length %lu", setting_name, (unsigned long)output_len);
         bRet = s_pSystemSettings->SetBinaryValue(setting_name, (u8*)buf, output_len);
     } else {
         LTLOG("sec.delete", "Delete %s setting", setting_name);
@@ -169,7 +169,7 @@ ble_store_config_persist_cccds(void)
 
     if (cccd_size) {
         uint32_t output_len = s_pUtilityByteOps->Base64Encode((u8*)ble_store_config_cccds, cccd_size, buf, BLE_STORE_CONFIG_CCCD_SET_ENCODE_SZ);
-        LTLOG("cccds.set", "Base64Encoded ble_hs/cccd: %s, len %ld", buf, output_len);
+        LTLOG_DEBUG("cccds.set", "Stored ble_hs/cccd, encoded length %lu", (unsigned long)output_len);
         bRet = s_pSystemSettings->SetBinaryValue("ble_hs/cccd", (u8*)buf, output_len);
     } else {
         LTLOG("cccds.delete", "Delete ble_hs/cccd setting");
@@ -219,7 +219,7 @@ ble_store_config_conf_init(void)
             // Read and save the setting for Nimble stack
             bRet = s_pSystemSettings->GetBinaryValue("ble_hs/our_sec", buf_sec, &valueSize);
             if (!bRet) { errorStr = "our_sec bad get"; break; }
-            LTLOG("init.our.sec", "Base64Encoded ble_hs/our_sec: %s, len %ld", buf_sec, valueSize);
+            LTLOG_DEBUG("init.our.sec", "Loaded ble_hs/our_sec, encoded length %lu", (unsigned long)valueSize);
             rc = ble_store_config_conf_set(1, &setting_name[0], (char*)buf_sec, valueSize);
             if (rc != 0) { errorStr = "our_sec bad set"; break; }
         }
@@ -232,7 +232,7 @@ ble_store_config_conf_init(void)
             // Read and save the setting for Nimble stack
             bRet = s_pSystemSettings->GetBinaryValue("ble_hs/peer_sec", buf_sec, &valueSize);
             if (!bRet) { errorStr = "peer_sec bad get"; break; }
-            LTLOG("init.peer.sec", "Base64Encoded ble_hs/peer_sec: %s, len %ld", buf_sec, valueSize);
+            LTLOG_DEBUG("init.peer.sec", "Loaded ble_hs/peer_sec, encoded length %lu", (unsigned long)valueSize);
             rc = ble_store_config_conf_set(1, &setting_name[1], (char*)buf_sec, valueSize);
             if (rc != 0) { errorStr = "peer_sec bad set"; break; }
         }
@@ -245,7 +245,7 @@ ble_store_config_conf_init(void)
             // Read and save the setting for Nimble stack
             bRet = s_pSystemSettings->GetBinaryValue("ble_hs/cccd", buf_cccd, &valueSize);
             if (!bRet) { errorStr = "cccd bad get"; break; }
-            LTLOG("init.cccds", "Base64Encoded ble_hs/cccd: %s, len %ld", buf_cccd, valueSize);
+            LTLOG_DEBUG("init.cccds", "Loaded ble_hs/cccd, encoded length %lu", (unsigned long)valueSize);
             rc = ble_store_config_conf_set(1, &setting_name[2], (char*)buf_cccd, valueSize);
             if (rc != 0) { errorStr = "cccd bad set"; break; }
         }

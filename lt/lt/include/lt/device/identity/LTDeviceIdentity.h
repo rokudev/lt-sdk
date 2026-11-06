@@ -140,6 +140,8 @@ typedef_LTLIBRARY_ROOT_INTERFACE(LTDeviceIdentity, 1) {
          */
 } LTLIBRARY_INTERFACE;
 
+LT_EXTERN_C_END
+
 #endif /* #ifndef LT_INCLUDE_LT_DEVICE_IDENTITY_LTDEVICEIDENTITY_H */
 
 /*******************************************************************************

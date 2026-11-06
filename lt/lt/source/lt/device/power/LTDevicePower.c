@@ -21,7 +21,6 @@
 #define DEFAULT_SLEEP_IDLE_TRIGGER_TIMEOUT_MS   (1)   /* arbitrary */
 #define DEFAULT_MINIMUM_SLEEP_DURATION_MS       (1000) /* arbitrary */
 #define DEFAULT_MAXIMUM_SLEEP_DURATION_MS       (3000) /* arbitrary, but whatever we want the watchdog interval during sleep to be */
-#define DEFAULT_WATCHDOG_SLEEP_SLOP_MS          (500)  /* upon entering sleep the watchdog will actually be set to max + slop */
 
 DEFINE_LTLOG_SECTION("dev.power")
 
@@ -32,11 +31,12 @@ typedef_LTObjectImpl(LTDevicePower, LTDevicePowerImpl) {
 } LTOBJECT_API;
 
 static struct Statics {
-    LTDeviceWatchdog           *pDeviceWatchdog;
     LTDriverPower              *driverPower;
     LTOThread                  *powerThread;
+    bool                        ownsPowerThread;
     LTAtomic                    atomicSleepModeEnabled;
     LTArray                    *driverPowerClients;
+    bool                        missingPowerClient;     // a configured client could not be added, so sleep stays off
     LTTime                      sleepIdleTriggerTimeout;
     LTTime                      minimumSleepDuration;
     LTTime                      defaultSleepIdleTriggerTimeout;
@@ -55,17 +55,19 @@ static struct Statics {
  */
 static LTTime LTCoreEnterSleepModeProc(LTTime softwareSleepWakeupTime, void * pClientData) {
     LT_UNUSED(pClientData);
-
     S.lastWakeupReason = kLTDevicePower_WakeupReason_Unknown;
 
     /* check maximum boundary */
     LTTime maxWakeupTime = LTTime_Add(LT_GetCore()->GetKernelTime(), S.defaultMaximumSleepDuration);
+    
     if (LTTime_IsZero(softwareSleepWakeupTime) || LTTime_IsGreaterThan(softwareSleepWakeupTime, maxWakeupTime)) softwareSleepWakeupTime = maxWakeupTime;
 
+#ifdef LTCORE_LOG_SLEEP_MODE_ACTIVITY
     static char s_timeBuff[24];
     LT_GetCore()->FormatCanonicalTimeString(softwareSleepWakeupTime, s_timeBuff, sizeof(s_timeBuff), true);
     LTLOG_STOMP("sleep.enter", "softwareRequiredWakeup at %s", s_timeBuff);
     LT_GetCore()->ConsoleStompChar('\a');
+#endif
 
     /* call all of the powerDriverClient->GoToSleep() functions in reverse order */
     u32 nCount = S.driverPowerClients->API->GetCount(S.driverPowerClients);
@@ -76,16 +78,30 @@ static LTTime LTCoreEnterSleepModeProc(LTTime softwareSleepWakeupTime, void * pC
 
     while (nIndex--) {
         LTDriverPowerClient *driverPowerClient = (LTDriverPowerClient *)S.driverPowerClients->API->Get(S.driverPowerClients, nIndex, NULL);
-        driverPowerClient->API->GoToSleep(driverPowerClient);
+        if (driverPowerClient->API->GoToSleep) driverPowerClient->API->GoToSleep(driverPowerClient);
+    }
+
+    /* any client may veto hardware sleep for this attempt or wake us up earlier; WakeFromSleep is still called on every client below.
+       Asked in GoToSleep order, so the first client in the list has the last word right before sleep */
+    bool readyToSleep = true;
+    nIndex = nCount;
+    while (readyToSleep && nIndex--) {
+        LTDriverPowerClient *driverPowerClient = (LTDriverPowerClient *)S.driverPowerClients->API->Get(S.driverPowerClients, nIndex, NULL);
+        if (driverPowerClient->API->IsReadyToSleep) readyToSleep = driverPowerClient->API->IsReadyToSleep(driverPowerClient, &softwareSleepWakeupTime);
     }
 
     /* call the power driver to enter sleep, returning the duration spent in sleep and setting the wakeup reason */
-    softwareSleepWakeupTime = S.driverPower->API->EnterSleep(softwareSleepWakeupTime, &S.lastWakeupReason);
+    if (readyToSleep) {
+        softwareSleepWakeupTime = S.driverPower->API->EnterSleep(softwareSleepWakeupTime, &S.lastWakeupReason);
+    } else {
+        softwareSleepWakeupTime = LTTime_Zero();
+        S.lastWakeupReason      = kLTDevicePower_WakeupReason_SleepSkipped;
+    }
 
     /* call all of the driverPowerClient->API->AwakenedFromSleep() functions in forward order */
     for (nIndex = 0; nIndex < nCount; nIndex++) {
         LTDriverPowerClient *driverPowerClient = (LTDriverPowerClient *)S.driverPowerClients->API->Get(S.driverPowerClients, nIndex, NULL);
-        driverPowerClient->API->WakeFromSleep(driverPowerClient);
+        if (driverPowerClient->API->WakeFromSleep) driverPowerClient->API->WakeFromSleep(driverPowerClient);
     }
     LT_GetCore()->Enable(nMask);
 
@@ -101,6 +117,17 @@ static bool PowerThreadInit(void) {
     LT_GetCore()->SetEnterSleepModeIdleDelayAndMinimumSleepDuration(LTTime_Zero(), LTTime_Zero());
     LT_GetCore()->SetEnterSleepModeProc(&LTCoreEnterSleepModeProc, NULL);
     LTAtomic_Store(&S.atomicSleepModeEnabled, 0);
+    /* Sleeping without one of the configured clients would leave its hardware unprepared, so stay awake */
+    if (S.missingPowerClient) {
+        LT_GetCore()->SetEnterSleepModeProc(NULL, NULL);
+        return true;
+    }
+    /* Enable() runs after the proc is set, so sleep actions the driver registers count as the sleep thread's.
+       A driver that cannot support sleep gets no proc, and the device just stays awake */
+    if (S.driverPower->API->Enable && !S.driverPower->API->Enable(true)) {
+        LT_GetCore()->SetEnterSleepModeProc(NULL, NULL);
+        LTLOG_YELLOWALERT("driver.enable.fail", NULL);
+    }
     return true;
 }
 
@@ -108,6 +135,7 @@ static void PowerThreadExit(void) {
     LT_GetCore()->SetEnterSleepModeIdleDelayAndMinimumSleepDuration(LTTime_Zero(), LTTime_Zero());
     LT_GetCore()->SetEnterSleepModeProc(NULL, NULL);
     LTAtomic_Store(&S.atomicSleepModeEnabled, 0);
+    if (S.driverPower->API->Enable) S.driverPower->API->Enable(false);
 }
 
 /*  _________________________________
@@ -124,8 +152,12 @@ static bool LTDevicePowerImpl_ConstructObject(LTDevicePowerImpl *power) {
 
 static void LTDevicePower_LibFini(void) {
     if (S.powerThread) {
-        lt_destroyobject(S.powerThread);
+        /* a thread bound through BindToCurrentThread belongs to the caller; only detach sleep handling from it */
+        if (S.ownsPowerThread) lt_destroyobject(S.powerThread);
+        else PowerThreadExit();
     }
+    S.powerThread     = NULL;
+    S.ownsPowerThread = false;
     if (S.driverPowerClients) {
         u32 nCount = S.driverPowerClients->API->GetCount(S.driverPowerClients);
         for (u32 i = 0; i < nCount; i++) {
@@ -133,13 +165,15 @@ static void LTDevicePower_LibFini(void) {
         }
         lt_destroyobject(S.driverPowerClients);
     }
-    lt_closelibrary(S.pDeviceWatchdog);
     lt_destroyobject(S.driverPower);
 }
 
 static bool LTDevicePower_LibInit(void) {
     LTAtomic_Store(&S.atomicSleepModeEnabled, 0);
     S.lastWakeupReason = kLTDevicePower_WakeupReason_Unknown;
+    S.powerThread = NULL;
+    S.ownsPowerThread = false;
+    S.missingPowerClient = false;
 
     const char *driverName = NULL;
     do {
@@ -168,13 +202,20 @@ static bool LTDevicePower_LibInit(void) {
             const char * specialization = deviceConfig->ReadString(section, key);
             if (NULL == specialization) break;
             LTDriverPowerClient *driverPowerClient = (LTDriverPowerClient *)lt_createobject_named("LTDriverPowerClient", specialization);
-            if (driverPowerClient) S.driverPowerClients->API->Append(S.driverPowerClients, driverPowerClient);
+            if (!driverPowerClient || S.driverPowerClients->API->Append(S.driverPowerClients, driverPowerClient) < 0) {
+                if (driverPowerClient) lt_destroyobject(driverPowerClient);
+                S.missingPowerClient = true;
+                LTLOG_REDALERT("client.missing", "%s: sleep stays off", specialization);
+            }
         }
         ltstring_destroy(key);
         /* driver power clients in wakeup init invocation order. TODO add irled, ircutA, ircutB, boost, LED logic (Jira-847)*/
         S.driverPowerClients->API->Trim(S.driverPowerClients);
         /* defaultSleepIdleTriggerTimeout: too low = go to sleep quickly, too high = never goes to sleep depending on event cadence in LT. Fine tuning will be coved in (JIRA 825)*/
         S.defaultSleepIdleTriggerTimeout = LTTime_Milliseconds(deviceConfig->ReadInteger(section, "sleepIdleTriggerTimeoutMS"));
+        /* LTCore checks the trigger on its 1 ms idle tick, so a sub-millisecond timeout starts sleep on the next tick */
+        s64 sleepIdleTriggerTimeoutUS = deviceConfig->ReadInteger(section, "sleepIdleTriggerTimeoutUS");
+        if (sleepIdleTriggerTimeoutUS > 0) S.defaultSleepIdleTriggerTimeout = LTTime_Microseconds(sleepIdleTriggerTimeoutUS);
         /* Minimum amount of time sleep, used to determine if system go to sleep, or just skip sleep cycle if time asked to sleep is too low */
         S.defaultMinimumSleepDuration    = LTTime_Milliseconds(deviceConfig->ReadInteger(section, "minimumSleepDurationMS"));
         /* Maximum amount of time to sleep, used to override requests from kernel to sleep any time longer, or the default infinite */
@@ -195,23 +236,7 @@ static bool LTDevicePower_LibInit(void) {
             LTLOG_YELLOWALERT("f.create.driver.object", "failed to create LTDriverPower object %s", driverName);
             break;
         }
-        if (NULL == (S.powerThread = lt_createobject(LTOThread))) {
-            LTLOG_YELLOWALERT("f.threadcreate", "powerThread creation failed");
-            break;
-        }
-        S.powerThread->API->SetStackSize(S.powerThread, 1024);
-        S.powerThread->API->SetPriority(S.powerThread, 1);
-        /* set the priority to 1, so that changes to sleep mode enablement will actuate over the default thread priority threads;
-           this really isn't that important that it is ultra-responsive because sleep mode won't enter anyway until all threads are
-           idle and any changes to sleep mode enablement will have already occurred.   The thread priority set here also won't
-           affect the thread's priority during actuation of sleep mode because LTCore will have elevated it during actuation.
-         */
-
-        // open the watchdog, ok if it doesn't exist
-        S.pDeviceWatchdog = lt_openlibrary(LTDeviceWatchdog);
-
-        // start the power thread
-        S.powerThread->API->Start(S.powerThread, "LTDevicePower", PowerThreadInit, PowerThreadExit);
+        // Thread will be created later via BindToCurrentThread() or on first EnableSleepMode() call
         S.lastWakeupReason = kLTDevicePower_WakeupReason_Unknown;
         return true;
     } while (0);
@@ -242,17 +267,75 @@ static void LTDevicePowerImpl_DisableSleepModeTaskProc(void *pClientData) {
 /*  __________________________________
  *  LTDevicePower public api functions
  */
+
+/* Singleton-style getter for power thread - creates on first access if needed */
+static LTOThread *GetPowerThread(void) {
+    if (S.powerThread) {
+        return S.powerThread;  /* Thread already exists */
+    }
+    
+    /* Create and start a default internal thread */
+    if (NULL == (S.powerThread = lt_createobject(LTOThread))) {
+        LTLOG_YELLOWALERT("thread.create.fail", NULL);
+        return NULL;
+    }
+    
+    S.powerThread->API->SetStackSize(S.powerThread, 1024);
+    S.powerThread->API->SetPriority(S.powerThread, 1);
+    /* set the priority to 1, so that changes to sleep mode enablement will actuate over the default thread priority threads;
+       this really isn't that important that it is ultra-responsive because sleep mode won't enter anyway until all threads are
+       idle and any changes to sleep mode enablement will have already occurred.   The thread priority set here also won't
+       affect the thread's priority during actuation of sleep mode because LTCore will have elevated it during actuation.
+     */
+    
+    /* Start the power thread */
+    S.powerThread->API->Start(S.powerThread, "LTDevicePower", PowerThreadInit, PowerThreadExit);
+    S.ownsPowerThread = true;
+    
+    LTLOG("thread.created", NULL);
+    return S.powerThread;
+}
+
+static void LTDevicePowerImpl_BindToCurrentThread(void) {
+    /* an internal thread cannot be swapped out safely: its exit proc would clear the new registration */
+    if (S.powerThread) {
+        LTLOG_YELLOWALERT("bind.thread.inuse", NULL);
+        return;
+    }
+    /* LTCore binds the enter-sleep proc and the driver's sleep actions to the calling thread */
+    S.powerThread     = LT_GetCore()->GetCurrentThreadObject();
+    S.ownsPowerThread = false;
+
+    if (!PowerThreadInit()) {
+        LTLOG_YELLOWALERT("bind.thread.init.fail", NULL);
+        S.powerThread = NULL;
+        return;
+    }
+
+    LTLOG("bind.thread.done", NULL);
+}
+
 static void LTDevicePowerImpl_EnableSleepMode(LTTime idleDelay, LTTime minimumSleepDuration) {
+    LTOThread *powerThread = GetPowerThread();
+    if (!powerThread) {
+        LTLOG_YELLOWALERT("enable.nothread", NULL);
+        return;
+    }
     LTTime *times = lt_malloc(2 * sizeof(LTTime));
     if (times) {
         *times = LTTime_IsZero(idleDelay) ? S.defaultSleepIdleTriggerTimeout : idleDelay;
         *(times + 1) = LTTime_IsZero(minimumSleepDuration) ? S.defaultMinimumSleepDuration : minimumSleepDuration;
-        S.powerThread->API->QueueTaskProc(S.powerThread, &LTDevicePowerImpl_EnableSleepModeTaskProc, &LTDevicePowerImpl_EnableSleepModeTaskCompleteProc, times);
+        powerThread->API->QueueTaskProc(powerThread, &LTDevicePowerImpl_EnableSleepModeTaskProc, &LTDevicePowerImpl_EnableSleepModeTaskCompleteProc, times);
     }
 }
 
 static void LTDevicePowerImpl_DisableSleepMode(void) {
-    S.powerThread->API->QueueTaskProc(S.powerThread, &LTDevicePowerImpl_DisableSleepModeTaskProc, NULL, NULL);
+    LTOThread *powerThread = GetPowerThread();
+    if (!powerThread) {
+        LTLOG_YELLOWALERT("disable.nothread", NULL);
+        return;
+    }
+    powerThread->API->QueueTaskProc(powerThread, &LTDevicePowerImpl_DisableSleepModeTaskProc, NULL, NULL);
 }
 
 static bool LTDevicePowerImpl_IsSleepModeEnabled(void) {
@@ -271,19 +354,58 @@ static const char * LTDevicePowerImpl_WakeupReasonToString(LTDevicePower_WakeupR
         case kLTDevicePower_WakeupReason_ButtonPress:           return "ButtonPress";
         case kLTDevicePower_WakeupReason_WiFiPacket:            return "WiFiPacket";
         case kLTDevicePower_WakeupReason_ChargeEvent:           return "ChargeEvent";
+        case kLTDevicePower_WakeupReason_GPIOEvent:             return "GPIOEvent";
+        case kLTDevicePower_WakeupReason_SleepSkipped:          return "SleepSkipped";
         default:                                                return "???";
     }
+}
+
+static void LTDevicePowerImpl_EnterShipmodeTaskProc(void *pClientData) {
+    LT_UNUSED(pClientData);
+    if (!S.driverPower) {
+        LTLOG_YELLOWALERT("shipmode.nodriver", NULL);
+        return;
+    }
+    LTLOG("shipmode.enter", NULL);
+
+    /* in GoToSleep order, with interrupts enabled: a client may cut the power itself */
+    u32 nIndex = S.driverPowerClients ? S.driverPowerClients->API->GetCount(S.driverPowerClients) : 0;
+    while (nIndex--) {
+        LTDriverPowerClient *driverPowerClient = (LTDriverPowerClient *)S.driverPowerClients->API->Get(S.driverPowerClients, nIndex, NULL);
+        if (driverPowerClient->API->EnterShipmode) driverPowerClient->API->EnterShipmode(driverPowerClient);
+    }
+
+    if (S.driverPower->API->EnterShipmode) {
+        LT_SIZE nMask = LT_GetCore()->Disable();
+        S.driverPower->API->EnterShipmode();
+        LT_GetCore()->Enable(nMask);
+    }
+
+    /* reaching here means shipmode entry failed; the clients are not restored, the caller recovers */
+    LTLOG_REDALERT("shipmode.fail", NULL);
+}
+
+static void LTDevicePowerImpl_EnterShipmode(void) {
+    LTOThread *powerThread = S.powerThread;
+    /* from another thread this returns before shipmode is attempted, so that caller cannot see a failure */
+    if (powerThread && powerThread != LT_GetCore()->GetCurrentThreadObject()) {
+        powerThread->API->QueueTaskProc(powerThread, &LTDevicePowerImpl_EnterShipmodeTaskProc, NULL, NULL);
+        return;
+    }
+    LTDevicePowerImpl_EnterShipmodeTaskProc(NULL);
 }
 
 /*  ________________________________________________________
  *  Object API definition and library root interface binding
  */
 define_LTObjectImplPublic(LTDevicePower, LTDevicePowerImpl,
+    BindToCurrentThread,
     EnableSleepMode,
     DisableSleepMode,
     IsSleepModeEnabled,
     GetLastWakeupReason,
-    WakeupReasonToString
+    WakeupReasonToString,
+    EnterShipmode
 );
 
 define_LTObjectLibrary(1, LTDevicePower_LibInit, LTDevicePower_LibFini);

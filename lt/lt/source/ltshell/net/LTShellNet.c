@@ -293,7 +293,7 @@ static int LTShellNet_Iperf(LTShell hShell, int argc, const char *argv[]) {
         PS("-b bitrate  : Default bitrate is unlimited for TCP and 1Mbit/sec for UDP.\n");
         PS("              Use '-b 0' for unlimited bitrate (useful for UDP).\n");
         PS("-d dscp     : default dscp is 0.\n");
-        PS("-P priority : default thread priority is 0.\n");
+        PS("-P priority : 0 selects the product default for the server, 0 for the client.\n");
         PS("-m mss      : default MSS is 1460. does not allow MSS is bigger than 1460\n");
         PS("-S streams  : default stream is 1, up to 8\n");
     }

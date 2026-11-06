@@ -97,6 +97,8 @@ inline static bool IRAM_ATTR esp_ptr_external_ram(const void *p) {
 #if SOC_SPIRAM_SUPPORTED
     return ((intptr_t)p >= SOC_EXTRAM_DATA_LOW && (intptr_t)p < SOC_EXTRAM_DATA_HIGH);
 #else
+    /* No external RAM on this part, so there is nothing to test p against. */
+    (void)p;
     return false; // SoC has no external RAM
 #endif
 }

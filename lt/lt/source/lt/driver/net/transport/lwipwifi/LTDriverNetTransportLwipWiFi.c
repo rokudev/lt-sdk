@@ -375,6 +375,7 @@ LOC void NotifySocketEvent(Priv_Sock *sock, int event) {
     S.iEvent->NotifyEvent(sock->socketData->event, sock->socketData->h_socket, event);
 }
 
+#if LWIP_TCP
 LOC Priv_Sock *NewSocket(struct tcp_pcb *pcb, Priv_Sock *parent) {
     Priv_Tran *tran = parent->privTran;
     LTSocket hSocket = tran->createSocket(tran->tranData, NULL, parent->socketData->event); // use same event handler as the listener
@@ -399,6 +400,7 @@ LOC Priv_Sock *NewSocket(struct tcp_pcb *pcb, Priv_Sock *parent) {
     S.iCore->ReleaseHandlePrivateData(hSocket, socketData);
     return sock;
 }
+#endif
 
 LOC bool RxAppendSocket(Priv_Sock *sock, struct pbuf *pbuf, LTNetIpv4Endpoint *senderAddr) {
     TBUG_INIT(sock);
@@ -425,6 +427,7 @@ LOC bool RxAppendSocket(Priv_Sock *sock, struct pbuf *pbuf, LTNetIpv4Endpoint *s
     return true;
 }
 
+#if LWIP_TCP
 // LwIP requires this global function for events (rather than using an API to set it)
 // NOTE: this callback is called with the API lock held, so no need to lock here.
 EXP err_t lwip_tcp_event(void *arg, struct tcp_pcb *pcb, enum lwip_event event, struct pbuf *pbuf, u16_t size, err_t err) {
@@ -499,10 +502,17 @@ EXP err_t lwip_tcp_event(void *arg, struct tcp_pcb *pcb, enum lwip_event event, 
     }
     return ERR_OK;
 }
+#endif
 
 // Append new data to the socket read buffer
 CBK void OnUdpReceive(void *arg, struct udp_pcb *pcb, struct pbuf *pbuf, const ip_addr_t *addr, u16 port) {
     LT_UNUSED(pcb);
+    // Zero-length UDP packets cannot be distinguished from an empty queue by
+    // ReadSocket's size query. Drop them before they can block later packets.
+    if (!pbuf || pbuf->tot_len == 0) {
+        if (pbuf) pbuf_free(pbuf);
+        return;
+    }
     Priv_Sock *sock = (Priv_Sock*)arg;
     LTNetIpv4Endpoint endpoint = {
         .address = addr->addr,
@@ -1221,6 +1231,7 @@ PUB bool NetIpWiFi_OpenSocket(LTSocket_Data *socketData) {
     const char *failure = NULL;
     err_t err = 0;
     switch (sock->ipProto) {
+#if LWIP_TCP
         case kIPProtocol_TcpServer:
             sock->flags |= kSocketFlags_NoConnect;
             // fall-thru
@@ -1252,6 +1263,17 @@ PUB bool NetIpWiFi_OpenSocket(LTSocket_Data *socketData) {
             }
             failure = NULL;
             break;
+#else  // LWIP_TCP
+        /* TCP compiled out: fail the open rather than reporting a socket that
+         * has no PCB.  "tcp" is the default when a spec names no protocol.
+         * ResolveDnsName() may already have armed the repeating DNS timer and
+         * the close path only disarms it for sockets that opened. */
+        case kIPProtocol_TcpServer:
+        case kIPProtocol_TcpClient:
+            KillDnsTimer(sock);
+            failure = "tcp-disabled";
+            break;
+#endif
         case kIPProtocol_Udp:
             // if (!sock->ip_port) only if sending
             sock->flags |= kSocketFlags_NoConnect;
@@ -1398,8 +1420,11 @@ PUB void NetIpWiFi_CloseSocket(LTSocket hSocket) { // Also called by Transport.D
             LT_ASSERT(sock->privTran->socketCount >= 1);
             KillDnsTimer(sock);
             if (sock->anyPcb) {
+#if LWIP_TCP
                 err_t err;
+#endif
                 switch (sock->ipProto) {
+#if LWIP_TCP
                     case kIPProtocol_TcpClient:
                     case kIPProtocol_TcpServer:
                         err = tcp_close(sock->tcpPcb);
@@ -1412,6 +1437,7 @@ PUB void NetIpWiFi_CloseSocket(LTSocket hSocket) { // Also called by Transport.D
                             return;
                         }
                         break;
+#endif
                     case kIPProtocol_Udp:
                         udp_remove(sock->udpPcb);
                         break;
@@ -1444,8 +1470,11 @@ PUB void NetIpWiFi_ConnectSocket(LTSocket_Data *socketData) {
     }
     DBLOG("sock.con", "connect[%02x] %s ip: %s port: %d (thread %lx)\n", sock->socketData->h_socket,
             IPProtocolNames[sock->ipProto], FormIp4Addr(&sock->ipAddr), sock->ipPort, LT_PLT_HANDLE(S.iThread->GetCurrentThread()));
+#if LWIP_TCP
     err_t err = 0;
+#endif
     switch (sock->ipProto) {
+#if LWIP_TCP
         case kIPProtocol_TcpClient:
             if (sock->tcpPcb->state > CLOSED) return; // don't try to do it again
             LOCK_NET(err = tcp_connect(sock->tcpPcb, &sock->ipAddr, sock->ipPort, NULL));
@@ -1463,6 +1492,7 @@ PUB void NetIpWiFi_ConnectSocket(LTSocket_Data *socketData) {
                 NotifySocketEvent(sock, kLTSocket_Event_SocketError);
             }
             break;
+#endif
         case kIPProtocol_Udp:
             LOCK_NET(udp_connect(sock->udpPcb, &sock->ipAddr, sock->ipPort));
             NotifySocketEvent(sock, kLTSocket_Event_WriteReady);
@@ -1508,6 +1538,7 @@ PUB s32 NetIpWiFi_WriteSocket(LTSocket_Data *socketData, const void *data, u32 d
     LOCK_API;
     if (!sock->isOpen) err = -1; // socket not open
     else switch (sock->ipProto) {
+#if LWIP_TCP
         case kIPProtocol_TcpClient:
         case kIPProtocol_TcpServer:
             // tcp-write will fail with ERR_MEM if the callers tries to send more than pcb->snd_buf bytes
@@ -1518,6 +1549,7 @@ PUB s32 NetIpWiFi_WriteSocket(LTSocket_Data *socketData, const void *data, u32 d
             if (err) break;
             tcp_output(sock->tcpPcb);
             break;
+#endif
         case kIPProtocol_Udp:
         case kIPProtocol_Icmp:
         case kIPProtocol_Raw:;
@@ -1595,7 +1627,9 @@ PUB s32 NetIpWiFi_ReadSocket(LTSocket_Data *socketData, void *data, u32 dataLeng
         }
     }
     if (!query && !(sock->flags & kSocketFlags_NoConnect) && tail > 0) {
+#if LWIP_TCP
         tcp_recved(sock->tcpPcb, tail); // adjust window
+#endif
     }
     UNLOCK_API;
     return tail;

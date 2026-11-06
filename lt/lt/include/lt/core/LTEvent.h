@@ -177,12 +177,13 @@ struct ILTEventApi {
     *   @see LTCore_CreateEvent
     */
 
-    void   (* NotifyEventFromISR)(LTEvent_ISRThreadProxyNotifyProc *pThreadProxyNotifyProc, void *pClientData) LT_ISR_SAFE;
+    bool   (* NotifyEventFromISR)(LTEvent_ISRThreadProxyNotifyProc *pThreadProxyNotifyProc, void *pClientData) LT_ISR_SAFE;
    /**< Schedules event notification on system proxy thread from ISR
     *   %NotifyEventFromISR causes the supplied pThreadProxyNotifyProc to be called from a system proxy thread.
     *   The supplied pThreadProxyNotifyProc should call NotifyEvent with using the hEvent and event arguments passed through clientData.
     *   @param pThreadProxyNotifyProc the thread proxy notify proc that will call %NotifyEvent
     *   @param pClientData the client data containing the hEvent and arguments to pass to %NotifyEvent
+    *   @return true if notification was queued; false if the system proxy queue rejected it
     *   @see NotifyEvent
     */
 

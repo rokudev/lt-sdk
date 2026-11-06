@@ -9,6 +9,7 @@
  ******************************************************************************/
 
 #include <lt/core/LTCore.h>
+#include <lt/device/identity/LTDeviceIdentity.h>
 #include <lt/device/usb/LTDeviceUsbCDC.h>
 #include <lt/device/watchdog/LTDeviceWatchdog.h>
 #include <lt/product/config/LTProductConfig.h>
@@ -249,15 +250,26 @@ DisableAuxiliaryUSBConsole(void) {
     }
 }
 
+/* True on an unsecured or manufacturing unit, or one whose LTAT grants console input; the rule LTSystemShell uses. */
+static bool IsConsoleEntitled(void) {
+    LTDeviceIdentity *pIdentity = lt_openlibrary(LTDeviceIdentity);
+    bool bEntitled = !pIdentity || pIdentity->IsUnsecured() == kLTSecurityStatus_Success ||
+                     pIdentity->IsManufacturingFirmware() == kLTSecurityStatus_Success ||
+                     (pIdentity->CheckLTATClaims(kLTSecurityClaimGroup2, kLTSecurityClaimGroup2_EnableConsoleInput) == kLTSecurityStatus_Success &&
+                      pIdentity->CheckLTATClaims(kLTSecurityClaimGroup2, kLTSecurityClaimGroup2_EnableConsoleOutput) == kLTSecurityStatus_Success);
+    lt_closelibrary(pIdentity);
+    return bEntitled;
+}
+
 /*________________________________
   LTConsoleUSB.c Initialization */
 void LTSystemUsbConsole_LibInit(void) {
     s_pMutex = lt_createobject(LTMutex);
 
     /* Enable the auxiliary USB console unless the product config tells us not to.
-       We have already passed the check that we are running on an insecure developer unit or an LTAT enabled unit
-       so we are all-clear for starting LTSystemShell on the uart and the usb console if we want to */
-    bool bStartUSBConsole = true;
+       Only an unsecured developer unit, manufacturing firmware or a unit whose LTAT grants console input may
+       start it, the same rule LTSystemShell applies; the USB console takes over the system console output. */
+    bool bStartUSBConsole = IsConsoleEntitled();
     LTProductConfig *pProductConfig = lt_openlibrary(LTProductConfig);
     if (pProductConfig) {
         if (pProductConfig->IsIntegerZero(pProductConfig->GetLibraryConfigSection("LTSystemShell"), "usbconsole/autostart")) bStartUSBConsole = false;

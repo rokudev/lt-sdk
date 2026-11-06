@@ -96,7 +96,9 @@ typedef u8 LTSecurityOperation;
 
 /**************************************
  * Cryptographic Security Algorithms */
-enum LTSecurityAlgorithm {
+/* The tag differs from the LTSecurityAlgorithm typedef below because C++ rejects an enum tag and a typedef of the
+ * same name, and C++ code (RCUApp) includes this header through LTDeviceAuthentication.h. */
+enum LTSecurityAlgorithmType {
     kLTSecurityAlgorithm_Reserved           = 0,    /**< Reserved */
     kLTSecurityAlgorithm_Password,                  /**< Device password related algorithm */
     kLTSecurityAlgorithm_KeyDerivation,             /**< Key derivation related algorithm */

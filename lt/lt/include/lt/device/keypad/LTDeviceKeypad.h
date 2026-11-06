@@ -26,7 +26,15 @@ typedef void (LTDeviceKeypad_RawKeyInputEventProc)(u32 *pRawKeys, u32 nNumKeys, 
 typedef_LTObject(LTDeviceKeypad, 1) {
 
     void (* OnKeyInput)(LTDeviceKeypad *keypad, LTDeviceKeypad_RawKeyInputEventProc *pEventProc, void *pClientData);
-    /**< registers a key input event handler which receives sequences of raw key events */
+    /**< registers a key input event handler which receives sequences of raw key events
+     *
+     * The stream carries one non-button event: a driver sends
+     * kLTKey_EndOfInitialScan once, after the keys from its first scan, to mark
+     * the boundary between keys that were already held when it started and keys
+     * pressed since.  It is sent once per driver object, not once per Start().
+     * Handlers must not treat it as a button -- LTKey_IsButton() rejects it.
+     * A driver that cannot report this leaves consumers unable to tell the two
+     * apart. */
 
     void (* NoKeyInput)(LTDeviceKeypad *keypad, LTDeviceKeypad_RawKeyInputEventProc *pEventProc);
     /**< unregisters a previously registered key input event handler */

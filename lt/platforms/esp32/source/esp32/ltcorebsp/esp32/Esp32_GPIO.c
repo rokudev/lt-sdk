@@ -32,8 +32,8 @@ DEFINE_LTLOG_SECTION("esp32.gpio");
 // checks if the pin is configured for output
 // using an macro here because this is used in an ISR
 #define ESP32_GPIO_IS_OUTPUT(n)                                                 \
-            (n <= 31 ? (ESP32_REG(GPIO_OUT_ENABLE)  & (1 << n)) :            \
-                       (ESP32_REG(GPIO_OUT_ENABLE1) & (1 << n)))
+            ((n) < 32 ? (ESP32_REG(GPIO_OUT_ENABLE)  & (1u << (n))) :           \
+                        (ESP32_REG(GPIO_OUT_ENABLE1) & (1u << ((n) - 32))))
 
 /******************************************************************************
  * typedefs
@@ -106,6 +106,47 @@ static volatile u32 * const kPUPDRegMap[kEsp32GPIO_NumPins] = {
     &ESP32_REG(RTCIO_SENSOR_PADS),               &ESP32_REG(RTCIO_SENSOR_PADS),               &ESP32_REG(RTCIO_SENSOR_PADS),
     &ESP32_REG(RTCIO_SENSOR_PADS)
 };
+
+/******************************************************************************
+ * True for pad numbers this chip actually has
+ *****************************************************************************/
+bool Esp32GPIO_IsValidPin(u8 nPin) {
+    return nPin < kEsp32GPIO_NumPins && kIOMuxPinRegOffsets[nPin] != _NOP;
+}
+
+/******************************************************************************
+ * Applies the pull to whichever RTCIO register owns the pad, for the RTC capable
+ * pads that ignore the IO_MUX pull bits.  A no-op for every other pad.
+ *****************************************************************************/
+static void Esp32GPIO_SetRtcPull(u8 nPin, Esp32GPIO_PullType pull) {
+    if (kPUPDRegMap[nPin] == kEsp32GPIO_InvalidRegister) {
+        return;
+    }
+
+    u32 puMask = ESP32_REG_MASK(RTCIO, PU);
+    u32 pdMask = ESP32_REG_MASK(RTCIO, PD);
+    // need to special case pin 32 as it uses different bits
+    if (nPin == 32) {
+        puMask = ESP32_REG_MASK(RTCIO, PIN32_PU);
+        pdMask = ESP32_REG_MASK(RTCIO, PIN32_PD);
+    }
+    u32 regVal = *kPUPDRegMap[nPin];
+    switch (pull) {
+        case kEsp32GPIO_PullUp:
+            regVal |= puMask;
+            regVal &= ~pdMask;
+            break;
+        case kEsp32GPIO_PullDown:
+            regVal &= ~puMask;
+            regVal |= pdMask;
+            break;
+        default:
+            regVal &= ~puMask;
+            regVal &= ~pdMask;
+            break;
+    }
+    *kPUPDRegMap[nPin] = regVal;
+}
 
 /******************************************************************************
  * noop ISR for avoiding a check for NULL in the ISR dispatcher loop
@@ -185,31 +226,7 @@ bool Esp32GPIO_ConfigPin(u8 nPin,
 
         // set the pull type
         // not all pins use the IO_MUX registers, so need to use a map for the correct ones
-        if (kPUPDRegMap[nPin] != kEsp32GPIO_InvalidRegister) {
-            u32 puMask = ESP32_REG_MASK(RTCIO, PU);
-            u32 pdMask = ESP32_REG_MASK(RTCIO, PD);
-            // need to special case pin 32 as it uses different bits
-            if (nPin == 32) {
-                puMask = ESP32_REG_MASK(RTCIO, PIN32_PU);
-                pdMask = ESP32_REG_MASK(RTCIO, PIN32_PD);
-            }
-            u32 regVal = *kPUPDRegMap[nPin];
-            switch (pull) {
-                case kEsp32GPIO_PullUp:
-                    regVal |= puMask;
-                    regVal &= ~pdMask;
-                    break;
-                case kEsp32GPIO_PullDown:
-                    regVal &= ~puMask;
-                    regVal |= pdMask;
-                    break;
-                default:
-                    regVal &= ~puMask;
-                    regVal &= ~pdMask;
-                    break;
-            }
-            *kPUPDRegMap[nPin] = regVal;
-        }
+        Esp32GPIO_SetRtcPull(nPin, pull);
         nIOMuxVal |= (pull == kEsp32GPIO_PullUp   ? ESP32_REG_MASK(GPIO_IO_MUX, FUN_WPU) : 0);
         nIOMuxVal |= (pull == kEsp32GPIO_PullDown ? ESP32_REG_MASK(GPIO_IO_MUX, FUN_WPD) : 0);
 
@@ -288,6 +305,39 @@ void Esp32GPIO_ConfigPinDriveStrength(u8 nPin, u8 nDriveStrength) {
     nIOMuxVal |= (nDriveStrength << ESP32_REG_SHIFT(GPIO_IO_MUX, FUN_DRV)) &
                  ESP32_REG_MASK(GPIO_IO_MUX, FUN_DRV);
     *pReg = nIOMuxVal;
+}
+
+/******************************************************************************
+ * sets just the pull for a pin, leaving the function, input enable and drive
+ * strength fields as they are
+ ****************************************************************************/
+void Esp32GPIO_ConfigPinPull(u8 nPin, Esp32GPIO_PullType pull) {
+    if (!Esp32GPIO_IsValidPin(nPin)) {
+        return;
+    }
+
+    Esp32GPIO_SetRtcPull(nPin, pull);
+
+    volatile u32 *pReg = &ESP32_GPIO_IO_MUX_REG(kIOMuxPinRegOffsets[nPin]);
+    u32 nIOMuxVal = *pReg;
+    nIOMuxVal &= ~(ESP32_REG_MASK(GPIO_IO_MUX, FUN_WPU) | ESP32_REG_MASK(GPIO_IO_MUX, FUN_WPD));
+    nIOMuxVal |= (pull == kEsp32GPIO_PullUp   ? ESP32_REG_MASK(GPIO_IO_MUX, FUN_WPU) : 0);
+    nIOMuxVal |= (pull == kEsp32GPIO_PullDown ? ESP32_REG_MASK(GPIO_IO_MUX, FUN_WPD) : 0);
+    *pReg = nIOMuxVal;
+}
+
+/******************************************************************************
+ * sets just the IO_MUX input enable for a pin.  An output pad with the input
+ * enabled also feeds the GPIO input register and the GPIO matrix.
+ ****************************************************************************/
+void Esp32GPIO_ConfigPinInputEnable(u8 nPin, bool bEnable) {
+    if (!Esp32GPIO_IsValidPin(nPin)) {
+        return;
+    }
+
+    volatile u32 *pReg = &ESP32_GPIO_IO_MUX_REG(kIOMuxPinRegOffsets[nPin]);
+    if (bEnable) *pReg |=  ESP32_REG_MASK(GPIO_IO_MUX, FUN_IE);
+    else         *pReg &= ~ESP32_REG_MASK(GPIO_IO_MUX, FUN_IE);
 }
 
 /******************************************************************************
@@ -450,8 +500,50 @@ void Esp32GPIO_WritePin(u8 nPin, bool bVal) {
 }
 
 /******************************************************************************
+ * Reads back a pad's configuration.  The pull comes from the IO_MUX bits, which
+ * Esp32GPIO_ConfigPin() and Esp32GPIO_ConfigPinPull() keep in step with the
+ * RTCIO registers the nine RTC capable pads actually pull from.
+ *****************************************************************************/
+bool Esp32GPIO_GetPinConfig(u8 nPin, Esp32GPIO_PinConfig *pConfig) {
+    if (!Esp32GPIO_IsValidPin(nPin) || pConfig == NULL) {
+        return false;
+    }
+
+    u32 nIOMuxVal = ESP32_GPIO_IO_MUX_REG(kIOMuxPinRegOffsets[nPin]);
+
+    pConfig->direction     = ESP32_GPIO_IS_OUTPUT(nPin) ? kEsp32GPIO_Direction_Output :
+                                                          kEsp32GPIO_Direction_Input;
+    pConfig->bInputEnabled = (nIOMuxVal & ESP32_REG_MASK(GPIO_IO_MUX, FUN_IE)) != 0;
+    pConfig->func          = (nIOMuxVal & ESP32_REG_MASK(GPIO_IO_MUX, MCU_SEL)) >>
+                             ESP32_REG_SHIFT(GPIO_IO_MUX, MCU_SEL);
+    pConfig->pull          = (nIOMuxVal & ESP32_REG_MASK(GPIO_IO_MUX, FUN_WPU)) ? kEsp32GPIO_PullUp   :
+                             (nIOMuxVal & ESP32_REG_MASK(GPIO_IO_MUX, FUN_WPD)) ? kEsp32GPIO_PullDown :
+                                                                                  kEsp32GPIO_PullNone;
+    return true;
+}
+
+/******************************************************************************
+ * Clears a pending interrupt for the pin.  Esp32GPIO_Isr() clears the whole
+ * status register as it dispatches, so this is only needed for a pin whose
+ * interrupt is enabled with no ISR attached.
+ *****************************************************************************/
+void Esp32GPIO_ClearPendingIRQ(u8 nPin) {
+    if (!Esp32GPIO_IsValidPin(nPin)) {
+        return;
+    }
+
+    if (nPin < 32) {
+        ESP32_REG(GPIO_STATUS_W1TC)  = (1u << nPin);
+    } else {
+        ESP32_REG(GPIO_STATUS1_W1TC) = (1u << (nPin - 32));
+    }
+}
+
+/******************************************************************************
  *  LOG
  ******************************************************************************
  *  08-Jul-22   vitellius   created
  *  14-Aug-23   commodus    added ConfigurePinHold
+ *  08-Sep-26   claudius    added pull, input enable and pad config readback
+ *                          accessors for Esp32DriverGpio
  */

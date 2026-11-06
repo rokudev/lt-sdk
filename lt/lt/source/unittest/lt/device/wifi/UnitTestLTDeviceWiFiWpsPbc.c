@@ -9,20 +9,18 @@
  *
  * This replicates the Roku host (TV/box) + remote pairing scenario.  There is
  * NO human button press: the Roku host placed in WiFi-pairing mode is the
- * trigger.  The remote advertises a Roku vendor extension inside its WPS M1
- * message so the Roku registrar recognises it and provisions credentials.
+ * trigger.  The remote enrolls with standard WPS PBC.
  *
  * Test procedure:
- *   1. Open LTDeviceWiFi, LTDeviceWiFiPairing and LTDeviceAuthentication.
+ *   1. Open LTDeviceWiFi and LTDeviceWiFiPairing.
  *   2. Wait for the device to come Up.
  *   3. Scan and select the Roku host AP (policy lives here in the test/app
  *      layer: SSID-prefix match, WSC IE reporting an active PBC walk, then
  *      best RSSI among those).  Override the prefix with the
  *      HOST_SSID_PREFIX=<str> property.
- *   4. Build the Roku WPS M1 vendor IE and call LTDeviceWiFiPairing::
- *      StartPbc(timeout, m1Ie, assocIe, target) with the chosen AP.  The
- *      driver performs an OPEN association to that AP carrying the WPS
- *      assoc IE, then runs EAP-WSC.
+ *   4. Call LTDeviceWiFiPairing::StartPbc(timeout, NULL, assocIe, target)
+ *      with the chosen AP.  The driver performs an OPEN association to that
+ *      AP carrying the WPS assoc IE, then runs EAP-WSC.
  *   5. Watch for the credential, then WPA2-PSK reconnect via LTDeviceWiFi.
  *
  * Thin driver-level test:  no app glue.
@@ -40,7 +38,6 @@
 #include <lt/LT.h>
 #include <lt/device/wifi/LTDeviceWiFi.h>
 #include <lt/device/wifi/LTDeviceWiFiPairing.h>
-#include <lt/device/authentication/LTDeviceAuthentication.h>
 #include <tilt/JiltEngine.h>
 
 #define DEFAULT_PBC_TIMEOUT_SEC  120
@@ -48,19 +45,25 @@
 /* Whole-suite budget.  Must clear the PBC walk plus scan, reconnect and
  * teardown; the engine default of 30 s aborts the run mid-walk. */
 #define TILT_LIBRARY_TIMEOUT     240
-/* Setup, scan, reconnect and teardown share the suite budget with the walk. */
-#define PBC_SUITE_MARGIN_SEC     60
+#define WIFI_UP_TIMEOUT_SEC      10
+#define HOST_SCAN_TIMEOUT_SEC    15
+#define PBC_CREDENTIAL_GRACE_SEC 10
+#define RECONNECT_MAX_ATTEMPTS   5
+#define RECONNECT_WAIT_SEC       kLTDeviceWiFi_JoinMaxSeconds
+#define RECONNECT_SETTLE_SEC     1
+#define SUITE_TEARDOWN_MARGIN_SEC 10
+#define PBC_SUITE_MARGIN_SEC     (WIFI_UP_TIMEOUT_SEC + HOST_SCAN_TIMEOUT_SEC + \
+                                  PBC_CREDENTIAL_GRACE_SEC + SUITE_TEARDOWN_MARGIN_SEC + \
+                                  RECONNECT_MAX_ATTEMPTS * (RECONNECT_WAIT_SEC + RECONNECT_SETTLE_SEC))
 /* Roku hosts advertise their WiFi-Direct SSID as "DIRECT-roku-xxx-xxxxxx" in
  * pairing mode; match that prefix by default. */
 #define DEFAULT_HOST_SSID_PREFIX "DIRECT-roku-"
 #define MAX_SSID_PREFIX          33
 
-/* Roku WPS pairing vendor extension. */
+/* Roku OUI, shared by the assoc-request vendor IE below. */
 #define ROKU_WPS_OUI_0           0xC8
 #define ROKU_WPS_OUI_1           0x3A
 #define ROKU_WPS_OUI_2           0x6B
-#define ROKU_WPS_M1_MSG_TYPE     0x01     /* simple-auth M1 */
-#define ROKU_WPS_M1_IE_LEN       8        /* OUI(3) + type(1) + chipid(4) */
 
 /* Roku vendor-specific IE carried in the WPS (re)association request.  The Roku
  * host registrar requires this IE to accept a credential-less WPS enrollee;
@@ -80,7 +83,6 @@ static const char *ApSecurityStrings[kLTWiFi_ApSecurity_Max] = { LTWiFi_Security
 static LTCore                  *s_pCore;
 static LTDeviceWiFi            *s_pWiFi;
 static LTDeviceWiFiPairing     *s_pPairing;
-static LTDeviceAuthentication  *s_pAuth;
 /* autojoin is a PERSISTED setting; saved on open, restored on teardown. */
 static u32                      s_savedAutoJoin;
 static bool                     s_haveSavedAutoJoin;
@@ -93,7 +95,6 @@ static bool  s_deviceIsUp;
 static bool  s_upDeferred;
 static bool  s_connected;
 static Tilt *s_currentTilt;
-static u8    s_m1Ie[ROKU_WPS_M1_IE_LEN];
 
 /* WPS-harvested credential + a mutable passphrase buffer for the post-WPS
  * WPA2-PSK reconnect (LTWiFi_ApInfo.pass is a non-const char*). */
@@ -256,8 +257,6 @@ static void TestOpenDevice(Tilt *tilt) {
     s_currentTilt = tilt;
     s_pWiFi = lt_openlibrary(LTDeviceWiFi);
     TILT_ASSERT_TRUE(tilt, s_pWiFi != NULL, "cannot open LTDeviceWiFi");
-    s_pAuth = lt_openlibrary(LTDeviceAuthentication);
-    TILT_ASSERT_TRUE(tilt, s_pAuth != NULL, "cannot open LTDeviceAuthentication");
     s_pPairing = lt_createobject(LTDeviceWiFiPairing);
     TILT_ASSERT_TRUE(tilt, s_pPairing != NULL, "cannot open LTDeviceWiFiPairing");
     /* WPS drives association itself; disable autojoin to avoid races.  autojoin
@@ -277,7 +276,7 @@ static void TestWiFiUp(Tilt *tilt) {
         return;
     }
     s_upDeferred = true;
-    s_engine->API->DeferTestCompletion(s_engine, LTTime_Seconds(10), NULL, NULL);
+    s_engine->API->DeferTestCompletion(s_engine, LTTime_Seconds(WIFI_UP_TIMEOUT_SEC), NULL, NULL);
 }
 
 static void TestScanForHost(Tilt *tilt) {
@@ -294,7 +293,7 @@ static void TestScanForHost(Tilt *tilt) {
     lt_memset(&scan, 0, sizeof(scan));
     scan.frameCallback = OnScanFrame;
     s_pWiFi->ScanWithVendorIE(&scan, OnScanResult, NULL);
-    s_engine->API->DeferTestCompletion(s_engine, LTTime_Seconds(15), NULL, NULL);
+    s_engine->API->DeferTestCompletion(s_engine, LTTime_Seconds(HOST_SCAN_TIMEOUT_SEC), NULL, NULL);
 }
 
 static void TestHostFound(Tilt *tilt) {
@@ -312,19 +311,6 @@ static void TestStartWps(Tilt *tilt) {
     s_currentTilt = tilt;
     s_connected = false;
 
-    /* Build the Roku WPS M1 vendor IE: OUI(3) + msg-type(1) + chip id(4 LE). */
-    u32 chipId = s_pAuth->GetChipID();
-    s_m1Ie[0] = ROKU_WPS_OUI_0;
-    s_m1Ie[1] = ROKU_WPS_OUI_1;
-    s_m1Ie[2] = ROKU_WPS_OUI_2;
-    s_m1Ie[3] = ROKU_WPS_M1_MSG_TYPE;
-    s_m1Ie[4] = (u8)(chipId       & 0xFF);
-    s_m1Ie[5] = (u8)((chipId >> 8) & 0xFF);
-    s_m1Ie[6] = (u8)((chipId >> 16) & 0xFF);
-    s_m1Ie[7] = (u8)((chipId >> 24) & 0xFF);
-
-    LTWiFi_VendorIE m1Ie = { .data = s_m1Ie, .length = ROKU_WPS_M1_IE_LEN };
-
     /* The Roku assoc-request vendor IE (policy).  The driver appends it after
      * the standard WPS IE in the (re)association request. */
     LTWiFi_VendorIE assocIe = { .data = s_rokuAssocIe, .length = ROKU_WPS_ASSOC_IE_LEN };
@@ -334,13 +320,13 @@ static void TestStartWps(Tilt *tilt) {
         return;
     }
 
-    TILT_INFO(tilt, "Starting WPS PBC (WPA2-PSK) to host \"%s\" (chip id 0x%08lX), timeout %lu s.",
-              s_hostAp.ssid, LT_Pu32(chipId), LT_Pu32(s_pbcTimeoutSec));
+    TILT_INFO(tilt, "Starting WPS PBC (WPA2-PSK) to host \"%s\", timeout %lu s.",
+              s_hostAp.ssid, LT_Pu32(s_pbcTimeoutSec));
     /* Targeted WPS: pass the scanned host AP.  The driver performs
      * an OPEN association to this BSSID carrying the WPS assoc IE + the Roku
      * assoc vendor IE, then runs EAP-WSC.  Host-selection policy was applied
      * above in OnScanResult; the Roku OUI policy is supplied here. */
-    bool ok = s_pPairing->API->StartPbc(s_pPairing, s_pbcTimeoutSec, &m1Ie, &assocIe, &s_hostAp);
+    bool ok = s_pPairing->API->StartPbc(s_pPairing, s_pbcTimeoutSec, NULL, &assocIe, &s_hostAp);
     TILT_ASSERT_TRUE(tilt, ok, "StartPbc returned true");
 
     /*
@@ -355,7 +341,7 @@ static void TestStartWps(Tilt *tilt) {
      */
     s_wpsCredsOk = false;
     bool walkSeenActive = false;
-    for (u32 elapsed = 0; elapsed < s_pbcTimeoutSec + 10; ++elapsed) {
+    for (u32 elapsed = 0; elapsed < s_pbcTimeoutSec + PBC_CREDENTIAL_GRACE_SEC; ++elapsed) {
         if (s_pPairing->API->GetCredentials(s_pPairing, &s_wpsCreds)) {
             s_wpsCredsOk = true;
             break;
@@ -441,23 +427,26 @@ static void TestConnectWithCred(Tilt *tilt) {
                          "install the Roku assoc IE for the reconnect");
     }
 
-    const int kMaxAttempts = 5;
     s_connected = false;
 
-    for (int attempt = 1; attempt <= kMaxAttempts && !s_connected; ++attempt) {
+    for (int attempt = 1; attempt <= RECONNECT_MAX_ATTEMPTS && !s_connected; ++attempt) {
         TILT_INFO(tilt, "Reconnect attempt %d/%d to \"%s\" (WPA2-PSK)...",
-                  attempt, kMaxAttempts, s_connectAp.ssid);
+                  attempt, RECONNECT_MAX_ATTEMPTS, s_connectAp.ssid);
         s_pWiFi->JoinAp(&s_connectAp, NULL, NULL);
 
-        /* Wait up to ~8 s for this attempt to reach Connected. */
-        for (int t = 0; t < 8 && !s_connected; ++t) {
+        /* Every attempt waits out the device-layer join cap plus a settle
+         * second, so a queued join has ended before the next retry. */
+        for (int t = 0; t < RECONNECT_WAIT_SEC && !s_connected; ++t) {
             s_pCore->GetCurrentThreadObject()->API->Sleep(LTTime_Seconds(1));
             if (s_pWiFi->IsConnected()) {
                 s_connected = true;
             }
         }
-        if (!s_connected && attempt < kMaxAttempts) {
-            s_pCore->GetCurrentThreadObject()->API->Sleep(LTTime_Seconds(1));   /* settle before retry */
+        if (!s_connected) {
+            s_pCore->GetCurrentThreadObject()->API->Sleep(LTTime_Seconds(RECONNECT_SETTLE_SEC));
+            if (s_pWiFi->IsConnected()) {
+                s_connected = true;
+            }
         }
     }
 
@@ -534,10 +523,6 @@ static void AfterAllTests(Tilt *tilt) {
         s_pWiFi->Disconnect();
         lt_closelibrary(s_pWiFi);
         s_pWiFi = NULL;
-    }
-    if (s_pAuth) {
-        lt_closelibrary(s_pAuth);
-        s_pAuth = NULL;
     }
 }
 

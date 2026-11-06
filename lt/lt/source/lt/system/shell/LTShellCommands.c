@@ -30,8 +30,9 @@ _/ LTShellCommands #defines */
 #define HELP_STRING_MAX_COMMAND_LEN         (HELP_STRING_LINE_BUFFER_SIZE - 8)
 #define LTSHELLCOMMAND_USAGE_STTY           "usage: stty [{crlf|echo} [on|off] ]\n"
 #define LTSHELLCOMMAND_USAGE_HISTORY        "usage: history [on|off]\n"
+#define LTSHELLCOMMAND_USAGE_MEMREGIONS     "usage: memregions\n"
 #define LTSHELLCOMMAND_USAGE_MEMSTAT        "usage: memstat [settag <tag> | heapinfo [tag] ]\n"
-#define LTSHELLCOMMAND_USAGE_MEMTEST        "usage: memtest [regionNumber | regionName ] [blockSize]\n"
+#define LTSHELLCOMMAND_USAGE_MEMTEST        "usage: memtest [blockSize] [regionNumber | regionName ]\n"
 #define LTSHELLCOMMAND_USAGE_PS             "usage: ps [<id | name> [prio [0..30] | terminate | heapinfo | wdog-set <fidelityMS> [no-term] | wdog-clear] ]\n"
 #define LTSHELLCOMMAND_USAGE_SLEEP          "usage: sleep <seconds>\n"
 #define LTSHELLCOMMAND_USAGE_WATCHDOG       "usage: watchdog [enable|disable|reset|crash|settimeout <seconds>]\n"
@@ -47,6 +48,7 @@ static int ShellCommand_Stty(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_Version(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_Echo(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_History(LTShell hShell, int argc, const char ** argv);
+static int ShellCommand_MemRegions(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_Memstat(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_Memtest(LTShell hShell, int argc, const char ** argv);
 static int ShellCommand_Rawstat(LTShell hShell, int argc, const char ** argv);
@@ -98,6 +100,7 @@ static const LTSystemShell_CommandDesc s_shellInbuiltCommandDescs[] = {
     { "version",        ShellCommand_Version,           "displays library build version(s) (try -v)",               NULL               },
     { "echo",           ShellCommand_Echo,              "echos text",                                               NULL               },
     { "history",        ShellCommand_History,           "displays, enables or disables command history",            ShellHelp_History  },
+    { "memregions",     ShellCommand_MemRegions,        "lists memory regions",                                     NULL               },
     { "memstat",        ShellCommand_Memstat,           "displays memory statistics",                               ShellHelp_Memstat  },
     { "memtest",        ShellCommand_Memtest,           "test memory performance",                                  ShellHelp_Memtest  },
     { "rawstat",        ShellCommand_Rawstat,           "displays raw unformatted memory statistics",               NULL               },
@@ -644,6 +647,65 @@ static bool MemstatBlockInfoEnumCB(const LTCore_HeapAllocatedBlockInfo * pBlockI
     return true;
 }
 
+static void FormatCanonicalMemoryByteString(LT_SIZE nBytes, char * pString, u32 nStringLen, bool useKB) {
+    // 1234567890.23mb - nStringLen 16 is min; advise 24 for safety
+    char * pUnit  = useKB ? "kb" : "k";
+    if (nBytes >= (1024 << 10)) {
+        pUnit = "mb"; nBytes >>= 10;
+        if (nBytes >= (1024 << 10)) {
+            pUnit = "gb"; nBytes >>= 10;
+            if (nBytes >= (1024 << 10)) {
+                pUnit = "tb"; nBytes >>= 10;
+            }
+        }
+    }
+    LT_SIZE nBytesFractional = ((nBytes % 1024) * 100) >> 10;
+    nBytes >>= 10;
+    lt_snprintf(pString, nStringLen, "%lu.%02lu%s", LT_PLT_SIZE(nBytes), LT_PLT_SIZE(nBytesFractional), pUnit);
+}
+
+static bool ShellPrintRegionsEnumProc(LTMemoryRegion region, const char * pRegionName, void * pRegionAddress, u32 nRegionSize, u32 nRegionFlags, void * pClientData) {
+    LTShell hShell = VOIDPTR_TO_LTHANDLE(pClientData);
+    ILTShell  *iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
+    enum { kSizeBuff = 24 };
+    char * sizeBuff = lt_malloc(kSizeBuff);
+
+    if (pRegionName == NULL) pRegionName = "anonymous";
+    if (sizeBuff) FormatCanonicalMemoryByteString((LT_SIZE)nRegionSize, sizeBuff, kSizeBuff, true);
+
+    const char * pType = "UNKNOWN";
+    if (nRegionFlags & kLTMemoryRegionFlags_SRAM) pType = "SRAM";
+    if (nRegionFlags & kLTMemoryRegionFlags_External) pType = "EXTERNAL";
+
+    const char * pYes = "+";
+    const char * pNo  = "-";
+
+    iShell->Print(hShell, "%8lu  %-12s  0x%lx  %9s  %8s  %9s  %21s  %11s  %6s\n",
+        LT_Pu32(region),
+        pRegionName,
+        LT_PLT_SIZE(pRegionAddress),
+        sizeBuff ? sizeBuff : "unknown",
+        pType,
+        nRegionFlags & kLTMemoryRegionFlags_Malloc           ? pYes : pNo,
+        nRegionFlags & kLTMemoryRegionFlags_MallocFromRegion ? pYes : pNo,
+        nRegionFlags & kLTMemoryRegionFlags_NoStackMalloc    ? pNo  : pYes,
+        nRegionFlags & kLTMemoryRegionFlags_NoInit           ? pYes : pNo
+        );
+    if (sizeBuff) lt_free(sizeBuff);
+    return true;
+}
+
+static int ShellCommand_MemRegions(LTShell hShell, int argc, const char ** argv) {
+    LT_UNUSED(argv);
+    ILTShell  *iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
+    if (argc != 1) {
+        iShell->PutString(hShell, LTSHELLCOMMAND_USAGE_MEMREGIONS);
+        return 1;
+    }
+    iShell->PutString(hShell, "  REGION  NAME          ADDRESS          SIZE      TYPE  lt_malloc  lt_malloc_from_region  stack_alloc  noinit\n");
+    LT_GetCore()->EnumerateMemoryRegions(&ShellPrintRegionsEnumProc, LTHANDLE_TO_VOIDPTR(hShell));
+    return 0;
+}
 
 static int
 ShellCommand_Memstat(LTShell hShell, int argc, const char ** argv) {
@@ -676,31 +738,22 @@ ShellCommand_Memstat(LTShell hShell, int argc, const char ** argv) {
         u64 memstat = pCore->SnapshotMemstat();
         LT_SIZE nBigBlock = pCore->GetLargestAvailableBlockInRAM();
 
-        // calc nBigBlock and units; default is k; change to mb, gb, or tb as necessary
-        char * pUnit  = "k";
-        if (nBigBlock >= (1024 << 10)) {
-            pUnit = "mb"; nBigBlock >>= 10;
-            if (nBigBlock >= (1024 << 10)) {
-                pUnit = "gb"; nBigBlock >>= 10;
-                if (nBigBlock >= (1024 << 10)) {
-                    pUnit = "tb"; nBigBlock >>= 10;
-                }
-            }
-        }
-        LT_SIZE nBigBlockFractional = ((nBigBlock % 1024) * 100) >> 10;
-        nBigBlock >>= 10;
-
         enum { kMemstatBuff = 42 };
+        enum { kLargestBlockBuff = 24 };
         char * buff = lt_malloc(kMemstatBuff);
-        if (buff) {
+        char * lbBuff = lt_malloc(kLargestBlockBuff);
+        if (buff && lbBuff) {
             pCore->FormatCanonicalMemstatString(memstat, buff, kMemstatBuff, false);
-            iShell->Print(hShell, "memstat: %s, largest free block: %lu.%02lu%s\n",
-                buff, LT_PLT_SIZE(nBigBlock), LT_PLT_SIZE(nBigBlockFractional), pUnit);
-            lt_free(buff);
+            FormatCanonicalMemoryByteString(nBigBlock, lbBuff, kLargestBlockBuff, false);
+            iShell->Print(hShell, "memstat: %s, largest free block: %s\n", buff, lbBuff);
+            //iShell->Print(hShell, "memstat: %s, largest free block: %lu.%02lu%s\n",
+                //buff, LT_PLT_SIZE(nBigBlock), LT_PLT_SIZE(nBigBlockFractional), pUnit);
         }
         else {
             iShell->Print(hShell, "memstat: out of memory for report\n");
         }
+        if (buff) lt_free(buff);
+        if (lbBuff) lt_free(lbBuff);
     }
 
     if (bHeapInfo) {
@@ -739,26 +792,26 @@ ShellCommand_Memtest(LTShell hShell, int argc, const char ** argv) {
     ILTShell * iShell = lt_gethandleinterface(ILTShell, hShell);
     if (argc > 3) goto usage;
     u32 blockSizeK = 4;
-    if (argc > 2) {
-        blockSizeK = lt_strtou32(argv[2], NULL, 10);
+    if (argc > 1) {
+        blockSizeK = lt_strtou32(argv[1], NULL, 10);
         if (blockSizeK < 1 || blockSizeK > 8192) goto usage;
     }
     LTMemoryRegion region = (LTMemoryRegion)0;
-    if (argc > 1) {
-        region = (LTMemoryRegion)lt_strtou32(argv[1], NULL, 10);
+    if (argc > 2) {
+        region = (LTMemoryRegion)lt_strtou32(argv[2], NULL, 10);
         if (region == (LTMemoryRegion)0)  {
             /* if it wasn't actually "0", treat the argument as a name. */
-            if (0 != lt_strcmp(argv[1], "0")) {
-                region = pCore->GetNamedMemoryRegion(argv[1]);
+            if (0 != lt_strcmp(argv[2], "0")) {
+                region = pCore->GetNamedMemoryRegion(argv[2]);
             }
         }
     }
 
-    if (argc == 1) {
+    if (argc < 3) {
         iShell->Print(hShell, "memtest: %-20s %luk * 2 blocks using lt_malloc()\n", "testing", LT_Pu32(blockSizeK));
     }
     else {
-        iShell->Print(hShell, "memtest: %-20s %luk * 2 blocks from region %s (%lu)\n", "testing", LT_Pu32(blockSizeK), (argc > 1) ? argv[1] : "0", LT_Pu32(region));
+        iShell->Print(hShell, "memtest: %-20s %luk * 2 blocks from region %s (%lu)\n", "testing", LT_Pu32(blockSizeK), (argc > 2) ? argv[2] : "0", LT_Pu32(region));
     }
 
     u32 numBytes = (blockSizeK << 10);
@@ -769,7 +822,7 @@ ShellCommand_Memtest(LTShell hShell, int argc, const char ** argv) {
     u32 *block1, *block2 = NULL;
     s64 blockTime = ((s64)blockSizeK * LT_CONSTS64(1000000000)) << 1; /* 2 blocks * nanoseconds per second */
     char timeBuff[24];
-    if (argc == 1) {
+    if (argc < 3) {
         t1 = pCore->GetKernelTime();
         block1 = (u32 *)lt_malloc(numBytes);
         block2 = (u32 *)lt_malloc(numBytes);
@@ -2108,10 +2161,10 @@ ShellHelp_Memtest(LTShell hShell, int argc, const char ** argv) {
     ILTShell * iShell = lt_gethandleinterface(ILTShell, hShell);
     iShell->PutString(hShell, LTSHELLCOMMAND_USAGE_MEMTEST);
     iShell->PutString(hShell, "  memtest                      - tests performance on two 4k blocks obtained with lt_malloc\n");
-    iShell->PutString(hShell, "  memtest regionNum            - tests performance on two 4k blocks obtained with lt_malloc_from_region(region_num)\n");
-    iShell->PutString(hShell, "  memtest regionName           - tests performance on two 4k blocks obtained with lt_malloc_from_region() on named region\n");
-    iShell->PutString(hShell, "  memtest regionNum blockSize  - tests using blocks of blockSize Kib (in [1..8192]), e.g. memtest 0 32 for 32k blocks from region 0\n");
-    iShell->PutString(hShell, "  memtest regionName blockSize - tests using blocks of blockSize Kib (in [1..8192]), e.g. memtest psram 1024 for 1Mib blocks from psram region\n");
+    iShell->PutString(hShell, "  memtest blockSize            - tests performance on two blockSize blocks in Kib (in [1..8192]),      e.g. memtest 32 for 32k blocks with lt_malloc\n");
+    iShell->PutString(hShell, "  memtest blockSize regionNum  - tests using 2 blocks of blockSize Kib (in [1..8192]) from regionNum,  e.g. memtest 32 1 for 32k blocks from region 1\n");
+    iShell->PutString(hShell, "  memtest blockSize regionName - tests using 2 blocks of blockSize Kib (in [1..8192]) from regionName, e.g. memtest 1024 psram for 1Mib blocks from psram region\n");
+    iShell->PutString(hShell, "\n  use regions command to list regions\n");
 }
 
 static void

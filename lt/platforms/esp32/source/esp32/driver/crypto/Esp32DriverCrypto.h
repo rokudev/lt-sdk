@@ -17,7 +17,7 @@ LT_EXTERN_C_BEGIN
 #include <lt/core/LTTime.h>
 #include <lt/core/LTStdlib.h>
 #include <lt/system/crypto/LTSystemCrypto.h>
-#include "esp32/Esp32_Registers.h"
+#include "Esp32_Registers.h"
 
 #define HAL_SWAP16(d) __builtin_bswap16((d))
 #define HAL_SWAP32(d) __builtin_bswap32((d))
