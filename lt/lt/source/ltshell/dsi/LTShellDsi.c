@@ -85,6 +85,14 @@ static u8               * s_pFrameBufferAlloc = NULL;
 static u8               * s_pAnimationAlloc   = NULL;
 static u32                s_nMarginBytes      = 0;
 
+/* The geometry the framebuffer was allocated for.  "dsi config" edits the working configuration
+   at any time but only "dsi fb alloc" sizes the allocation, so every drawing command works from
+   this copy, taken at allocation, and never from the working configuration. */
+static struct {
+    u32                             nStride, nWidth, nHeight, nOffset, nBitsPerPixel;
+    LTDeviceMipiDsi_PixelFormat     format;
+} s_geom;
+
 /* The logical view of the framebuffer, see FbView below.  The stride is always the active
    width of the config (the driver reads the frame as one linear run of that many pixels per
    line); the visible width and the offset are set with "dsi config view".  A width of 0 means
@@ -235,6 +243,7 @@ static void FreeFrameBuffer(void) {
     s_pFrameBufferAlloc = NULL;
     s_nFrameBufferBytes = 0;
     s_nMarginBytes      = 0;
+    lt_memset(&s_geom, 0, sizeof s_geom);
 }
 
 /* The logical framebuffer: pixel (x, y) is at pDriver + ((y * stride + x) - offset) * bytes per
@@ -261,11 +270,11 @@ static u32 ViewOffset(void) {
 static FbView MakeView(u8 * pDriver) {
     FbView v;
     v.pDriver        = pDriver;
-    v.nStride        = s_config.timing.nHorizontalActive;
-    v.nWidth         = ViewWidth();
-    v.nHeight        = s_config.timing.nVerticalActive;
-    v.nOffset        = ViewOffset();
-    v.nBytesPerPixel = BitsPerPixel(s_config.pixelFormat) / 8;
+    v.nStride        = s_geom.nStride;
+    v.nWidth         = s_geom.nWidth;
+    v.nHeight        = s_geom.nHeight;
+    v.nOffset        = s_geom.nOffset;
+    v.nBytesPerPixel = s_geom.nBitsPerPixel / 8;
     return v;
 }
 
@@ -301,6 +310,12 @@ static bool AllocFrameBuffer(u32 nBytes) {
     if (s_pFrameBuffer == NULL) return false;
     s_nFrameBufferBytes = nBytes;
     s_nMarginBytes      = nMargin;
+    s_geom.nStride       = s_config.timing.nHorizontalActive;
+    s_geom.nWidth        = ViewWidth();
+    s_geom.nHeight       = s_config.timing.nVerticalActive;
+    s_geom.nOffset       = ViewOffset();
+    s_geom.nBitsPerPixel = BitsPerPixel(s_config.pixelFormat);
+    s_geom.format        = s_config.pixelFormat;
     return true;
 }
 
@@ -629,16 +644,26 @@ static void SetCo5300Rgb888Config(LTDeviceMipiDsi_Config * pConfig) {
 typedef struct { u32 nSourceAddress; bool bFound; } TeSample;
 
 static void TeRegisterProc(const char * pName, u32 nAddress, u32 nValue, void * pClientData) {
-    (void)nAddress;
+    LT_UNUSED(nAddress);
     TeSample * pSample = (TeSample *)pClientData;
     if (0 == lt_strcmp(pName, "GDMA_CH0_SAR0")) { pSample->nSourceAddress = nValue; pSample->bFound = true; }
 }
 
 static LTDeviceGpio * s_pTeGpio = NULL;
 
+/* The edge samples, kept out of the shell's 320 byte callback stack.  Only one "dsi te" may
+   use them at a time. */
+enum { kTeMaxEdges = 24 };
+static struct {
+    s64  nRiseNs[kTeMaxEdges];
+    s64  nFallNs[kTeMaxEdges];
+    u32  nSar[kTeMaxEdges];
+    bool bBusy;
+} s_te;
+
 static int DsiTe(LTShell hShell, int argc, const char ** argv) {
     ILTShell * iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
-    enum { kPad = 33, kMaxEdges = 24 };
+    enum { kPad = 33, kMaxEdges = kTeMaxEdges };
     u32 nMillis = 400;
     if (argc > 2 && ! ParseU32(argv[2], &nMillis)) { iShell->PutString(hShell, "usage: dsi te [milliseconds]\n"); return -1; }
     if (s_pFrameBuffer == NULL || ! s_pDsi->API->IsVideoActive(s_pDsi)) {
@@ -649,9 +674,12 @@ static int DsiTe(LTShell hShell, int argc, const char ** argv) {
     if (s_pTeGpio == NULL) { iShell->PutString(hShell, "no LTDeviceGpio on this platform\n"); return -1; }
     s_pTeGpio->API->SetGpioModeFromIndex(s_pTeGpio, kPad, kLTDeviceGpio_ModeType_Input);
 
+    if (s_te.bBusy) { iShell->PutString(hShell, "another dsi te is running\n"); return -1; }
+    s_te.bBusy = true;
+
     LTCore * pCore = LT_GetCore();
-    s64 nRiseNs[kMaxEdges], nFallNs[kMaxEdges];
-    u32 nSar[kMaxEdges];
+    s64 * nRiseNs = s_te.nRiseNs, * nFallNs = s_te.nFallNs;
+    u32 * nSar    = s_te.nSar;
     u32 nRises = 0, nFalls = 0;
     bool bPrev = s_pTeGpio->API->GetInputValue(s_pTeGpio, kPad);
     bool bStartLevel = bPrev;
@@ -674,7 +702,11 @@ static int DsiTe(LTShell hShell, int argc, const char ** argv) {
     }
     iShell->Print(hShell, "TE pad %u: start level %u, %u rising and %u falling edges in %u ms\n",
                   (unsigned)kPad, (unsigned)bStartLevel, (unsigned)nRises, (unsigned)nFalls, (unsigned)nMillis);
-    if (nRises < 2) { iShell->PutString(hShell, "no TE pulses seen; is the TE output on (0x35) and the pad wired?\n"); return 0; }
+    if (nRises < 2) {
+        iShell->PutString(hShell, "no TE pulses seen; is the TE output on (0x35) and the pad wired?\n");
+        s_te.bBusy = false;
+        return 0;
+    }
     u32 nBase = (u32)(LT_SIZE)s_pFrameBuffer;
     u64 nPeriodSum = 0, nPhaseSum = 0;
     for (u32 i = 0; i < nRises; ++i) {
@@ -690,6 +722,7 @@ static int DsiTe(LTShell hShell, int argc, const char ** argv) {
     }
     iShell->Print(hShell, "mean period %u us, mean host position %u.%u%%\n",
                   (unsigned)(nPeriodSum / (nRises - 1)), (unsigned)(nPhaseSum / nRises / 10), (unsigned)((nPhaseSum / nRises) % 10));
+    s_te.bBusy = false;
     return 0;
 }
 
@@ -828,6 +861,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
                       (unsigned)ViewWidth(), (unsigned)s_config.timing.nHorizontalActive, (unsigned)ViewOffset());
         if (! s_pDsi->API->SetFrameBuffer(s_pDsi, s_pFrameBuffer, s_nFrameBufferBytes)) {
             iShell->PutString(hShell, "the device would not take it\n");
+            FreeFrameBuffer();
             return -1;
         }
         return 0;
@@ -837,13 +871,22 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
 
     /* Only the two formats whose pixels are a whole number of bytes are filled
        here; the packed ones would need the bit position of each pixel. */
-    u32 nBitsPerPixel = BitsPerPixel(s_config.pixelFormat);
+    u32 nBitsPerPixel = s_geom.nBitsPerPixel;
     if (nBitsPerPixel != 16 && nBitsPerPixel != 24) {
-        iShell->Print(hShell, "cannot fill a %s framebuffer\n", FormatName(s_config.pixelFormat));
+        iShell->Print(hShell, "cannot fill a %s framebuffer\n", FormatName(s_geom.format));
         return -1;
     }
     u32 nBytesPerPixel = nBitsPerPixel / 8;
     u32 nPixels        = s_nFrameBufferBytes / nBytesPerPixel;
+
+    /* Everything but the plain pixel loops addresses the buffer by the frame's geometry, so
+       refuse those when an allocation of a chosen size does not hold the whole frame. */
+    if (   0 != lt_strcmp(argv[2], "fill") && 0 != lt_strcmp(argv[2], "fillchunked")
+        && 0 != lt_strcmp(argv[2], "touch") && 0 != lt_strcmp(argv[2], "reswap")
+        && (u64)s_geom.nStride * s_geom.nHeight * nBytesPerPixel > s_nFrameBufferBytes) {
+        iShell->PutString(hShell, "the framebuffer is smaller than the frame it was allocated for\n");
+        return -1;
+    }
 
     if (0 == lt_strcmp(argv[2], "fill")) {
         u32 nColour = 0;
@@ -937,8 +980,8 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
            scatter shape: ~20-25% at 32 cols, ~94% at 126 cols (matching the
            dirty-rectangle union-bounding-box width that was in 'animate'
            before it was narrowed to just the two edges). */
-        u32 nHeight = s_config.timing.nVerticalActive;
-        u32 nWidth  = s_config.timing.nHorizontalActive;
+        u32 nHeight = s_geom.nHeight;
+        u32 nWidth  = s_geom.nStride;
         if (! s_pDsi->API->IsVideoActive(s_pDsi)) {
             iShell->PutString(hShell, "video is not active\n");
             return -1;
@@ -994,13 +1037,19 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
            a clean vertical edge can be checked for being crisp in the
            stored framebuffer memory itself (as opposed to a tearing/timing
            artifact that only shows up on the physical panel). */
-        u32 nWidth = s_config.timing.nHorizontalActive;
+        u32 nWidth  = s_geom.nStride;
+        u32 nHeight = s_geom.nHeight;
         u32 x0 = 0, y0 = 0, nCols = 0, nRows = 0;
         if (argc < 7 || nWidth == 0
          || ! ParseU32(argv[3], &x0) || ! ParseU32(argv[4], &y0)
          || ! ParseU32(argv[5], &nCols) || ! nCols
          || ! ParseU32(argv[6], &nRows) || ! nRows) {
             iShell->PutString(hShell, "usage: dsi fb dumprow <x> <y> <cols> <rows>\n");
+            return -1;
+        }
+        /* The whole rectangle must lie inside the frame; compared by subtraction so no sum can wrap. */
+        if (x0 >= nWidth || nCols > nWidth - x0 || y0 >= nHeight || nRows > nHeight - y0) {
+            iShell->Print(hShell, "the rectangle must lie inside the %ux%u frame\n", (unsigned)nWidth, (unsigned)nHeight);
             return -1;
         }
         for (u32 r = 0; r < nRows; ++r) {
@@ -1145,7 +1194,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
             return -1;
         }
         FbView view1 = MakeView(s_pAnimationFrameBuffer);
-        u32 nSquare = nWidth / 8;
+        u32 nSquare = ((nWidth < nHeight) ? nWidth : nHeight) / 8;
         u32 nTravel = nWidth - nSquare;
         u32 nPeriod = nTravel ? nTravel * 2 : 1;
         u32 nTop    = (nHeight - nSquare) / 2;
@@ -1181,28 +1230,10 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
                 }
                 bInitialized[nBuf] = true;
             } else {
-                /* Dirty-rectangle update.  The background bars are a pure
-                   function of x and never change once drawn, and the square
-                   only ever occupies rows [nTop, nTop + nSquare) - so the
-                   only pixels that can actually differ from what this
-                   (ping-pong) buffer already holds from its last use are the
-                   edge the square is vacating and the edge it is entering;
-                   the overlap in the middle is already the right colour
-                   either way and does not need touching.
-
-                   An earlier version of this wrote the whole union bounding
-                   box of the old and new square (vacated edge + overlap +
-                   entered edge) instead of just the two edges.  That still
-                   cut the write volume by ~100x versus a full-frame redraw
-                   and cut underruns 6-9x (195/200 -> still real, not zero),
-                   but 'dsi fb swaploop2' proved the overlap it was
-                   needlessly rewriting - ~110 cols wide there, not the ~16-32
-                   of the true edges - was most of what was left: dropping
-                   just the overlap (same row band, same cadence, same
-                   repeat count) took the measured rate from ~94% down to
-                   ~20-25%.  So: only the two edge strips, each at most
-                   nSquare wide but typically just the per-frame travel
-                   distance (8px * 2 real frames per buffer, ie ~16px) wide. */
+                /* Dirty-rectangle update.  The background bars never change and the square
+                   only occupies rows [nTop, nTop + nSquare), so only the edge it vacates and
+                   the edge it enters differ from what this buffer already holds.  Writing
+                   less keeps CPU stores from starving the DMA's PSRAM reads. */
                 u32 nPrevLeft = nLastLeft[nBuf];
                 u32 nOldEnd   = nPrevLeft + nSquare;
                 u32 nNewEnd   = nLeft + nSquare;
@@ -1246,12 +1277,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
                 iShell->PutString(hShell, "video start failed during animation\n");
                 return -1;
             }
-            /* Jittering this (40 + (nFrame % 7)) was tried as a diagnostic
-               for a suspected sleep-phase-lock with the bridge's refill
-               cycle - see 'dsi fb swaploop2' and the outstanding-limit
-               comment above.  It made effectively no difference (189 vs 195
-               underruns per 200 frames), ruling that theory out, so this is
-               back to the plain fixed delay. */
+            /* fixed frame delay */
             pThread->API->Sleep(LTTime_Milliseconds(40));
         }
         iShell->PutString(hShell, "animation complete\n");
@@ -1801,6 +1827,11 @@ static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
         return 0;
     }
 
+    /* "te" takes an optional argument, so it goes ahead of the guard below */
+    if (0 == lt_strcmp(argv[1], "te")) {
+        return DsiTe(hShell, argc, argv);
+    }
+
     /* everything below takes an argument */
     if (argc < 3) { ShellHelpDsi(hShell, argc, argv); return -1; }
 
@@ -1856,10 +1887,6 @@ static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
             return -1;
         }
         return 0;
-    }
-
-    if (0 == lt_strcmp(argv[1], "te")) {
-        return DsiTe(hShell, argc, argv);
     }
 
     if (0 == lt_strcmp(argv[1], "dcsr")) {
@@ -1922,6 +1949,10 @@ static void LTShellDsiImpl_LibFini(void) {
         s_pDsi->API->NoErrorEvent(s_pDsi, &DsiErrorEventProc);
         lt_destroyobject(s_pDsi);
         s_pDsi = NULL;
+    }
+    if (s_pTeGpio) {
+        lt_destroyobject(s_pTeGpio);
+        s_pTeGpio = NULL;
     }
     FreeFrameBuffer();
 }

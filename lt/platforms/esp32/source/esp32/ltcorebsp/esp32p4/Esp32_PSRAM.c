@@ -913,7 +913,7 @@ _Esp32_PSRAM_Tune(void) {
     }
     _Esp32_PSRAM_LongestRun(nGood, kTune_DelayLineCount, &nLength, &nEnd);
     u32 nBestLine = 0;
-    if (nLength <= 1) {
+    if (nLength == 0) {
         esp_rom_printf("psram: tuning found no delay line setting that reads back reliably, using the first\n");
     } else {
         nBestLine = nEnd - nLength / 2;

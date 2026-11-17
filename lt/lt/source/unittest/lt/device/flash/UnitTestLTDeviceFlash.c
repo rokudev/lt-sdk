@@ -213,8 +213,14 @@ static void RunFlashTest(Tilt *tilt) {
                     TILT_REPORT_FAILURE(tilt, "address 0x%08lX wrapped: the sector at 0x%08lX changed (flash is addressed with only 24 bits)",
                                         LT_Pu32(address), LT_Pu32(address - FLASH_24BIT_ADDRESS_LIMIT));
                     bSuccess = false;
-                    if (!WriteSector(nSector + n, s.backUpBuff))    /* Restore sector */
-                        PrintSectorCorruptionWarning(tilt, address);
+                    /* The write landed on the sector 16MB below, so put that one back from the copy
+                       taken before the test.  backUpBuff holds the high sector, and writing it
+                       through the same wrapped address would overwrite the damaged sector with
+                       the wrong data. */
+                    const u32 aliasSector = s.iFlashDevice->ByteOffsetToSectorNumber(
+                        s.hFlashDevice, address - FLASH_24BIT_ADDRESS_LIMIT);
+                    if (!WriteSector(aliasSector, s.aliasBefore))
+                        PrintSectorCorruptionWarning(tilt, address - FLASH_24BIT_ADDRESS_LIMIT);
                     break;
                 }
             }

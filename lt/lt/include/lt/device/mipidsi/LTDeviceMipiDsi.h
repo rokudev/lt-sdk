@@ -337,8 +337,14 @@ typedef_LTObject(LTDeviceMipiDsi, 1) {
          * @param[in]  dsi the DSI device to transact on
          * @param[in]  dcsCommand the DCS command byte to read
          * @param[out] pReadBuffer receives the returned bytes
-         * @param[in]  nReadBufferBytes the capacity of pReadBuffer in bytes
+         * @param[in]  nReadBufferBytes the number of bytes the caller expects back, which is also
+         *             the capacity of pReadBuffer; the panel is told it may return no more than this
          * @return the number of bytes read, or -1 on error
+         *
+         * @note some hosts deliver a response in whole words and do not report its length, so
+         *       a response shorter than nReadBufferBytes can be counted as a multiple of the
+         *       word size, with padding bytes after the real data.  Pass the exact length the
+         *       command returns and the count is exact.
          *
          * @note reads require a bus turnaround and so are always performed in low
          *       power escape mode, regardless of %SetCommandsUseHighSpeed.
@@ -363,8 +369,12 @@ typedef_LTObject(LTDeviceMipiDsi, 1) {
          * @param[in]  pPayload the read request payload, of up to kLTDeviceMipiDsi_MaxShortParams bytes
          * @param[in]  nPayloadBytes the size of the read request payload in bytes
          * @param[out] pReadBuffer receives the returned bytes
-         * @param[in]  nReadBufferBytes the capacity of pReadBuffer in bytes
+         * @param[in]  nReadBufferBytes the number of bytes the caller expects back, which is also
+         *             the capacity of pReadBuffer; the panel is told it may return no more than this
          * @return the number of bytes read, or -1 on error
+         *
+         * @note as with %DcsRead, a response shorter than nReadBufferBytes may be counted with
+         *       padding to a whole word; pass the exact expected length.
          */
 
     void (* SetCommandsUseHighSpeed)(LTDeviceMipiDsi *dsi, bool bHighSpeed);
