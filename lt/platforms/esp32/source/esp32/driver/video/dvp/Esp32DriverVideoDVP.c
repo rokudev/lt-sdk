@@ -190,7 +190,7 @@ typedef struct {
  * ========================================================================= */
 
 enum {
-    kNumDmaDesc      = 2,      /* number of frame slots (double buffer) */
+    kNumDmaDesc      = 3,      /* number of frame slots (double buffer) */
     kMaxDescBytes    = 4092,   /* max bytes per DMA descriptor (≤4095, 4-byte aligned) */
     /* JPEG DMA budget per slot.  In SM_0A00_0B00 mode 4 DMA bytes = 1 camera byte,
      * so kJpegDmaMaxBytes/4 is the camera-byte capacity per slot.
@@ -200,7 +200,7 @@ enum {
      * ~6 KB for QVGA (320×240), ~3 KB for QQVGA (160×120).  32 KB (8 KB camera
      * bytes) provides comfortable headroom for any supported frame size.
      * 2 slots × 32 KB = 64 KB total. */
-    kJpegDmaMaxBytes = (32768-4096)
+    kJpegDmaMaxBytes = ((32*1024)-4096)
 };
 
 typedef struct {
@@ -534,7 +534,8 @@ static void LT_ISR_SAFE FrameNotifyProc(void *pClientData) {
     } else {
         /* Incomplete or non-JPEG frame — release via the normal path so the
          * VSYNC-aligned re-arm logic runs correctly. */
-        //LTLOG("frame.notify.bogus.jpg", "bad jpg frame %p, index %d, total %d", (void *)&wd->pub, wd->bufIdx, ++badFrames);
+        static int badFrames = 0;
+        LTLOG("frame.notify.bogus.jpg", "bad jpg frame %p, index %d, total %d", (void *)&wd->pub, wd->bufIdx, ++badFrames);
         DvpImpl_ReleaseVideoData(kLTDeviceVideo_Channel_ImageHD, &wd->pub);
     }
 }

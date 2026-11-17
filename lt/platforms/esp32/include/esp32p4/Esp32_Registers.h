@@ -321,6 +321,10 @@ enum Esp32_RegisterHP_CLKRST {
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_CLK_SRC_SEL_M = 0x03 << 12,
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_PLL_CLK_EN_M  = 0x01 << 14,
     kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_CORE_CLK_EN_M = 0x01 << 15,
+    /* The PSRAM core clock divider, minus one, between the MPLL and the bus clock
+       dividers.  Zero, its reset value, is divide by one. */
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_CORE_CLK_DIV_NUM_S = 16,
+    kEsp32_RegisterHP_CLKRST_PERI_CLK_CTRL00_PSRAM_CORE_CLK_DIV_NUM_M = 0xff << 16,
     kEsp32_RegisterHP_CLKRST_PSRAM_CLK_SRC_MPLL_V     = 1,
 
     /*
@@ -625,6 +629,8 @@ enum Esp32_RegisterSPIMEM {
     kEsp32_RegisterSPIMEM_USER                        = 0x018,
     kEsp32_RegisterSPIMEM_USER1                       = 0x01c,
     kEsp32_RegisterSPIMEM_USER2                       = 0x020,
+    kEsp32_RegisterSPIMEM_MOSI_DLEN                   = 0x024,
+    kEsp32_RegisterSPIMEM_MISO_DLEN                   = 0x028,
     kEsp32_RegisterSPIMEM_MISC                        = 0x034,
     kEsp32_RegisterSPIMEM_CACHE_FCTRL                 = 0x03c,
     /* W0 is the first of the sixteen data buffer words, W0 to W15 */
@@ -642,6 +648,9 @@ enum Esp32_RegisterSPIMEM {
 
     /* CTRL - when set, WRSR sends a 16 bit status word instead of 8 bits */
     kEsp32_RegisterSPIMEM_CTRL_WRSR_2B_M              = 0x01 << 22,
+    /* CTRL - holds WP high while the controller is idle, which keeps a flash that
+     * has been left in DIO mode from dropping out of it */
+    kEsp32_RegisterSPIMEM_CTRL_WP_M                   = 0x01 << 21,
 
     /* CMD - hardware generated flash commands.  Setting a bit starts the
      * command; the bit self clears when it completes */
@@ -655,6 +664,27 @@ enum Esp32_RegisterSPIMEM {
     kEsp32_RegisterSPIMEM_USER_USR_DUMMY_M            = 0x01 << 29,
     kEsp32_RegisterSPIMEM_USER_USR_ADDR_M             = 0x01u << 30,
     kEsp32_RegisterSPIMEM_USER_USR_COMMAND_M          = 0x01u << 31,
+
+    /* USER1 - length of the address phase, in bits less one, and of the dummy
+     * phase, in cycles less one */
+    kEsp32_RegisterSPIMEM_USER1_USR_ADDR_BITLEN_M     = 0x3fu << 26,
+    kEsp32_RegisterSPIMEM_USER1_USR_ADDR_BITLEN_S     = 26,
+    kEsp32_RegisterSPIMEM_USER1_USR_DUMMY_CYCLELEN_M  = 0x3fu << 0,
+    kEsp32_RegisterSPIMEM_USER1_USR_DUMMY_CYCLELEN_S  = 0,
+
+    /* USER2 - the command of a user transaction and its length in bits less one */
+    kEsp32_RegisterSPIMEM_USER2_USR_COMMAND_BITLEN_M  = 0xfu << 28,
+    kEsp32_RegisterSPIMEM_USER2_USR_COMMAND_BITLEN_S  = 28,
+    kEsp32_RegisterSPIMEM_USER2_USR_COMMAND_VALUE_M   = 0xffffu << 0,
+    kEsp32_RegisterSPIMEM_USER2_USR_COMMAND_VALUE_S   = 0,
+
+    /* MOSI_DLEN, MISO_DLEN - length of the data phases in bits less one.  The data
+     * buffer behind them is W0 to W15, so 512 bits is the most one transaction
+     * can move in either direction */
+    kEsp32_RegisterSPIMEM_MOSI_DLEN_USR_MOSI_DBITLEN_M = 0x3ffu << 0,
+    kEsp32_RegisterSPIMEM_MOSI_DLEN_USR_MOSI_DBITLEN_S = 0,
+    kEsp32_RegisterSPIMEM_MISO_DLEN_USR_MISO_DBITLEN_M = 0x3ffu << 0,
+    kEsp32_RegisterSPIMEM_MISO_DLEN_USR_MISO_DBITLEN_S = 0,
 
     /* CACHE_FCTRL - selects a 4 byte address for the cache's flash reads */
     kEsp32_RegisterSPIMEM_CACHE_FCTRL_USR_ADDR_4BYTE_M = 0x01 << 1,
@@ -840,6 +870,19 @@ enum Esp32_RegisterMSPI_IOMUX {
     kEsp32_RegisterMSPI_IOMUX_PAD_LAST                = ESP32_REG_BASE(MSPI_IOMUX) + 0x68,
     kEsp32_RegisterMSPI_IOMUX_PAD_DQS0                = ESP32_REG_BASE(MSPI_IOMUX) + 0x3c,
     kEsp32_RegisterMSPI_IOMUX_PAD_DQS1                = ESP32_REG_BASE(MSPI_IOMUX) + 0x68,
+
+    /* Input delay line of a data, clock or chip select pad: one of sixteen steps */
+    kEsp32_RegisterMSPI_IOMUX_PAD_DLC_S               = 4,
+    kEsp32_RegisterMSPI_IOMUX_PAD_DLC_M               = 0x0f << 4,
+
+    /* The two strobe pads carry the sampling phase and a pair of delay lines of
+       their own, in the same word as their drive strength */
+    kEsp32_RegisterMSPI_IOMUX_DQS_PHASE_S             = 1,
+    kEsp32_RegisterMSPI_IOMUX_DQS_PHASE_M             = 0x03 << 1,
+    kEsp32_RegisterMSPI_IOMUX_DQS_DELAY90_S           = 7,
+    kEsp32_RegisterMSPI_IOMUX_DQS_DELAY90_M           = 0x0f << 7,
+    kEsp32_RegisterMSPI_IOMUX_DQS_DELAY270_S          = 17,
+    kEsp32_RegisterMSPI_IOMUX_DQS_DELAY270_M          = 0x0f << 17,
 
     kEsp32_RegisterMSPI_IOMUX_PAD_DRV_S               = 12,
     kEsp32_RegisterMSPI_IOMUX_PAD_DRV_M               = 0x03 << 12,

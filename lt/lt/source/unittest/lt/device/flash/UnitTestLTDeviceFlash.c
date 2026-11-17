@@ -26,7 +26,16 @@ static struct S {
     u8                 *writeBuff;
     u8                 *readBuff;
     u8                 *backUpBuff;
+    u8                 *aliasBefore;
+    u8                 *aliasAfter;
 } s;
+
+/* A flash routine that sends a 24 bit address wraps silently at 16MB: a sector at
+ * 0x1200000 is written at 0x200000 and the write reports success.  Reading it back
+ * through the same routine wraps the same way, so the write/read comparison below
+ * cannot see it.  Each sector at or above this line therefore also has the sector
+ * 16MB below it read before and after the test, and the two must agree. */
+#define FLASH_24BIT_ADDRESS_LIMIT 0x1000000u
 
 static JiltEngine *s_engine;
 
@@ -140,11 +149,22 @@ static void RunFlashTest(Tilt *tilt) {
         goto cleanup;
     }
 
+    /* The alias buffers are only needed if the partition reaches the 16MB line, so
+       platforms with smaller flash pay no extra RAM for the 24 bit address check. */
+    const u32 nSector = s.iFlashDevice->ByteOffsetToSectorNumber(s.hFlashDevice, partition.entry.nByteOffset);
+    if (   partition.entry.nNumSectors > 0
+        && s.iFlashDevice->SectorNumberToByteOffset(s.hFlashDevice, nSector + partition.entry.nNumSectors - 1) >= FLASH_24BIT_ADDRESS_LIMIT) {
+        if (   !(s.aliasBefore = lt_malloc(secSize))
+            || !(s.aliasAfter  = lt_malloc(secSize))) {
+            TILT_REPORT_CANNOT_RUN(tilt, "Out of memory (24 bit address alias check buffers)");
+            goto cleanup;
+        }
+    }
+
     TILT_DEBUG(tilt, "Test Partition = \"%s\", Device Sector Size = %d B, Total Size = %d B", partitionName, secSize, totalSize);
 
     char ch = '!';
     u32 nIterations = lt_strtou32(nIterationsParam, NULL, 10);
-    u32 nSector = s.iFlashDevice->ByteOffsetToSectorNumber(s.hFlashDevice, partition.entry.nByteOffset);
     bool bSuccess = true;
     for (u32 i = 0; bSuccess && i < nIterations; ++i) {
         TILT_DEBUG(tilt, "Test Iteration #%lu", LT_Pu32(i));
@@ -159,6 +179,15 @@ static void RunFlashTest(Tilt *tilt) {
                 TILT_REPORT_FAILURE(tilt,  "failed to read from address 0x%08lX to backUpBuff", LT_Pu32(address));
                 break;
             }
+            /* Remember what is 16MB below, to catch a write that wrapped there */
+            bool bCheckAlias = s.aliasBefore && address >= FLASH_24BIT_ADDRESS_LIMIT;
+            if (bCheckAlias && !s.iFlashDevice->ReadBytes(s.hFlashDevice, address - FLASH_24BIT_ADDRESS_LIMIT, secSize, s.aliasBefore)) {
+                /* The region 16MB below may be read protected (e.g. secure boot). That says nothing about
+                   this sector, so skip the alias check for it rather than fail the test. */
+                TILT_WARNING(tilt, "alias address 0x%08lX is not readable; skipping the 24 bit wrap check for 0x%08lX",
+                             LT_Pu32(address - FLASH_24BIT_ADDRESS_LIMIT), LT_Pu32(address));
+                bCheckAlias = false;
+            }
             /* Write test data */
             if (!(bSuccess = WriteSector(nSector + n, s.writeBuff))) {
                 TILT_REPORT_FAILURE(tilt, "failed to write to address 0x%08lX", LT_Pu32(address));
@@ -168,6 +197,26 @@ static void RunFlashTest(Tilt *tilt) {
             if (!(bSuccess = s.iFlashDevice->ReadBytes(s.hFlashDevice, address, secSize, s.readBuff))) {
                 TILT_REPORT_FAILURE(tilt,  "failed to read from address 0x%08lX", LT_Pu32(address));
                 break;
+            }
+            /* Verify that the 16MB alias was left alone */
+            if (bCheckAlias) {
+                /* The alias was readable before the write, so a failure now is a real read failure, not a wrap */
+                if (!s.iFlashDevice->ReadBytes(s.hFlashDevice, address - FLASH_24BIT_ADDRESS_LIMIT, secSize, s.aliasAfter)) {
+                    TILT_REPORT_FAILURE(tilt, "failed to re-read alias address 0x%08lX after writing 0x%08lX",
+                                        LT_Pu32(address - FLASH_24BIT_ADDRESS_LIMIT), LT_Pu32(address));
+                    bSuccess = false;
+                    if (!WriteSector(nSector + n, s.backUpBuff))    /* Restore sector */
+                        PrintSectorCorruptionWarning(tilt, address);
+                    break;
+                }
+                if (lt_memcmp(s.aliasBefore, s.aliasAfter, secSize) != 0) {
+                    TILT_REPORT_FAILURE(tilt, "address 0x%08lX wrapped: the sector at 0x%08lX changed (flash is addressed with only 24 bits)",
+                                        LT_Pu32(address), LT_Pu32(address - FLASH_24BIT_ADDRESS_LIMIT));
+                    bSuccess = false;
+                    if (!WriteSector(nSector + n, s.backUpBuff))    /* Restore sector */
+                        PrintSectorCorruptionWarning(tilt, address);
+                    break;
+                }
             }
             /* Verify test data */
             bSuccess = lt_memcmp(s.writeBuff, s.readBuff, secSize) == 0;
@@ -189,12 +238,16 @@ cleanup:
     lt_free(s.writeBuff);
     lt_free(s.readBuff);
     lt_free(s.backUpBuff);
+    lt_free(s.aliasBefore);
+    lt_free(s.aliasAfter);
     s.hFlashDevice = 0;
     s.tilt         = NULL;
     s.iFlashDevice = NULL;
     s.writeBuff    = NULL;
     s.readBuff     = NULL;
     s.backUpBuff   = NULL;
+    s.aliasBefore  = NULL;
+    s.aliasAfter   = NULL;
 }
 
 static void BeforeAllTests(Tilt *tilt) {

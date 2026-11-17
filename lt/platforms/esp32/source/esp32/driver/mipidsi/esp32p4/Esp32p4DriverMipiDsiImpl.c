@@ -575,12 +575,13 @@ static void Esp32p4DriverMipiDsi_SetTiming(Esp32p4DriverMipiDsi *dsi) {
 
 /* The two blocks number the pixel formats differently and both have to be told. */
 static void Esp32p4DriverMipiDsi_SetColorCoding(LTDeviceMipiDsi_PixelFormat format) {
-    u32 nCoding, nBridgeType, nLoose = 0;
+    u32 nCoding, nBridgeType, nLoose = 0, nOutType = 0;
 
     switch (format) {
         case kLTDeviceMipiDsi_PixelFormat_RGB565:
             nCoding     = ESP32_REG_VAL(DSI_HOST_DPI_COLOR_CODING, RGB565);
             nBridgeType = ESP32_REG_VAL(DSI_BRG_PIXEL_TYPE, RGB565);
+            nOutType    = ESP32_REG_VAL(DSI_BRG_PIXEL_TYPE, DPI_TYPE_RGB565);
             break;
         case kLTDeviceMipiDsi_PixelFormat_RGB666Packed:
             nCoding     = ESP32_REG_VAL(DSI_HOST_DPI_COLOR_CODING, RGB666);
@@ -602,7 +603,11 @@ static void Esp32p4DriverMipiDsi_SetColorCoding(LTDeviceMipiDsi_PixelFormat form
 
     /* DATA_IN_TYPE is left clear for RGB; the bridge's YUV input path is
        unreachable because the host cannot carry YUV away from it. */
-    ESP32_REG(DSI_BRG_PIXEL_TYPE) = nBridgeType << ESP32_REG_SHIFT(DSI_BRG_PIXEL_TYPE, RAW_TYPE);
+    /* DPI_TYPE is the format the bridge hands the host.  Silicon v3 has the
+       field and it must match the host's coding or the channels get shuffled
+       (RGB565 left at 0 shows red as green); earlier silicon ignores it. */
+    ESP32_REG(DSI_BRG_PIXEL_TYPE) = (nBridgeType << ESP32_REG_SHIFT(DSI_BRG_PIXEL_TYPE, RAW_TYPE))
+                                  | (nOutType    << ESP32_REG_SHIFT(DSI_BRG_PIXEL_TYPE, DPI_TYPE));
 }
 
 /* Drive the clock lane continuously, or let hardware drop it to LP when the

@@ -1,0 +1,45 @@
+# Colour bars on the Startek KD020HVOIN002-C002B AMOLED (CO5300, 410x502)
+# on the Waveshare ESP32-P4-Nano.
+# Firmware: LT_PLATFORM=p4 LT_PRODUCT=shell-dsi.  Type these at the LT> prompt.
+# One data lane only (the module connector has just D0 and CLK).
+# Wiring: module RESET (active low) = GPIO 32, module FMARK = GPIO 33 (unused here).
+# Run them in one session and do not reset the board afterwards: a reset clears
+# the panel setup and the display goes dark.
+# There is no backlight on an AMOLED, so no backlight GPIO is driven.
+#
+# Why the preset looks the way it does (all measured with a camera):
+#  * The panel takes two host pixels for each of its own, so its 410 columns are 820 host
+#    pixels wide.  It shows an 820 pixel window onto each line and the window starts
+#    about 52 pixels BEFORE the first pixel of the line.  The preset therefore sends
+#    lines 872 pixels wide (stride 872) and describes the framebuffer as a view: width
+#    820, line stride 872, and a start offset of stride - width = 52 pixels in front of
+#    the address given to the driver.  "dsi fb alloc" allocates that margin and "dsi fb
+#    bars" / grid / animate draw through the view, so pixel (0,0) is the display's top
+#    left corner and a line is 820 contiguous pixels.  ("dsi config view <width>
+#    [<offset>|auto]" changes it; "dsi show" prints it.)
+#  * The panel's video path shows 480 lines, not the glass's 502.  With 502 active lines
+#    a cyan strip about 20 lines tall shows at the top and bottom; the preset sends 480
+#    and the picture fills the display.
+#  * After the sequence below the picture is repeatable (same alignment on every full
+#    re-init).  A "dsi video stop" / "dsi video start" afterwards moves it right by about
+#    13 host pixels (6 panel pixels), the same every time.
+# Not working: 24-bit pixels (preset co5300rgb888, panel co5300 888).
+
+ltopen LTShellGpio
+ltopen LTShellDsi
+gpio mode gpio32 output
+gpio write gpio32 0
+dsi config preset co5300
+dsi apply
+dsi power on
+gpio write gpio32 1
+dsi fb alloc
+dsi panel co5300
+dsi fb bars
+dsi video start
+
+# Optional: check for DSI errors after the video has been running a while.
+sleep 2
+dsi errors clear
+sleep 5
+dsi errors

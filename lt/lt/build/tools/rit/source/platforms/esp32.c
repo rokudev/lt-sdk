@@ -55,7 +55,10 @@ enum {
     kMinEraseSerialTimeoutMS       = 5000,  // 5s (minimum)
     kEraseSerialTimeoutPerSectorMS = 40,    // 40ms per sector
     kFlashSerialTimeoutMS          = 500,   // 500 ms
-    kMemorySerialTimeoutMS         = 500,   // 500 ms
+    // Stub upload runs at the initial baud rate and a full 0x1800 byte block takes
+    // about 540 ms to clock out at 115200; the clock starts once write() returns,
+    // so 500 ms expired just before the ROM's acknowledgement arrived.
+    kMemorySerialTimeoutMS         = 2000,  // 2 s
 };
 
 // RTC_CNTL_SWD_AUTO_FEED_EN, too wide for an enum constant
@@ -95,6 +98,7 @@ enum CommandID {
     kCommandID_SPIFlashEnd         = 0x04,  // Leave flash write mode
     kCommandID_SPIFlashAutoEncData = 0xd4,  // Encrypt/Write up to one flash sector (per command)
 
+    kCommandID_SPIFlashEraseRegion = 0xd1,  // Erase a flash region (flasher stub only)
     kCommandID_SPIFlashRead        = 0xd2,  // Read flash
     kCommandID_SPIFlashVerifyMD5   = 0x13,  // MD5 digest of a flash region
 };
@@ -135,6 +139,10 @@ typedef struct ChipInfo {
     // Set on parts that cannot be auto-detected and must be named with
     // '-x chip=<name>'; nChipID is unused on such an entry
     bool         bByNameOnly;
+    // ESP32-P4: read the silicon revision, run the flash power-on sequence that
+    // revisions v3.1/v3.2 need before the first erase, and switch to the stub
+    // linked for v3.x silicon when the part is v3.0 or later
+    bool         bP4Silicon;
     // RTC watchdog registers, zero on parts with no native USB peripheral
     u32          nRegRtcWdtWProtect;
     u32          nRegRtcWdtConfig0;
@@ -194,6 +202,19 @@ static const ChipInfo s_chipInfo[] = {
         // and reading it wedges the download loader until the next reset.
         .pName                    = "esp32p4",
         .bByNameOnly              = true,
+        .bP4Silicon               = true,
+        .bEFuseRevision           = false,
+        .bRomFlashBeginEncryptArg = true,
+    },
+    {   // ESP32-P4 silicon v3.0 and later (eco5 and up; ROM "esp32p4-eco7" seen on
+        // the Waveshare ESP32-P4-WIFI6 Touch LCD). Same part as the entry above, but
+        // the flasher stub has to live elsewhere: the stub for earlier silicon is
+        // linked at 0x4ff10000 and takes an illegal instruction trap on its first
+        // fetch on these parts, so its own stub (linked at 0x4ff50000, from esptool
+        // 5.6.0 stub_flasher/2/esp32p4.json) is selected by this separate name.
+        .pName                    = "esp32p4v3",
+        .bByNameOnly              = true,
+        .bP4Silicon               = true,
         .bEFuseRevision           = false,
         .bRomFlashBeginEncryptArg = true,
     },
@@ -217,7 +238,10 @@ static u8              s_response[kResponseSizeMax];
 // a character at a time. On a native USB port every write becomes its own USB
 // transaction, so sending byte by byte turns a six byte acknowledgement into six
 // round trips and a stub upload into thousands.
-enum { kSlipSendBufferSize = 2 * (kDataHeaderSize + kMemoryMaxWriteSize) + 2 };
+// The frame carries the 8 byte command header ahead of the data header and block,
+// and SlipSend() needs room for every byte to be escaped; leaving the command
+// header out made a full memory block (0x1800 bytes) fail with -EMSGSIZE.
+enum { kSlipSendBufferSize = 2 * (sizeof(CommandHeader) + kDataHeaderSize + kMemoryMaxWriteSize) + 2 };
 static u8 s_slipSendBuffer[kSlipSendBufferSize];
 
 static int SlipSend(u8 * pBufferToSend, u32 nLength) {
@@ -623,6 +647,13 @@ static int FinishFlashWrite(Area * pArea, Image * pImage) {
 // alongside the USB-to-UART bridge (ESP32 devkits, ESP32-CAM, ...).
 //
 static void ResetIntoDownloadModeClassic(void) {
+    // Idle both lines first. The port opens with DTR and RTS asserted, and
+    // pulsing straight from there leaves some boards (Waveshare ESP32-P4-WIFI6
+    // Touch LCD, ESP32-P4 eco7 ROM) answering sync, attach and set-params but
+    // never the first SPIFlashBegin.
+    SerialSetDTR(false);
+    SerialSetRTS(false);
+    usleep(50000);
     SerialSetDTR(false);   // IO0 = HIGH
     SerialSetRTS(true);    // EN  = LOW, chip in reset
     usleep(100000);
@@ -699,6 +730,101 @@ static int ReadESP32ChipRevision(bool * pbAutoEncryptAvailable) {
     return 0;
 }
 
+//
+// ESP32-P4 silicon revision and flash power.
+//
+// On revisions v3.1 and v3.2 (ECO6/ECO7) the flash supply defaults to off after
+// the 1.8V to 3.3V default change, and the ROM's download mode only partly powers
+// it: reads and short operations work, but an erase of data-bearing sectors never
+// completes and the chip stops answering the serial port. esptool's
+// ESP32P4ROM.power_on_flash() runs the sequence below before attaching the flash;
+// without it SPIFlashBegin simply times out. The register map is the same on
+// every revision, and only 301 and 302 act on it.
+//
+// Silicon v3.0 and later also needs its own flasher stub: the stub for earlier
+// parts is linked at 0x4ff10000, a region that is not free RAM on v3.x, and takes
+// an illegal instruction trap on its first fetch. The revision comes from an eFuse
+// word, so a part named "esp32p4" is switched to "esp32p4v3" here when it is v3.x.
+//
+enum {
+    kRegisterP4EFuseBlock1Word2     = 0x5012d04c,
+    kRegisterP4EFuseRepeatData1     = 0x5012d034,
+    kP4EFuseDownloadModeXpdOnMask   = 1u << 16,
+
+    kRegisterP4LpSysXpdPadGroup     = 0x5011010c,
+    kRegisterP4PmuExtLdoAna         = 0x501151bc,  // PMU_EXT_LDO_P0_0P1A_ANA_REG
+    kRegisterP4PmuExtLdo            = 0x501151b8,  // PMU_EXT_LDO_P0_0P1A_REG
+    kRegisterP4PmuDate              = 0x501153fc,  // carries the flash force-on bits
+
+    kP4PmuAnaEnCurLim0              = 1u << 27,
+    kP4PmuTarget0                   = 0xffu << 23,
+    kP4PmuForceTiehSel0             = 1u << 7,
+    kP4PmuEFuseVoltageUpdate        = 0x80,
+    kP4PmuFlashForceOn              = 0x3,
+};
+
+static int ModifyRegister(u32 nAddress, u32 nClearMask, u32 nSetMask) {
+    u32 nValue;
+    int nRtn = ReadRegister(nAddress, &nValue);
+    if (nRtn < 0) return nRtn;
+    return WriteRegister(nAddress, (nValue & ~nClearMask) | nSetMask);
+}
+
+static int SetupESP32P4Silicon(void) {
+    if (!s_pChipInfo->bP4Silicon) return 0;
+
+    u32 nWord;
+    int nRtn = ReadRegister(kRegisterP4EFuseBlock1Word2, &nWord);
+    if (nRtn < 0) return nRtn;
+    u32 nMinor    = nWord & 0xf;
+    u32 nMajor    = (((nWord >> 23) & 1) << 2) | ((nWord >> 4) & 0x3);
+    u32 nRevision = nMajor * 100 + nMinor;
+    printf("ESP32-P4 silicon revision v%u.%u\n", nMajor, nMinor);
+
+    if (nRevision >= 300 && strcmp(s_pChipInfo->pName, "esp32p4") == 0) {
+        s_pChipInfo = GetChipInfoFromName("esp32p4v3", strlen("esp32p4v3"));
+        if (s_pChipInfo == NULL) return -1;
+    }
+
+    // Nothing to power on for other revisions, and nothing to do once the stub is
+    // already running: the flash has been on since the stub was loaded.
+    if (s_flasherRunning || (nRevision != 301 && nRevision != 302)) return 0;
+
+    // v3.2 with DOWNLOAD_MODE_XPD_ON programmed: the ROM has already asserted the
+    // flash XPD, and running the sequence again is not safe. Only release the
+    // force-on bits the ROM left behind.
+    if (nRevision == 302) {
+        u32 nRepeat;
+        nRtn = ReadRegister(kRegisterP4EFuseRepeatData1, &nRepeat);
+        if (nRtn < 0) return nRtn;
+        if (nRepeat & kP4EFuseDownloadModeXpdOnMask) {
+            u32 nDate;
+            nRtn = ReadRegister(kRegisterP4PmuDate, &nDate);
+            if (nRtn < 0) return nRtn;
+            if ((nDate & kP4PmuFlashForceOn) == kP4PmuFlashForceOn) {
+                return WriteRegister(kRegisterP4PmuDate, nDate & ~kP4PmuFlashForceOn);
+            }
+            return 0;
+        }
+    }
+
+    // Power up the pad group, then the flash supply
+    nRtn = WriteRegister(kRegisterP4LpSysXpdPadGroup, 1);
+    if (nRtn < 0) return nRtn;
+    usleep(10000);
+    if ((nRtn = ModifyRegister(kRegisterP4PmuExtLdoAna, 0, kP4PmuAnaEnCurLim0)) < 0) return nRtn;
+    if ((nRtn = ModifyRegister(kRegisterP4PmuExtLdo,    0, kP4PmuForceTiehSel0)) < 0) return nRtn;
+    if ((nRtn = ModifyRegister(kRegisterP4PmuDate,      0, kP4PmuFlashForceOn)) < 0) return nRtn;
+    usleep(50);
+    if ((nRtn = ModifyRegister(kRegisterP4PmuExtLdoAna, kP4PmuAnaEnCurLim0, 0)) < 0) return nRtn;
+    if ((nRtn = ModifyRegister(kRegisterP4PmuExtLdo,    kP4PmuTarget0, 0)) < 0) return nRtn;
+    // Update the eFuse voltage into the PMU
+    if ((nRtn = ModifyRegister(kRegisterP4PmuExtLdo,    0, kP4PmuEFuseVoltageUpdate)) < 0) return nRtn;
+    if ((nRtn = ModifyRegister(kRegisterP4PmuExtLdo,    kP4PmuForceTiehSel0, 0)) < 0) return nRtn;
+    usleep(1800);
+    return 0;
+}
+
 static int TargetInit(bool bAutoProgram) {
     // Place in download mode (if auto programming enabled)
     if (bAutoProgram) {
@@ -722,6 +848,10 @@ static int TargetInit(bool bAutoProgram) {
             return -1;
         }
     }
+
+    // ESP32-P4: pick the stub for this silicon and power the flash on if needed
+    nRtn = SetupESP32P4Silicon();
+    if (nRtn < 0) return nRtn;
 
     // Silence the watchdogs before they can reset the board mid-operation. The
     // stub does this for itself, so skip it if the stub is already resident.
@@ -836,10 +966,63 @@ static int Esp32LoadAndRunFlasher(void) {
     return 0;
 }
 
+//
+// The ROM's flash routines send 3 byte addresses, so a request for an offset of 16MB
+// or more does not fail: it lands 16MB lower, on top of whatever lives there, and
+// the ROM reports success.  Measured on an ESP32-P4 with a 32MB part: 8KB sent to
+// 0x1100000 by the ROM came out at 0x100000, and rit printed [OK].  The flasher stub
+// addresses the whole device, so anything reaching that far has to go through it,
+// and has to fail, loudly, where the stub is not available.
+//
+enum { kRomFlashAddressLimit = 0x1000000 };
+
+static bool ReachesPastRomLimit(const Area * pArea, u32 nSize) {
+    return (u64)pArea->nOffset + nSize > kRomFlashAddressLimit;
+}
+
+//
+// Erase a range with the flasher stub's own erase command.
+//
+// SPIFlashBegin is the erase command to the ROM, which erases the whole range up
+// front before it answers.  The stub does not: its SPIFlashBegin only starts a write
+// session, and the erasing is done a block at a time as the data arrives.  An erase
+// built on it therefore comes back [OK] after a moment having erased next to nothing
+// - an 8MB area came back in 1.5s with the data in its middle and at its end intact.
+// The stub has a command for this, SPIFlashEraseRegion, which esptool uses for its
+// own erase-region and which does erase it all before answering.
+//
+static int EraseRegionWithStub(u32 nOffset, u32 nSize) {
+    u32 regionPayload[2];
+    ImageHostToDeviceU32(regionPayload, nOffset);
+    ImageHostToDeviceU32(regionPayload + 1, nSize);
+
+    // Same allowance per sector as the ROM erase gets
+    u32 nSerialTimeoutMS = (nSize / kFlashSectorSize) * kEraseSerialTimeoutPerSectorMS;
+    if (nSerialTimeoutMS < kMinEraseSerialTimeoutMS) nSerialTimeoutMS = kMinEraseSerialTimeoutMS;
+    int nRtn = SerialSetTimeout(nSerialTimeoutMS);
+    if (nRtn < 0) return nRtn;
+
+    nRtn = RunCommand(kCommandID_SPIFlashEraseRegion, (u8 *)regionPayload, sizeof(regionPayload), 0);
+    if (nRtn < 0) return nRtn;
+
+    return SerialSetTimeout(kDefaultSerialTimeoutMS);
+}
+
 static int Esp32Erase(Area * pArea) {
+    if (ReachesPastRomLimit(pArea, pArea->nMaxSize)) {
+        int nStub = Esp32LoadAndRunFlasher();
+        if (nStub < 0) {
+            printf("Error: %s reaches past 16MB, which needs the flasher stub; the ROM would wrap the addresses...\n", pArea->name);
+            return -1;
+        }
+    }
+
     // Attach and configure flash (defaults)
     int nRtn = InitSPIFlash();
     if (nRtn < 0) return nRtn;
+
+    // The stub erases with its own command, the ROM with SPIFlashBegin - see above
+    if (s_flasherRunning) return EraseRegionWithStub(pArea->nOffset, pArea->nMaxSize);
 
     // Begin flash operation (erase)
     return EraseFlash(pArea, NULL);
@@ -867,6 +1050,10 @@ static int Esp32Program(Area * pArea, Image * pImage) {
     // Load and Run Flasher
     int nRtn = Esp32LoadAndRunFlasher();
     if (nRtn < 0) {
+        if (ReachesPastRomLimit(pArea, pImage->nSize)) {
+            printf("Error: %s reaches past 16MB, which needs the flasher stub; the ROM would wrap the addresses...\n", pArea->name);
+            return -1;
+        }
         if (!s_bAutoEncrypt) {
             printf("Warning: Continuing without flasher image...\n");
         } else {

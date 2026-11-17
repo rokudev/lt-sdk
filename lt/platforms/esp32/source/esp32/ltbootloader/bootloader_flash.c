@@ -695,6 +695,41 @@ IRAM_ATTR static uint32_t bootloader_flash_execute_command_common(
     return ret;
 }
 
+#if CONFIG_IDF_TARGET_ESP32P4   /* cache_usr_addr_4byte exists only in the P4's SPI1 register layout */
+/*
+ * Read with a four byte address, for offsets of 16MB and up.  The cache fetches with
+ * the three byte read command configured at boot, and the ROM's legacy read sends a
+ * three byte address as well, so on a part larger than 16MB both wrap silently: a
+ * read of 0x1fff000 comes back with the contents of 0xfff000.  This sends fast read
+ * 4B (0x0c) as a user command instead, which carries the whole address in the
+ * transaction and changes nothing else about the flash or the cache's path to it.
+ *
+ * Four bytes at a time, because bootloader_flash_execute_command_common() returns
+ * at most 32 bits; the callers read a handful of bytes.
+ */
+esp_err_t IRAM_ATTR bootloader_flash_read_4byte_addr(uint32_t src_addr, void *dest, size_t size)
+{
+    uint8_t *out = (uint8_t *)dest;
+    /* The controller's user mode address is only 24 bits wide unless this bit is set,
+     * which sends (A & 0xffffff) << 8 for a 32 bit address - see the driver's
+     * Esp32p4SPIFlash_Cmd().  Put it back afterwards for everything else. */
+    uint32_t old_fctrl = SPIFLASH.cache_fctrl.val;
+    SPIFLASH.cache_fctrl.cache_usr_addr_4byte = 1;
+    while (size > 0) {
+        size_t n = size < 4 ? size : 4;
+        uint32_t word = bootloader_flash_execute_command_common(0x0c, 32, src_addr, 8, 0, 0, (uint8_t)(n * 8));
+        for (size_t i = 0; i < n; ++i) {
+            out[i] = (uint8_t)(word >> (8 * i));
+        }
+        out      += n;
+        src_addr += n;
+        size     -= n;
+    }
+    SPIFLASH.cache_fctrl.val = old_fctrl;
+    return ESP_OK;
+}
+#endif /* CONFIG_IDF_TARGET_ESP32P4 */
+
 uint32_t IRAM_ATTR bootloader_execute_flash_command(uint8_t command, uint32_t mosi_data, uint8_t mosi_len, uint8_t miso_len)
 {
     const uint8_t addr_len = 0;

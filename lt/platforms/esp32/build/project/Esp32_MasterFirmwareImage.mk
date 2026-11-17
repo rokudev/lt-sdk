@@ -43,9 +43,22 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #
 ESP32_MASTERING_PATH     := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/mastering
 ESP32_CONFIG_PATH        := $(ESP32_MASTERING_PATH)/config
-ESP32_CHIP_CONFIG_PATH   := $(ESP32_CONFIG_PATH)/$(SOC_PLATFORM_NAME)
-ESP32_LD_SCRIPT_PATH     := $(ESP32_MASTERING_PATH)/ld/$(SOC_PLATFORM_NAME)
-ESP32_LD_ROM_SCRIPT_PATH := $(ESP32_LD_SCRIPT_PATH)/rom
+# Where this variant's checked in image inputs live, notably the prebuilt bootloader.
+# Keyed by the chip, config/$(SOC_PLATFORM_NAME), unless the variant's Makefile.config
+# names a directory of its own with ESP32_CHIP_CONFIG_NAME: a variant on silicon that
+# needs a different bootloader from the rest of the chip's variants does.  The esp32p4
+# variant takes config/esp32p4/LTBootloader.bin; the p4v3 variant sets
+# ESP32_CHIP_CONFIG_NAME to esp32p4v3 and takes config/esp32p4v3/LTBootloader.bin.
+ESP32_CHIP_CONFIG_NAME   ?= $(SOC_PLATFORM_NAME)
+ESP32_CHIP_CONFIG_PATH   := $(ESP32_CONFIG_PATH)/$(ESP32_CHIP_CONFIG_NAME)
+# A variant whose silicon lays its memory out differently supplies the whole directory
+# of linker scripts for the firmware - memory.ld, sections.ld, the peripheral script and
+# the ROM scripts - by setting LT_PLATFORM_FIRMWARE_LD_PATH in its Makefile.config, as
+# the p4v3 variant does.  Left unset, the shared directory for the chip is used.
+ESP32_LD_SCRIPT_PATH     := $(if $(LT_PLATFORM_FIRMWARE_LD_PATH),$(LT_PLATFORM_FIRMWARE_LD_PATH),$(ESP32_MASTERING_PATH)/ld/$(SOC_PLATFORM_NAME))
+# ?= so that a variant can supply the ROM symbol scripts for its own silicon, as the
+# p4v3 variant does - see Esp32_LTBootloader.mk.
+ESP32_LD_ROM_SCRIPT_PATH ?= $(ESP32_LD_SCRIPT_PATH)/rom
 ESP32_LIB_PATH           := $(ESP32_MASTERING_PATH)/lib/$(SOC_PLATFORM_NAME)
 
 ifneq (,$(LT_CRYPTO_KEY_DIR))
@@ -366,8 +379,9 @@ $(LT_TARGET_BIN_DIR)/%.bin: $(ESP32_CONFIG_PATH)/%.bin
 # step wants from it is a binary rather than a link.  A released one checked in
 # beside the other image inputs is copied in; otherwise it has to be built.
 #
-# The prebuilt is keyed by chip - config/$(SOC_PLATFORM_NAME)/LTBootloader.bin - and
-# not merely by name, so that the pattern rule above, which copies anything named
+# The prebuilt is keyed by chip - config/$(SOC_PLATFORM_NAME)/LTBootloader.bin, or the
+# directory the variant names with ESP32_CHIP_CONFIG_NAME (see the top of this file) -
+# and not merely by name, so that the pattern rule above, which copies anything named
 # *.bin out of config/, cannot supply a bootloader by accident: putting the wrong
 # part's second stage in an image gives a device that does not come back, and the
 # two parts do not even load the second stage from the same flash offset, byte
@@ -385,7 +399,7 @@ else
 # No prerequisites, so make runs this only when the file is genuinely absent - a
 # bootloader already left in the bin directory by `make bootloaders` is taken as is.
 $(ESP32_BOOTLOADER_IMAGE):
-	@echo "$@ is missing, and no released $(SOC_PLATFORM_NAME) bootloader is checked in at $(ESP32_CHIP_CONFIG_PATH)/LTBootloader.bin - run 'make bootloaders' to build one" >&2
+	@echo "$@ is missing, and no released $(ESP32_CHIP_CONFIG_NAME) bootloader is checked in at $(ESP32_CHIP_CONFIG_PATH)/LTBootloader.bin - run 'make bootloaders' to build one" >&2
 	@false
 
 endif

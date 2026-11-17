@@ -350,6 +350,10 @@ enum Esp32_RegisterDSI_BRG {
     kEsp32_RegisterDSI_BRG_PIXEL_TYPE_DPI_CONFIG_S    = 4,
     kEsp32_RegisterDSI_BRG_PIXEL_TYPE_DPI_CONFIG_M    = 0x03 << 4,
     kEsp32_RegisterDSI_BRG_PIXEL_TYPE_DATA_IN_TYPE_M  = 0x01 << 6,   /* 0 RGB, 1 YUV */
+    kEsp32_RegisterDSI_BRG_PIXEL_TYPE_DPI_TYPE_S      = 7,           /* output format; silicon v3+ only, reserved before */
+    kEsp32_RegisterDSI_BRG_PIXEL_TYPE_DPI_TYPE_M      = 0x0f << 7,
+    kEsp32_RegisterDSI_BRG_PIXEL_TYPE_DPI_TYPE_RGB888_V = 0,
+    kEsp32_RegisterDSI_BRG_PIXEL_TYPE_DPI_TYPE_RGB565_V = 2,
     kEsp32_RegisterDSI_BRG_PIXEL_TYPE_RGB888_V        = 0,
     kEsp32_RegisterDSI_BRG_PIXEL_TYPE_RGB666_V        = 1,
     kEsp32_RegisterDSI_BRG_PIXEL_TYPE_RGB565_V        = 2,

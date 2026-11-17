@@ -1,0 +1,191 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+//
+// p4v3 flash configuration
+//
+// ESP32-P4 silicon v3.x (ROM esp32p4-eco7) with 32MB of external quad SPI NOR
+// flash: a GigaDevice GD25Q256, JEDEC manufacturer 0xc8, device 0x4019, read back
+// from the part on the Waveshare ESP32-P4-WIFI6 Touch LCD.  The p4 variant is the
+// same SoC on a 16MB part (Waveshare ESP32-P4-Nano) and is left alone.
+//
+// The layout follows the s3 variant, the other part here with 32MB: the firmware
+// slots low in the device and the tail partitions at the very top of it.
+//
+// Where things can go.  The ROM's flash routines, which the flash driver builds
+// on, send three byte addresses, so on a part larger than 16MB they wrap silently:
+// 8KB written to 0x1100000 through them came out at 0x100000 and the ROM said OK.
+// So offsets of 16MB and up are reached with four byte address commands that the
+// driver (driver/flash/esp32p4) and the bootloader (LTBootDriverFlash_ReadBytes)
+// send themselves, and rit through the flasher stub.  The cache is the one path
+// that cannot be taught that: it fetches with the three byte read command the
+// bootloader configured.  So whatever is executed in place, memory mapped or
+// decrypted has to be in the first 16MB:
+//
+//   fw0, fw1    below block 0x1000.  The firmware runs from flash through the cache.
+//   everything else   anywhere.  The tail partitions are ordinary driver data, and
+//               "prov" is read by the bootloader, which has the direct read.
+//
+// Encryption is the other limit: the driver refuses to encrypt or decrypt above
+// 16MB, so no partition up there can be flash encrypted.  Nothing here is.
+//
+// The firmware slots fill the first 16MB between them, the tail sits at the top of
+// the 32MB, and the 15.75MB between is one "storage" partition so that the whole
+// device is accounted for.
+//
+// The head differs from every other esp32 variant here. The ESP32 ROM loads the
+// second stage bootloader from 0x1000 and the S3 and C3 load it from 0x0, but
+// the P4 loads it from 0x2000: the first two sectors are reserved by the ROM.
+// So "boot" starts at block 0x2 and blocks 0x0 - 0x1 are left unclaimed.
+//
+// Offsets that are NOT free to move:
+//
+//   part        block 0x11 (byte 0x11000)  kLTBootPrimaryPartitionTableOffset
+//   part_backup block 0x12 (byte 0x12000)  kLTBootBackupPartitionTableOffset
+//
+// Both are compiled into the bootloader (ltbootloader/esp32p4/LTBootDriver.c) and
+// into Esp32p4DriverFlash (driver/flash/esp32p4/Esp32p4FlashDeviceUnit.c), so the
+// whole preamble below block 0x11 has to fit in the 17 blocks ahead of them - it
+// does, with the two reserved sectors taken out. Everything else is discovered at
+// runtime through the partition table and may be moved.
+//
+// The first 16MB gives each firmware slot just under 8MB, against the 1.75MB the 4MB
+// parts get, and they divide everything between block 0x20 and block 0x1000 evenly.
+// The tail partitions keep the sizes they have on every other variant.
+//
+{
+  platform: {
+    // Platform name
+    name: "p4v3",
+
+    // Target device (SoC)
+    device: "ESP32-P4",
+
+    // Target device family
+    family: "esp32",
+
+    // Target endian: "little" or "big"
+    endian: "little"
+  },
+  flash: {
+    // Size of minimum eraseable flash unit (sector) in bytes
+    block_size: 4096,
+
+    // Number of blocks in flash (0x2000 blocks * 4096 bytes = 32MB)
+    num_blocks: 8192,
+
+    // Partition table version number
+    table_version: 0,
+
+    // Encryption write alignment requirement
+    write_quantum: 32,
+
+    // Default partition name to flash (typically a firmware partition)
+    default_partition: "fw0"
+  },
+  // Partition table
+  partitions: {
+    // Blocks 0x0 - 0x1 are reserved by the ROM; the P4 loads the second stage
+    // bootloader from byte 0x2000.
+    boot : {
+      offs: 0x2,
+      size: 0xc,
+      type: "boot",
+      file: "LTBootloader.bin",
+    },
+    // Displaced from block 0 by the bootloader. Located by type at runtime.
+    ltat : {
+      offs: 0xe,
+      size: 0x1,
+      type: "ltat",
+    },
+    // Blocks 0xf - 0x10 are deliberately left free, as on the other variants.
+    part : {
+      offs: 0x11,
+      size: 0x1,
+      type: "part",
+      file: "LTPartitionTable.bin",
+    },
+    part_backup : {
+      offs: 0x12,
+      size: 0x1,
+      type: "part",
+      file: "LTPartitionTable.bin",
+    },
+    ota : {
+      offs: 0x13,
+      size: 0x2,
+      type: "otainfo",
+    },
+    settings : {
+      offs: 0x17,
+      size: 0x6,
+      type: "settings",
+    },
+    // Just under 8MB per firmware slot, together filling the first 16MB.  They stay below
+    // block 0x1000 because they are executed in place - see the note above.
+    fw0 : {
+      offs: 0x20,
+      size: 0x7f0,
+      type: "fw",
+      file: "LTFirmwareImage.bin",
+    },
+    fw1 : {
+      offs: 0x810,
+      size: 0x7f0,
+      type: "fw",
+    },
+    // The rest of the device between the slots and the tail: 15.75MB, all of it above
+    // 16MB and so reached with four byte address commands.
+    storage : {
+      offs: 0x1000,
+      size: 0xfc0,
+      type: "misc",
+    },
+    // The tail, at the top of the 32MB as on the s3 variant.
+    crashdump : {
+      offs: 0x1fc0,
+      size: 0x20,
+      type: "misc",
+    },
+    log : {
+      offs: 0x1fe0,
+      size: 0xc,
+      type: "log",
+    },
+    migration : {
+      offs: 0x1fec,
+      size: 0xf,
+      type: "misc",
+    },
+    crypto : {
+      offs: 0x1ffb,
+      size: 0x4,
+      type: "settings",
+    },
+    prov : {
+      offs: 0x1fff,
+      size: 0x1,
+      type: "misc",
+    }
+  }
+}
+// Reserved partition types:
+//   part     - LT partition table (size is one sector)
+//   boot     - bootloader
+//   ltat     - LT authentication token
+//   otainfo  - OTA update information (size in sectors equal to number of firmware partitions)
+//   fw       - firmware
+//   fw_mfg   - manufacturing firmware
+//   settings - settings partition
+//   misc     - an explicitly miscellaneous partition, identified by name rather than type.
+// Custom partition types (any other name)
+//   <custom> - none of the above, a miscellaneous partition
+//
+//  Partition offset ("offs") is the starting location of the partition (in blocks).
+//  Partition "size" is also given in blocks.
+//  Partition "file" is the optional source filename used for building a full flash image.
