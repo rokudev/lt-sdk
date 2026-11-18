@@ -30,6 +30,7 @@
 #include <lt/core/LTCore.h>
 #include <lt/core/LTStdlib.h>
 #include <lt/device/mipidsi/LTDeviceMipiDsi.h>
+#include <lt/device/gpio/LTDeviceGpio.h>
 #include <lt/system/shell/LTSystemShell.h>
 
 DEFINE_LTLOG_SECTION("ltshell.dsi");
@@ -37,6 +38,7 @@ DEFINE_LTLOG_SECTION("ltshell.dsi");
 /*_________________________
 _/ #forward declarations */
 static int  ShellCommandDsi(LTShell hShell, int argc, const char ** argv);
+static int  ShellCommandDsiLocked(LTShell hShell, int argc, const char ** argv);
 static void ShellHelpDsi(LTShell hShell, int argc, const char ** argv);
 
 /*____________________
@@ -78,6 +80,27 @@ static LTDeviceMipiDsi_Config   s_scratch;
 static u8               * s_pFrameBuffer    = NULL;
 static u32                s_nFrameBufferBytes = 0;
 static u8               * s_pAnimationFrameBuffer = NULL;
+/* What was allocated, which is s_nMarginBytes before the address the driver is given: the
+   logical image starts at the allocation and the driver's pointer is "offset" pixels into it. */
+static u8               * s_pFrameBufferAlloc = NULL;
+static u8               * s_pAnimationAlloc   = NULL;
+static u32                s_nMarginBytes      = 0;
+
+/* The geometry the framebuffer was allocated for.  "dsi config" edits the working configuration
+   at any time but only "dsi fb alloc" sizes the allocation, so every drawing command works from
+   this copy, taken at allocation, and never from the working configuration. */
+static struct {
+    u32                             nStride, nWidth, nHeight, nOffset, nBitsPerPixel;
+    LTDeviceMipiDsi_PixelFormat     format;
+} s_geom;
+
+/* The logical view of the framebuffer, see FbView below.  The stride is always the active
+   width of the config (the driver reads the frame as one linear run of that many pixels per
+   line); the visible width and the offset are set with "dsi config view".  A width of 0 means
+   the whole line and an offset of kAutoOffset means stride - width. */
+#define kAutoOffset 0xffffffffu
+static u32                s_viewWidth         = 0;
+static u32                s_viewOffset        = kAutoOffset;
 
 static u8                 s_packetBuffer[kMaxPacketBytes];
 static u8                 s_readBuffer[kMaxReadBytes];
@@ -209,29 +232,105 @@ static void DsiErrorEventProc(LTDeviceMipiDsi_Error errors, void * pClientData) 
     s_nErrorEventMask |= (u32)errors;
 }
 
-static void FreeFrameBuffer(void) {
-    if (s_pFrameBuffer == NULL) return;
-    if (s_pDsi && s_pDsi->API->IsVideoActive(s_pDsi)) s_pDsi->API->StopVideo(s_pDsi);
+/* Returns false, and leaves the buffer allocated, if the stream could not be confirmed
+   stopped. */
+static bool FreeFrameBuffer(void) {
+    if (s_pFrameBuffer == NULL) return true;
+    if (s_pDsi && s_pDsi->API->IsVideoActive(s_pDsi) && ! s_pDsi->API->StopVideo(s_pDsi)) return false;
     if (s_pDsi) s_pDsi->API->SetFrameBuffer(s_pDsi, NULL, 0);
-    lt_free(s_pAnimationFrameBuffer);
-    lt_free(s_pFrameBuffer);
+    lt_free(s_pAnimationAlloc);
+    lt_free(s_pFrameBufferAlloc);
     s_pAnimationFrameBuffer = NULL;
+    s_pAnimationAlloc   = NULL;
     s_pFrameBuffer      = NULL;
+    s_pFrameBufferAlloc = NULL;
     s_nFrameBufferBytes = 0;
+    s_nMarginBytes      = 0;
+    lt_memset(&s_geom, 0, sizeof s_geom);
+    return true;
+}
+
+/* The logical framebuffer: pixel (x, y) is at pDriver + ((y * stride + x) - offset) * bytes per
+   pixel, where pDriver is the address given to the driver.  That is a width x height image with
+   a line stride of "stride" pixels whose first pixel is "offset" pixels before the driver's
+   address - so a panel whose visible window starts "offset" pixels before the first pixel of
+   each line shows the image at its own (0,0).  The offset pixels before pDriver are allocated
+   as a margin but are never sent. */
+typedef struct {
+    u8 * pDriver;
+    u32  nStride, nWidth, nHeight, nOffset, nBytesPerPixel;
+} FbView;
+
+static u32 ViewWidth(void) {
+    u32 nStride = s_config.timing.nHorizontalActive;
+    return (s_viewWidth && s_viewWidth <= nStride) ? s_viewWidth : nStride;
+}
+
+static u32 ViewOffset(void) {
+    u32 nStride = s_config.timing.nHorizontalActive;
+    return (s_viewOffset == kAutoOffset) ? (nStride - ViewWidth()) : s_viewOffset;
+}
+
+static FbView MakeView(u8 * pDriver) {
+    FbView v;
+    v.pDriver        = pDriver;
+    v.nStride        = s_geom.nStride;
+    v.nWidth         = s_geom.nWidth;
+    v.nHeight        = s_geom.nHeight;
+    v.nOffset        = s_geom.nOffset;
+    v.nBytesPerPixel = s_geom.nBitsPerPixel / 8;
+    return v;
+}
+
+static u8 * ViewPixel(const FbView * v, u32 x, u32 y) {
+    return v->pDriver + (((s64)y * v->nStride + x) - (s64)v->nOffset) * v->nBytesPerPixel;
+}
+
+static void ViewPut16(const FbView * v, u32 x, u32 y, u16 nColour) {
+    u8 * p = ViewPixel(v, x, y);
+    p[0] = (u8)nColour;
+    p[1] = (u8)(nColour >> 8);
 }
 
 /* Prefers the heap region named "psram" because a frame of any real panel is
    larger than the on-chip SRAM a small part has.  A platform without that
-   region falls through to the unrestricted allocator. */
-static bool AllocFrameBuffer(u32 nBytes) {
-    FreeFrameBuffer();
-    if (nBytes == 0) return false;
+   region falls through to the unrestricted allocator.  The margin in front of the driver's
+   address is the view's offset. */
+static u8 * AllocWithMargin(u32 nBytes, u32 nMarginBytes, u8 ** ppAlloc) {
     LTMemoryRegion region = LT_GetCore()->GetNamedMemoryRegion("psram");
-    s_pFrameBuffer = (u8 *)lt_malloc_from_region(region, nBytes);
+    u8 * pAlloc = (u8 *)lt_malloc_from_region(region, nMarginBytes + nBytes);
+    if (pAlloc == NULL) return NULL;
+    lt_memset(pAlloc, 0, nMarginBytes + nBytes);
+    *ppAlloc = pAlloc;
+    return pAlloc + nMarginBytes;
+}
+
+static bool AllocFrameBuffer(u32 nBytes) {
+    if (! FreeFrameBuffer()) return false;
+    if (nBytes == 0) return false;
+    u32 nBytesPerPixel = BitsPerPixel(s_config.pixelFormat) / 8;
+    u64 nMarginWide = (u64)ViewOffset() * (nBytesPerPixel ? nBytesPerPixel : 2);
+    if (nMarginWide + nBytes > 0xffffffffu) return false;
+    u32 nMargin = (u32)nMarginWide;
+    s_pFrameBuffer = AllocWithMargin(nBytes, nMargin, &s_pFrameBufferAlloc);
     if (s_pFrameBuffer == NULL) return false;
-    lt_memset(s_pFrameBuffer, 0, nBytes);
     s_nFrameBufferBytes = nBytes;
+    s_nMarginBytes      = nMargin;
+    s_geom.nStride       = s_config.timing.nHorizontalActive;
+    s_geom.nWidth        = ViewWidth();
+    s_geom.nHeight       = s_config.timing.nVerticalActive;
+    s_geom.nOffset       = ViewOffset();
+    s_geom.nBitsPerPixel = BitsPerPixel(s_config.pixelFormat);
+    s_geom.format        = s_config.pixelFormat;
     return true;
+}
+
+/* The second (ping-pong) buffer, with the same margin; returns the driver's address. */
+static u8 * AnimationBuffer(void) {
+    if (s_pAnimationFrameBuffer == NULL) {
+        s_pAnimationFrameBuffer = AllocWithMargin(s_nFrameBufferBytes, s_nMarginBytes, &s_pAnimationAlloc);
+    }
+    return s_pAnimationFrameBuffer;
 }
 
 /*____________________
@@ -255,6 +354,9 @@ static void DsiShow(LTShell hShell) {
                   (unsigned)s_config.timing.nHorizontalSyncWidth,
                   (unsigned)s_config.timing.nHorizontalBackPorch,
                   (unsigned)s_config.timing.nHorizontalFrontPorch);
+    iShell->Print(hShell, "  view: width %u of stride %u, offset %u%s\n",
+                  (unsigned)ViewWidth(), (unsigned)s_config.timing.nHorizontalActive, (unsigned)ViewOffset(),
+                  s_viewOffset == kAutoOffset ? " (stride - width)" : "");
     iShell->Print(hShell, "  v %u act %u sync %u bp %u fp  %u Hz\n",
                   (unsigned)s_config.timing.nVerticalActive,
                   (unsigned)s_config.timing.nVerticalSyncWidth,
@@ -302,6 +404,318 @@ static void DsiRegisters(LTShell hShell) {
     s_pDsi->API->DumpRegisters(s_pDsi, DsiRegisterProc, (void *)(LT_SIZE)hShell);
 }
 
+/*____________________
+_/ the Waveshare ESP32-P4-WIFI6-Touch-LCD-5 panel */
+/*
+ * That board carries a Himax HX8394 720x1280 panel on two lanes, which answers a DCS
+ * read of 0x04 with 83 94 0f.  Everything below is the board's own: the geometry and
+ * link rate are the Waveshare BSP's (esp32_p4_wifi6_touch_lcd_5: HX8394_720_1280 timing,
+ * 700Mbps per lane, RGB565), and the register table is the esp_lcd_hx8394 driver's
+ * default init, command for command and in the same order.  Source:
+ *
+ *   https://github.com/waveshareteam/Waveshare-ESP32-components
+ *       bsp/esp32_p4_wifi6_touch_lcd_5, display/lcd/esp_lcd_hx8394
+ *
+ * The shell cannot type this table in: a DCS write is capped at kMaxPacketBytes and
+ * the gamma registers are 58 bytes, so it is built in.  What the shell does not do is
+ * the board's own wiring - the backlight is GPIO 26 and the panel reset is GPIO 27,
+ * active high, and both are driven with the gpio command.
+ */
+static const u8 s_hx8394Params0[] = { 0xff, 0x83, 0x94 };
+static const u8 s_hx8394Params1[] = { 0x48, 0x0a, 0x6a, 0x09, 0x33, 0x54, 0x71, 0x71, 0x2e, 0x45 };
+static const u8 s_hx8394Params2[] = { 0x61, 0x03, 0x68, 0x6b, 0xb2, 0xc0 };
+static const u8 s_hx8394Params3[] = { 0x00, 0x80, 0x64, 0x0c, 0x06, 0x2f };
+static const u8 s_hx8394Params4[] = { 0x1c, 0x78, 0x1c, 0x78, 0x1c, 0x78, 0x01, 0x0c, 0x86, 0x75, 0x00, 0x3f, 0x1c, 0x78, 0x1c, 0x78, 0x1c, 0x78, 0x01, 0x0c, 0x86 };
+static const u8 s_hx8394Params5[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x08, 0x32, 0x10, 0x05, 0x00, 0x05, 0x32, 0x13, 0xc1, 0x00, 0x01, 0x32, 0x10, 0x08, 0x00, 0x00, 0x37, 0x03, 0x07, 0x07, 0x37, 0x05, 0x05, 0x37, 0x0c, 0x40 };
+static const u8 s_hx8394Params6[] = { 0x18, 0x18, 0x18, 0x18, 0x22, 0x23, 0x20, 0x21, 0x04, 0x05, 0x06, 0x07, 0x00, 0x01, 0x02, 0x03, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x19, 0x19, 0x19, 0x19 };
+static const u8 s_hx8394Params7[] = { 0x18, 0x18, 0x19, 0x19, 0x21, 0x20, 0x23, 0x22, 0x03, 0x02, 0x01, 0x00, 0x07, 0x06, 0x05, 0x04, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x19, 0x19, 0x18, 0x18 };
+static const u8 s_hx8394Params8[] = { 0x07, 0x08, 0x09, 0x0d, 0x10, 0x14, 0x16, 0x13, 0x24, 0x36, 0x48, 0x4a, 0x58, 0x6f, 0x76, 0x80, 0x97, 0xa5, 0xa8, 0xb5, 0xc6, 0x62, 0x63, 0x68, 0x6f, 0x72, 0x78, 0x7f, 0x7f, 0x00, 0x02, 0x08, 0x0d, 0x0c, 0x0e, 0x0f, 0x10, 0x24, 0x36, 0x48, 0x4a, 0x58, 0x6f, 0x78, 0x82, 0x99, 0xa4, 0xa0, 0xb1, 0xc0, 0x5e, 0x5e, 0x64, 0x6b, 0x6c, 0x73, 0x7f, 0x7f };
+static const u8 s_hx8394Params9[] = { 0x0b };
+static const u8 s_hx8394Params10[] = { 0x1f, 0x73 };
+static const u8 s_hx8394Params11[] = { 0x6b, 0x6b };
+static const u8 s_hx8394Params12[] = { 0x02 };
+static const u8 s_hx8394Params13[] = { 0x01 };
+static const u8 s_hx8394Params14[] = { 0x00 };
+static const u8 s_hx8394Params15[] = { 0x00 };
+static const u8 s_hx8394Params16[] = { 0x40, 0x81, 0x50, 0x00, 0x1a, 0xfc, 0x01 };
+static const u8 s_hx8394Params17[] = { 0x50 };
+static const u8 s_hx8394Params19[] = { 0x00, 0x80, 0x64, 0x0c, 0x06, 0x2f, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x18 };
+
+static const struct { u8 nCommand; u8 nParams; u16 nDelayMs; const u8 * pParams; } s_hx8394Init[] = {
+    { 0xb9,  3,   0, s_hx8394Params0 },
+    { 0xb1, 10,   0, s_hx8394Params1 },
+    { 0xba,  6,   0, s_hx8394Params2 },
+    { 0xb2,  6,   0, s_hx8394Params3 },
+    { 0xb4, 21,   0, s_hx8394Params4 },
+    { 0xd3, 33,   0, s_hx8394Params5 },
+    { 0xd5, 44,   0, s_hx8394Params6 },
+    { 0xd6, 44,   0, s_hx8394Params7 },
+    { 0xe0, 58,   0, s_hx8394Params8 },
+    { 0xcc,  1,   0, s_hx8394Params9 },
+    { 0xc0,  2,   0, s_hx8394Params10 },
+    { 0xb6,  2,   0, s_hx8394Params11 },
+    { 0xd4,  1,   0, s_hx8394Params12 },
+    { 0xbd,  1,   0, s_hx8394Params13 },
+    { 0xb1,  1,   0, s_hx8394Params14 },
+    { 0xbd,  1,   0, s_hx8394Params15 },
+    { 0xbf,  7,   0, s_hx8394Params16 },
+    { 0x3a,  1,   0, s_hx8394Params17 },
+    { 0x11,  0, 200, NULL },
+    { 0xb2, 12,   0, s_hx8394Params19 },
+    { 0x29,  0,  80, NULL },
+};
+
+/* The driver's own steps ahead of the table: sleep out, then the colour order, the
+   pixel format and the lane count, each with the values the BSP gives it */
+static bool DsiPanelHx8394(LTShell hShell) {
+    ILTShell * iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
+    LTOThread * pThread = LT_GetCore()->GetCurrentThreadObject();
+    const u8 nLaneCommand = (s_config.nDataLanes == 1) ? 0x60 : 0x61;
+    const u8 nMadctl      = 0x00;      /* RGB order */
+    const u8 nColmod      = 0x55;      /* RGB565 */
+
+    if (! s_pDsi->API->DcsWrite(s_pDsi, 0x11, NULL, 0)) goto fail;
+    pThread->API->Sleep(LTTime_Milliseconds(120));
+    if (! s_pDsi->API->DcsWrite(s_pDsi, 0x36, &nMadctl, 1))      goto fail;
+    if (! s_pDsi->API->DcsWrite(s_pDsi, 0x3a, &nColmod, 1))      goto fail;
+    if (! s_pDsi->API->DcsWrite(s_pDsi, 0xba, &nLaneCommand, 1)) goto fail;
+
+    for (u32 i = 0; i < sizeof(s_hx8394Init) / sizeof(s_hx8394Init[0]); ++i) {
+        if (! s_pDsi->API->DcsWrite(s_pDsi, s_hx8394Init[i].nCommand, s_hx8394Init[i].pParams, s_hx8394Init[i].nParams)) {
+            iShell->Print(hShell, "DcsWrite of 0x%02x failed (table entry %u)\n", (unsigned)s_hx8394Init[i].nCommand, (unsigned)i);
+            return false;
+        }
+        if (s_hx8394Init[i].nDelayMs) pThread->API->Sleep(LTTime_Milliseconds(s_hx8394Init[i].nDelayMs));
+    }
+    return true;
+
+fail:
+    iShell->PutString(hShell, "DcsWrite failed ahead of the table\n");
+    return false;
+}
+
+/* Replace the working config with the HX8394 panel's.  The pixel clock is held to 40MHz
+   (about 30 fps over 800x1318 total pixels) because higher rates overflow the DSI transmit
+   FIFO while the frame is read from PSRAM. */
+static void SetHx8394Config(LTDeviceMipiDsi_Config * pConfig) {
+    lt_memset(pConfig, 0, sizeof(*pConfig));
+    pConfig->mode             = kLTDeviceMipiDsi_Mode_VideoBurst;
+    pConfig->pixelFormat      = kLTDeviceMipiDsi_PixelFormat_RGB565;
+    pConfig->nDataLanes       = 2;
+    pConfig->nVirtualChannel  = 0;
+    pConfig->nLaneRateMbps    = 700;
+    pConfig->bContinuousClock = true;
+    pConfig->bEnableEotPacket = false;
+
+    pConfig->timing.nHorizontalActive     = 720;
+    pConfig->timing.nHorizontalSyncWidth  = 20;
+    pConfig->timing.nHorizontalBackPorch  = 20;
+    pConfig->timing.nHorizontalFrontPorch = 40;
+    pConfig->timing.nVerticalActive       = 1280;
+    pConfig->timing.nVerticalSyncWidth    = 4;
+    pConfig->timing.nVerticalBackPorch    = 10;
+    pConfig->timing.nVerticalFrontPorch   = 24;
+    pConfig->timing.nFrameRateHz          = 40;
+}
+
+/*____________________
+_/ the Startek KD020HVOIN002-C002B module on the Waveshare ESP32-P4-Nano */
+/*
+ * A 2.06 inch AMOLED, 410x502, driven by a Chipone CO5300.  The module's connector
+ * (spec, pin assignment) brings out ONE data lane and the clock, so this is a
+ * one-lane link; the CO5300 allows 500Mbps on one lane.  The reset (active low) and
+ * the FMARK output are wired to GPIO 32 and 33 by the board, and the shell drives
+ * the reset with the gpio command - there is no backlight to switch.
+ *
+ * The init order and values were found to light a CO5300 on this board (a 466x466
+ * module, by another session): software reset, RGB565, a few vendor page registers
+ * (FEh pages 20h and 80h), C2h = 0Bh for video mode, TE on, brightness, the address
+ * window, sleep out, and display on a second later.  The vendor page writes are not
+ * in the datasheet.  Only the address window is this module's own: 410 columns
+ * starting at column 22 (0x16..0x1af) and 502 rows.  The column start is the offset
+ * this panel size is known to need, but has not been confirmed on this module.
+ */
+static const u8 s_co5300P0[]  = { 0x00 };
+static const u8 s_co5300P1[]  = { 0x55 };
+static const u8 s_co5300P2[]  = { 0x20 };
+static const u8 s_co5300P3[]  = { 0x5a };
+static const u8 s_co5300P4[]  = { 0x59 };
+static const u8 s_co5300P5[]  = { 0x80 };
+static const u8 s_co5300P6[]  = { 0x0b };
+static const u8 s_co5300P7[]  = { 0xff };
+static const u8 s_co5300P8[]  = { 0xab };
+static const u8 s_co5300P24[] = { 0x77 };
+
+static const struct { u8 nCommand; u8 nParams; u16 nDelayMs; const u8 * pParams; } s_co5300Init[] = {
+    { 0x01,  0,  100, NULL },                          /* software reset */
+    { 0x36,  1,    0, s_co5300P0 },                    /* RGB order, no flip */
+    { 0x3a,  1,    0, s_co5300P1 },                    /* 16 bits per pixel */
+    { 0xfe,  1,    0, s_co5300P2 },
+    { 0xf4,  1,    0, s_co5300P3 },
+    { 0xf5,  1,    0, s_co5300P4 },
+    { 0xfe,  1,    0, s_co5300P5 },
+    { 0x03,  1,    0, s_co5300P0 },
+    { 0xfe,  1,    0, s_co5300P0 },                    /* back to the user page */
+    { 0xc2,  1,    0, s_co5300P6 },                    /* video mode */
+    { 0x35,  1,    0, s_co5300P0 },                    /* TE on */
+    { 0x53,  1,    0, s_co5300P2 },                    /* brightness control on */
+    { 0x51,  1,    0, s_co5300P7 },
+    { 0x63,  1,    0, s_co5300P8 },                    /* HBM brightness */
+    { 0x11,  0,  100, NULL },                          /* sleep out */
+    { 0x29,  0,   80, NULL },                          /* display on */
+};
+
+static bool DsiPanelCo5300(LTShell hShell, bool b24Bit) {
+    ILTShell * iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
+    LTOThread * pThread = LT_GetCore()->GetCurrentThreadObject();
+
+    for (u32 i = 0; i < sizeof(s_co5300Init) / sizeof(s_co5300Init[0]); ++i) {
+        const u8 * pParams = s_co5300Init[i].pParams;
+        if (b24Bit && s_co5300Init[i].nCommand == 0x3a) pParams = s_co5300P24;   /* 24 bits per pixel */
+        if (! s_pDsi->API->DcsWrite(s_pDsi, s_co5300Init[i].nCommand, pParams, s_co5300Init[i].nParams)) {
+            iShell->Print(hShell, "DcsWrite of 0x%02x failed (table entry %u)\n", (unsigned)s_co5300Init[i].nCommand, (unsigned)i);
+            return false;
+        }
+        if (s_co5300Init[i].nDelayMs) pThread->API->Sleep(LTTime_Milliseconds(s_co5300Init[i].nDelayMs));
+    }
+    return true;
+}
+
+static void SetCo5300Config(LTDeviceMipiDsi_Config * pConfig) {
+    lt_memset(pConfig, 0, sizeof(*pConfig));
+    pConfig->mode             = kLTDeviceMipiDsi_Mode_VideoSyncPulse;
+    pConfig->pixelFormat      = kLTDeviceMipiDsi_PixelFormat_RGB565;
+    pConfig->nDataLanes       = 1;
+    pConfig->nVirtualChannel  = 0;
+    pConfig->nLaneRateMbps    = 490;
+    pConfig->bContinuousClock = false;
+    pConfig->bEnableEotPacket = true;
+
+    /* The panel takes two host pixels for each of its own, so its 410 columns are 820 host
+       pixels wide.  Its window starts about 52 pixels before the first pixel of a line, so the
+       stride is 820 + 52 = 872 and the framebuffer view (width 820, offset 52) puts (0,0) at
+       the left edge of the display.  The porches are short so the pixel clock stays on the
+       divider-6 step (26.67MHz): a longer line moves it to the 32MHz step, which a 490Mbps
+       lane cannot carry. */
+    pConfig->timing.nHorizontalActive     = 872;
+    pConfig->timing.nHorizontalSyncWidth  = 4;
+    pConfig->timing.nHorizontalBackPorch  = 40;
+    pConfig->timing.nHorizontalFrontPorch = 40;
+    /* The panel's video path shows 480 lines, not the 502 of the glass; a back porch of 18
+       centres them. */
+    pConfig->timing.nVerticalActive       = 480;
+    pConfig->timing.nVerticalSyncWidth    = 4;
+    pConfig->timing.nVerticalBackPorch    = 18;
+    pConfig->timing.nVerticalFrontPorch   = 18;
+    pConfig->timing.nFrameRateHz          = 50;
+}
+
+/* The CO5300 datasheet (page 8) caps the bit rate by pixel format: 500Mbps with 24-bit
+   pixels, 360 with 18-bit and 320 with 16-bit.  This variant sends 24-bit pixels (use
+   "dsi panel co5300 888" to match) with a 410 pixel line.  It is a starting point and does
+   not display correctly yet. */
+static void SetCo5300Rgb888Config(LTDeviceMipiDsi_Config * pConfig) {
+    SetCo5300Config(pConfig);
+    pConfig->pixelFormat                   = kLTDeviceMipiDsi_PixelFormat_RGB888;
+    pConfig->timing.nHorizontalActive      = 410;
+    pConfig->timing.nHorizontalBackPorch   = 50;
+    pConfig->timing.nHorizontalFrontPorch  = 60;
+    pConfig->timing.nFrameRateHz           = 60;
+}
+
+
+/* ---- dsi te: where the panel's frame pulses fall in the host's frame --------------------
+   The CO5300 drives its tearing-effect output (FMARK, GPIO 33) once per panel frame once
+   0x35 has been sent.  This watches that pad and, at each rising edge, reads the DMA's
+   source address, which says how far through the framebuffer the host has read.  The
+   same fraction of the frame at every edge means the two frames run in step; the value
+   itself says how far apart they are.  Diagnostic only; the register dump adds a few
+   tens of microseconds between the edge and the sample. */
+typedef struct { u32 nSourceAddress; bool bFound; } TeSample;
+
+static void TeRegisterProc(const char * pName, u32 nAddress, u32 nValue, void * pClientData) {
+    LT_UNUSED(nAddress);
+    TeSample * pSample = (TeSample *)pClientData;
+    if (0 == lt_strcmp(pName, "GDMA_CH0_SAR0")) { pSample->nSourceAddress = nValue; pSample->bFound = true; }
+}
+
+static LTDeviceGpio * s_pTeGpio = NULL;
+
+/* The edge samples, kept out of the shell's 320 byte callback stack.  Only one "dsi te" may
+   use them at a time. */
+enum { kTeMaxEdges = 24 };
+static struct {
+    s64  nRiseNs[kTeMaxEdges];
+    s64  nFallNs[kTeMaxEdges];
+    u32  nSar[kTeMaxEdges];
+    bool bBusy;
+} s_te;
+
+static int DsiTe(LTShell hShell, int argc, const char ** argv) {
+    ILTShell * iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
+    enum { kPad = 33, kMaxEdges = kTeMaxEdges };
+    u32 nMillis = 400;
+    if (argc > 2 && ! ParseU32(argv[2], &nMillis)) { iShell->PutString(hShell, "usage: dsi te [milliseconds]\n"); return -1; }
+    if (s_pFrameBuffer == NULL || ! s_pDsi->API->IsVideoActive(s_pDsi)) {
+        iShell->PutString(hShell, "video must be running with a framebuffer\n");
+        return -1;
+    }
+    if (s_pTeGpio == NULL) s_pTeGpio = lt_createdeviceobject(LTDeviceGpio);
+    if (s_pTeGpio == NULL) { iShell->PutString(hShell, "no LTDeviceGpio on this platform\n"); return -1; }
+    s_pTeGpio->API->SetGpioModeFromIndex(s_pTeGpio, kPad, kLTDeviceGpio_ModeType_Input);
+
+    if (s_te.bBusy) { iShell->PutString(hShell, "another dsi te is running\n"); return -1; }
+    s_te.bBusy = true;
+
+    LTCore * pCore = LT_GetCore();
+    s64 * nRiseNs = s_te.nRiseNs, * nFallNs = s_te.nFallNs;
+    u32 * nSar    = s_te.nSar;
+    u32 nRises = 0, nFalls = 0;
+    bool bPrev = s_pTeGpio->API->GetInputValue(s_pTeGpio, kPad);
+    bool bStartLevel = bPrev;
+    s64 nStart = pCore->GetKernelTime().nNanoseconds;
+    s64 nEnd   = nStart + (s64)nMillis * 1000000;
+    while (pCore->GetKernelTime().nNanoseconds < nEnd) {
+        bool bNow = s_pTeGpio->API->GetInputValue(s_pTeGpio, kPad);
+        if (bNow == bPrev) continue;
+        s64 nWhen = pCore->GetKernelTime().nNanoseconds;
+        if (bNow && nRises < kMaxEdges) {
+            TeSample sample = { 0, false };
+            s_pDsi->API->DumpRegisters(s_pDsi, TeRegisterProc, &sample);
+            nRiseNs[nRises] = nWhen;
+            nSar[nRises]    = sample.bFound ? sample.nSourceAddress : 0;
+            ++nRises;
+        } else if (! bNow && nFalls < kMaxEdges) {
+            nFallNs[nFalls++] = nWhen;
+        }
+        bPrev = bNow;
+    }
+    iShell->Print(hShell, "TE pad %u: start level %u, %u rising and %u falling edges in %u ms\n",
+                  (unsigned)kPad, (unsigned)bStartLevel, (unsigned)nRises, (unsigned)nFalls, (unsigned)nMillis);
+    if (nRises < 2) {
+        iShell->PutString(hShell, "no TE pulses seen; is the TE output on (0x35) and the pad wired?\n");
+        s_te.bBusy = false;
+        return 0;
+    }
+    u32 nBase = (u32)(LT_SIZE)s_pFrameBuffer;
+    u64 nPeriodSum = 0, nPhaseSum = 0;
+    for (u32 i = 0; i < nRises; ++i) {
+        u32 nOffset = (nSar[i] - nBase) % s_nFrameBufferBytes;
+        u32 nPhasePermille = (u32)(((u64)nOffset * 1000) / s_nFrameBufferBytes);
+        s64 nPeriodUs = (i > 0) ? (nRiseNs[i] - nRiseNs[i - 1]) / 1000 : 0;
+        s64 nWidthUs = -1;
+        for (u32 j = 0; j < nFalls; ++j) if (nFallNs[j] > nRiseNs[i]) { nWidthUs = (nFallNs[j] - nRiseNs[i]) / 1000; break; }
+        iShell->Print(hShell, "  edge %2u  period %6d us  width %6d us  host read position %3u.%u%% of frame\n",
+                      (unsigned)i, (int)nPeriodUs, (int)nWidthUs, (unsigned)(nPhasePermille / 10), (unsigned)(nPhasePermille % 10));
+        if (i > 0) nPeriodSum += (u64)nPeriodUs;
+        nPhaseSum += nPhasePermille;
+    }
+    iShell->Print(hShell, "mean period %u us, mean host position %u.%u%%\n",
+                  (unsigned)(nPeriodSum / (nRises - 1)), (unsigned)(nPhaseSum / nRises / 10), (unsigned)((nPhaseSum / nRises) % 10));
+    s_te.bBusy = false;
+    return 0;
+}
+
 static int DsiConfig(LTShell hShell, int argc, const char ** argv) {
     ILTShell * iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
     u32 nValue = 0;
@@ -310,11 +724,58 @@ static int DsiConfig(LTShell hShell, int argc, const char ** argv) {
 
     if (0 == lt_strcmp(argv[2], "reset")) {
         SetDefaultConfig(&s_config);
+        s_viewWidth = 0; s_viewOffset = kAutoOffset;
         iShell->PutString(hShell, "working config reset to the default panel\n");
         return 0;
     }
 
     if (argc < 4) { ShellHelpDsi(hShell, argc, argv); return -1; }
+
+    if (0 == lt_strcmp(argv[2], "preset")) {
+        if (0 == lt_strcmp(argv[3], "hx8394")) {
+            SetHx8394Config(&s_config);
+            s_viewWidth = 0; s_viewOffset = kAutoOffset;
+            iShell->PutString(hShell, "working config set to the Waveshare ESP32-P4-WIFI6-Touch-LCD-5 panel (HX8394, 720x1280, 2 lanes, 700Mbps)\n");
+            return 0;
+        }
+        if (0 == lt_strcmp(argv[3], "co5300")) {
+            SetCo5300Config(&s_config);
+            /* The panel shows an 820 pixel window onto each line (see SetCo5300Config); the offset
+               is stride - width = 52, which is where the window starts. */
+            s_viewWidth = 820; s_viewOffset = kAutoOffset;
+            iShell->PutString(hShell, "working config set to the Startek KD020HVOIN002-C002B module (CO5300, 410x502 panel in a 872x480 host frame, view 820 wide, 1 lane, 490Mbps)\n");
+            return 0;
+        }
+        if (0 == lt_strcmp(argv[3], "co5300rgb888")) {
+            SetCo5300Rgb888Config(&s_config);
+            s_viewWidth = 0; s_viewOffset = kAutoOffset;
+            iShell->PutString(hShell, "working config set to the Startek module with 24-bit pixels (410x502, 1 lane, 490Mbps); use dsi panel co5300 888\n");
+            return 0;
+        }
+        iShell->Print(hShell, "no such preset: %s\n", argv[3]);
+        return -1;
+    }
+
+    if (0 == lt_strcmp(argv[2], "view")) {
+        /* dsi config view <width> [<offset>|auto]: the logical framebuffer.  The line stride is
+           the active width of the config; width is how much of each line the panel shows;
+           offset is how many pixels before the first pixel of a line the panel's window
+           starts (auto: stride - width).  Takes effect at the next "dsi fb alloc". */
+        u32 nWidth = 0, nOffset = 0;
+        if (! ParseU32(argv[3], &nWidth)) { iShell->Print(hShell, "not a number: %s\n", argv[3]); return -1; }
+        if (nWidth == 0 || nWidth > s_config.timing.nHorizontalActive) {
+            iShell->Print(hShell, "width must be 1..%u (the line stride)\n", (unsigned)s_config.timing.nHorizontalActive);
+            return -1;
+        }
+        if (argc > 4 && 0 != lt_strcmp(argv[4], "auto")) {
+            if (! ParseU32(argv[4], &nOffset)) { iShell->Print(hShell, "not a number: %s\n", argv[4]); return -1; }
+            s_viewOffset = nOffset;
+        } else {
+            s_viewOffset = kAutoOffset;
+        }
+        s_viewWidth = nWidth;
+        return 0;
+    }
 
     if (0 == lt_strcmp(argv[2], "mode")) {
         LTDeviceMipiDsi_Mode mode = ParseMode(argv[3]);
@@ -377,7 +838,10 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
     if (argc < 3) { ShellHelpDsi(hShell, argc, argv); return -1; }
 
     if (0 == lt_strcmp(argv[2], "free")) {
-        FreeFrameBuffer();
+        if (! FreeFrameBuffer()) {
+            iShell->PutString(hShell, "video did not stop; the framebuffer was kept\n");
+            return -1;
+        }
         return 0;
     }
 
@@ -385,9 +849,12 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
         u32 nBytes = FrameBufferBytes(&s_config);
         if (argc > 3 && ! ParseU32(argv[3], &nBytes)) { iShell->Print(hShell, "not a number: %s\n", argv[3]); return -1; }
         if (! AllocFrameBuffer(nBytes)) { iShell->Print(hShell, "cannot allocate %u bytes\n", (unsigned)nBytes); return -1; }
-        iShell->Print(hShell, "%u bytes at %lx\n", (unsigned)s_nFrameBufferBytes, (unsigned long)(LT_SIZE)s_pFrameBuffer);
+        iShell->Print(hShell, "%u bytes at %lx (view %u of stride %u, %u pixels of margin in front)\n",
+                      (unsigned)s_nFrameBufferBytes, (unsigned long)(LT_SIZE)s_pFrameBuffer,
+                      (unsigned)ViewWidth(), (unsigned)s_config.timing.nHorizontalActive, (unsigned)ViewOffset());
         if (! s_pDsi->API->SetFrameBuffer(s_pDsi, s_pFrameBuffer, s_nFrameBufferBytes)) {
             iShell->PutString(hShell, "the device would not take it\n");
+            FreeFrameBuffer();
             return -1;
         }
         return 0;
@@ -397,13 +864,22 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
 
     /* Only the two formats whose pixels are a whole number of bytes are filled
        here; the packed ones would need the bit position of each pixel. */
-    u32 nBitsPerPixel = BitsPerPixel(s_config.pixelFormat);
+    u32 nBitsPerPixel = s_geom.nBitsPerPixel;
     if (nBitsPerPixel != 16 && nBitsPerPixel != 24) {
-        iShell->Print(hShell, "cannot fill a %s framebuffer\n", FormatName(s_config.pixelFormat));
+        iShell->Print(hShell, "cannot fill a %s framebuffer\n", FormatName(s_geom.format));
         return -1;
     }
     u32 nBytesPerPixel = nBitsPerPixel / 8;
     u32 nPixels        = s_nFrameBufferBytes / nBytesPerPixel;
+
+    /* Everything but the plain pixel loops addresses the buffer by the frame's geometry, so
+       refuse those when an allocation of a chosen size does not hold the whole frame. */
+    if (   0 != lt_strcmp(argv[2], "fill") && 0 != lt_strcmp(argv[2], "fillchunked")
+        && 0 != lt_strcmp(argv[2], "touch") && 0 != lt_strcmp(argv[2], "reswap")
+        && (u64)s_geom.nStride * s_geom.nHeight * nBytesPerPixel > s_nFrameBufferBytes) {
+        iShell->PutString(hShell, "the framebuffer is smaller than the frame it was allocated for\n");
+        return -1;
+    }
 
     if (0 == lt_strcmp(argv[2], "fill")) {
         u32 nColour = 0;
@@ -419,14 +895,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
     }
 
     if (0 == lt_strcmp(argv[2], "fillchunked")) {
-        /* Diagnostic only: identical to 'fill', except the CPU write burst is
-           broken into chunks with a sleep between them.  'fill' alone (no
-           SetFrameBuffer call at all) was what isolated the CPU-write-vs-live-
-           GDMA-read PSRAM contention as the underrun's real cause; this lets
-           that same isolated repro be re-run with the write burst spread out,
-           to test whether shortening it gives GDMA's reads room to keep the
-           bridge fed, without touching the driver or the unchunked 'fill' and
-           'animate' paths other callers already rely on. */
+        /* Like 'fill', but the CPU write burst is split into chunks with a sleep between them, to limit contention with the GDMA reads. */
         u32 nColour = 0, nChunkPixels = 0, nSleepMs = 0;
         if (argc < 6
          || ! ParseU32(argv[3], &nColour)
@@ -453,15 +922,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
     }
 
     if (0 == lt_strcmp(argv[2], "touch")) {
-        /* Diagnostic only: repeatedly overwrite just the first <pixels>
-           pixels of the live, already-active buffer, back to back with no
-           sleep between repeats - no SetFrameBuffer, no address change, no
-           chunking.  Used to separate two theories for the underruns that
-           remain after shrinking 'animate' to a dirty-rectangle update: (a)
-           a near-fixed per-write stall regardless of size, vs (b) a real
-           size threshold below which a write is small enough not to matter.
-           Sweeping <pixels> down and watching where the underrun rate drops
-           answers that. */
+        /* Repeatedly overwrites the first <pixels> pixels of the live buffer with no sleep between repeats and no SetFrameBuffer call. */
         u32 nTouchPixels = 0, nRepeats = 0;
         if (argc < 5 || ! ParseU32(argv[3], &nTouchPixels) || ! nTouchPixels
          || ! ParseU32(argv[4], &nRepeats) || ! nRepeats
@@ -484,21 +945,9 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
     }
 
     if (0 == lt_strcmp(argv[2], "swaploop2")) {
-        /* Diagnostic only: per iteration, write a <rows> x <cols> block
-           starting at row <row> into the current ping-pong buffer,
-           SetFrameBuffer it, sleep <delay ms>, repeat <repeats> times - the
-           same loop shape as 'animate', but with a trivial fixed write
-           instead of the moving square, and done as a single native
-           on-device loop (not round-tripped shell commands, which stayed
-           near zero underruns even for the same write sizes - the native
-           loop's tighter pacing is part of what reproduces 'animate's
-           ~1/frame rate).  Varying <row>/<rows>/<cols> is what showed the
-           underrun rate tracks per-row write *width*, not location or
-           scatter shape: ~20-25% at 32 cols, ~94% at 126 cols (matching the
-           dirty-rectangle union-bounding-box width that was in 'animate'
-           before it was narrowed to just the two edges). */
-        u32 nHeight = s_config.timing.nVerticalActive;
-        u32 nWidth  = s_config.timing.nHorizontalActive;
+        /* Per iteration, writes a <rows> x <cols> block at <row> into the current ping-pong buffer, calls SetFrameBuffer, then sleeps <delay ms>; runs natively on the device so the pacing matches 'animate'. */
+        u32 nHeight = s_geom.nHeight;
+        u32 nWidth  = s_geom.nStride;
         if (! s_pDsi->API->IsVideoActive(s_pDsi)) {
             iShell->PutString(hShell, "video is not active\n");
             return -1;
@@ -513,13 +962,9 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
             iShell->PutString(hShell, "usage: dsi fb swaploop2 <row> <rows> <cols> <repeats> <delay ms>\n");
             return -1;
         }
-        if (! s_pAnimationFrameBuffer) {
-            LTMemoryRegion region = LT_GetCore()->GetNamedMemoryRegion("psram");
-            s_pAnimationFrameBuffer = (u8 *)lt_malloc_from_region(region, s_nFrameBufferBytes);
-            if (! s_pAnimationFrameBuffer) {
-                iShell->PutString(hShell, "cannot allocate the second framebuffer\n");
-                return -1;
-            }
+        if (! AnimationBuffer()) {
+            iShell->PutString(hShell, "cannot allocate the second framebuffer\n");
+            return -1;
         }
         LTOThread *pThread = LT_GetCore()->GetCurrentThreadObject();
         for (u32 r = 0; r < nRepeats; ++r) {
@@ -558,13 +1003,19 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
            a clean vertical edge can be checked for being crisp in the
            stored framebuffer memory itself (as opposed to a tearing/timing
            artifact that only shows up on the physical panel). */
-        u32 nWidth = s_config.timing.nHorizontalActive;
+        u32 nWidth  = s_geom.nStride;
+        u32 nHeight = s_geom.nHeight;
         u32 x0 = 0, y0 = 0, nCols = 0, nRows = 0;
         if (argc < 7 || nWidth == 0
          || ! ParseU32(argv[3], &x0) || ! ParseU32(argv[4], &y0)
          || ! ParseU32(argv[5], &nCols) || ! nCols
          || ! ParseU32(argv[6], &nRows) || ! nRows) {
             iShell->PutString(hShell, "usage: dsi fb dumprow <x> <y> <cols> <rows>\n");
+            return -1;
+        }
+        /* The whole rectangle must lie inside the frame; compared by subtraction so no sum can wrap. */
+        if (x0 >= nWidth || nCols > nWidth - x0 || y0 >= nHeight || nRows > nHeight - y0) {
+            iShell->Print(hShell, "the rectangle must lie inside the %ux%u frame\n", (unsigned)nWidth, (unsigned)nHeight);
             return -1;
         }
         for (u32 r = 0; r < nRows; ++r) {
@@ -581,21 +1032,26 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
     }
 
     if (0 == lt_strcmp(argv[2], "bars")) {
-        /* Eight vertical bars, so a panel that scans out at all shows whether
-           the line length and the pixel format agree with what it expected. */
+        /* Eight vertical bars across the visible width of the view (see "dsi config view"),
+           so a panel that scans out at all shows whether the line length, the pixel
+           format and the view agree with what it expected. */
         static const u32 s_barColours16[8] = { 0xffff, 0xffe0, 0x07ff, 0x07e0, 0xf81f, 0xf800, 0x001f, 0x0000 };
         static const u32 s_barColours24[8] = { 0xffffff, 0x00ffff, 0xffff00, 0x00ff00, 0xff00ff, 0x0000ff, 0xff0000, 0x000000 };
-        u32 nWidth = s_config.timing.nHorizontalActive;
-        if (nWidth == 0) { iShell->PutString(hShell, "the working config has no width\n"); return -1; }
-        for (u32 i = 0; i < nPixels; ++i) {
-            u32 nBar    = ((i % nWidth) * 8) / nWidth;
-            u32 nColour = (nBytesPerPixel == 2) ? s_barColours16[nBar] : s_barColours24[nBar];
-            u8 * pPixel = &s_pFrameBuffer[i * nBytesPerPixel];
-            pPixel[0] = (u8)(nColour & 0xff);
-            pPixel[1] = (u8)((nColour >> 8) & 0xff);
-            if (nBytesPerPixel == 3) pPixel[2] = (u8)((nColour >> 16) & 0xff);
+        FbView v = MakeView(s_pFrameBuffer);
+        if (v.nWidth == 0) { iShell->PutString(hShell, "the working config has no width\n"); return -1; }
+        lt_memset(s_pFrameBufferAlloc, 0, s_nMarginBytes + s_nFrameBufferBytes);
+        for (u32 y = 0; y < v.nHeight; ++y) {
+            for (u32 x = 0; x < v.nWidth; ++x) {
+                u32 nBar    = (x * 8) / v.nWidth;
+                u32 nColour = (nBytesPerPixel == 2) ? s_barColours16[nBar] : s_barColours24[nBar];
+                u8 * pPixel = ViewPixel(&v, x, y);
+                pPixel[0] = (u8)(nColour & 0xff);
+                pPixel[1] = (u8)((nColour >> 8) & 0xff);
+                if (nBytesPerPixel == 3) pPixel[2] = (u8)((nColour >> 16) & 0xff);
+            }
         }
-        iShell->Print(hShell, "colour bars over %u pixels\n", (unsigned)nPixels);
+        iShell->Print(hShell, "colour bars over %ux%u (stride %u, offset %u)\n",
+                      (unsigned)v.nWidth, (unsigned)v.nHeight, (unsigned)v.nStride, (unsigned)v.nOffset);
         return 0;
     }
 
@@ -604,21 +1060,56 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
             iShell->PutString(hShell, "the grid currently requires rgb565\n");
             return -1;
         }
-        u32 nWidth  = s_config.timing.nHorizontalActive;
-        u32 nHeight = s_config.timing.nVerticalActive;
-        for (u32 y = 0; y < nHeight; ++y) {
-            for (u32 x = 0; x < nWidth; ++x) {
-                u16 nColour = (x < nWidth / 2) ? 0x4000 : 0x0010;
+        FbView v = MakeView(s_pFrameBuffer);
+        lt_memset(s_pFrameBufferAlloc, 0, s_nMarginBytes + s_nFrameBufferBytes);
+        for (u32 y = 0; y < v.nHeight; ++y) {
+            for (u32 x = 0; x < v.nWidth; ++x) {
+                u16 nColour = (x < v.nWidth / 2) ? 0x4000 : 0x0010;
                 if ((x % 32) == 0) nColour = 0xffff;
                 if ((y % 32) == 0) nColour = 0x8410;
-                if (x + 1 >= nWidth / 2 && x <= nWidth / 2 + 1) nColour = 0xffe0;
-                u32 nPixel = y * nWidth + x;
-                s_pFrameBuffer[nPixel * 2]     = (u8)nColour;
-                s_pFrameBuffer[nPixel * 2 + 1] = (u8)(nColour >> 8);
+                if (x + 1 >= v.nWidth / 2 && x <= v.nWidth / 2 + 1) nColour = 0xffe0;
+                ViewPut16(&v, x, y, nColour);
             }
         }
-        iShell->Print(hShell, "32-pixel grid over %ux%u\n",
-                      (unsigned)nWidth, (unsigned)nHeight);
+        iShell->Print(hShell, "32-pixel grid over %ux%u (stride %u, offset %u)\n",
+                      (unsigned)v.nWidth, (unsigned)v.nHeight, (unsigned)v.nStride, (unsigned)v.nOffset);
+        return 0;
+    }
+
+    if (0 == lt_strcmp(argv[2], "stripes") || 0 == lt_strcmp(argv[2], "hstripes") || 0 == lt_strcmp(argv[2], "grid2")) {
+        /* Test patterns with features thick enough for a low resolution camera, drawn
+           through the view:
+           stripes <n>  - vertical white/black stripes, each n pixels wide
+           hstripes <n> - horizontal white/black stripes, each n lines tall
+           grid2        - 8 pixel wide white lines every 64 pixels, 4 line tall grey lines
+                          every 32 lines, a yellow line down the middle, and a dark red left
+                          half, so the scale and position of the picture can be measured. */
+        if (nBytesPerPixel != 2) { iShell->PutString(hShell, "these patterns require rgb565\n"); return -1; }
+        FbView v = MakeView(s_pFrameBuffer);
+        u32 nSize   = 8;
+        bool bGrid  = (0 == lt_strcmp(argv[2], "grid2"));
+        bool bHoriz = (0 == lt_strcmp(argv[2], "hstripes"));
+        if (! bGrid && (argc < 4 || ! ParseU32(argv[3], &nSize) || nSize == 0)) {
+            iShell->Print(hShell, "usage: dsi fb %s <size>\n", argv[2]);
+            return -1;
+        }
+        lt_memset(s_pFrameBufferAlloc, 0, s_nMarginBytes + s_nFrameBufferBytes);
+        for (u32 y = 0; y < v.nHeight; ++y) {
+            for (u32 x = 0; x < v.nWidth; ++x) {
+                u16 nColour;
+                if (bGrid) {
+                    nColour = (x < v.nWidth / 2) ? 0x4000 : 0x0010;
+                    if ((x % 64) < 8) nColour = 0xffff;
+                    if ((y % 32) < 4) nColour = 0x8410;
+                    if (x + 2 >= v.nWidth / 2 && x <= v.nWidth / 2 + 2) nColour = 0xffe0;
+                } else {
+                    u32 nIndex = bHoriz ? (y / nSize) : (x / nSize);
+                    nColour = (nIndex & 1u) ? 0x0000 : 0xffff;
+                }
+                ViewPut16(&v, x, y, nColour);
+            }
+        }
+        iShell->Print(hShell, "%s over %ux%u\n", argv[2], (unsigned)v.nWidth, (unsigned)v.nHeight);
         return 0;
     }
 
@@ -661,17 +1152,15 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
             return -1;
         }
 
-        u32 nWidth  = s_config.timing.nHorizontalActive;
-        u32 nHeight = s_config.timing.nVerticalActive;
-        if (! s_pAnimationFrameBuffer) {
-            LTMemoryRegion region = LT_GetCore()->GetNamedMemoryRegion("psram");
-            s_pAnimationFrameBuffer = (u8 *)lt_malloc_from_region(region, s_nFrameBufferBytes);
-            if (! s_pAnimationFrameBuffer) {
-                iShell->PutString(hShell, "cannot allocate the second framebuffer\n");
-                return -1;
-            }
+        FbView view0 = MakeView(s_pFrameBuffer);
+        u32 nWidth  = view0.nWidth;
+        u32 nHeight = view0.nHeight;
+        if (! AnimationBuffer()) {
+            iShell->PutString(hShell, "cannot allocate the second framebuffer\n");
+            return -1;
         }
-        u32 nSquare = nWidth / 8;
+        FbView view1 = MakeView(s_pAnimationFrameBuffer);
+        u32 nSquare = ((nWidth < nHeight) ? nWidth : nHeight) / 8;
         u32 nTravel = nWidth - nSquare;
         u32 nPeriod = nTravel ? nTravel * 2 : 1;
         u32 nTop    = (nHeight - nSquare) / 2;
@@ -688,6 +1177,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
         for (u32 nFrame = 0; nFrame < nFrames; ++nFrame) {
             u32 nBuf = nFrame & 1;
             u8 *pDrawBuffer = nBuf ? s_pAnimationFrameBuffer : s_pFrameBuffer;
+            const FbView * pView = nBuf ? &view1 : &view0;
             u32 nPhase = (nFrame * 8) % nPeriod;
             u32 nLeft  = (nPhase <= nTravel) ? nPhase : nPeriod - nPhase;
 
@@ -701,35 +1191,15 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
                          && y >= nTop && y < nTop + nSquare) {
                             nColour = 0xffff;
                         }
-                        u32 nPixel = y * nWidth + x;
-                        pDrawBuffer[nPixel * 2]     = (u8)nColour;
-                        pDrawBuffer[nPixel * 2 + 1] = (u8)(nColour >> 8);
+                        ViewPut16(pView, x, y, nColour);
                     }
                 }
                 bInitialized[nBuf] = true;
             } else {
-                /* Dirty-rectangle update.  The background bars are a pure
-                   function of x and never change once drawn, and the square
-                   only ever occupies rows [nTop, nTop + nSquare) - so the
-                   only pixels that can actually differ from what this
-                   (ping-pong) buffer already holds from its last use are the
-                   edge the square is vacating and the edge it is entering;
-                   the overlap in the middle is already the right colour
-                   either way and does not need touching.
-                   
-                   An earlier version of this wrote the whole union bounding
-                   box of the old and new square (vacated edge + overlap +
-                   entered edge) instead of just the two edges.  That still
-                   cut the write volume by ~100x versus a full-frame redraw
-                   and cut underruns 6-9x (195/200 -> still real, not zero),
-                   but 'dsi fb swaploop2' proved the overlap it was
-                   needlessly rewriting - ~110 cols wide there, not the ~16-32
-                   of the true edges - was most of what was left: dropping
-                   just the overlap (same row band, same cadence, same
-                   repeat count) took the measured rate from ~94% down to
-                   ~20-25%.  So: only the two edge strips, each at most
-                   nSquare wide but typically just the per-frame travel
-                   distance (8px * 2 real frames per buffer, ie ~16px) wide. */
+                /* Dirty-rectangle update.  The background bars never change and the square
+                   only occupies rows [nTop, nTop + nSquare), so only the edge it vacates and
+                   the edge it enters differ from what this buffer already holds.  Writing
+                   less keeps CPU stores from starving the DMA's PSRAM reads. */
                 u32 nPrevLeft = nLastLeft[nBuf];
                 u32 nOldEnd   = nPrevLeft + nSquare;
                 u32 nNewEnd   = nLeft + nSquare;
@@ -749,15 +1219,10 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
                 }
                 for (u32 y = nTop; y < nTop + nSquare; ++y) {
                     for (u32 x = vLo; x < vHi; ++x) {
-                        u16 nColour = s_background[(x * 8) / nWidth];
-                        u32 nPixel  = y * nWidth + x;
-                        pDrawBuffer[nPixel * 2]     = (u8)nColour;
-                        pDrawBuffer[nPixel * 2 + 1] = (u8)(nColour >> 8);
+                        ViewPut16(pView, x, y, s_background[(x * 8) / nWidth]);
                     }
                     for (u32 x = eLo; x < eHi; ++x) {
-                        u32 nPixel = y * nWidth + x;
-                        pDrawBuffer[nPixel * 2]     = 0xff;
-                        pDrawBuffer[nPixel * 2 + 1] = 0xff;
+                        ViewPut16(pView, x, y, 0xffff);
                     }
                 }
             }
@@ -778,12 +1243,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
                 iShell->PutString(hShell, "video start failed during animation\n");
                 return -1;
             }
-            /* Jittering this (40 + (nFrame % 7)) was tried as a diagnostic
-               for a suspected sleep-phase-lock with the bridge's refill
-               cycle - see 'dsi fb swaploop2' and the outstanding-limit
-               comment above.  It made effectively no difference (189 vs 195
-               underruns per 200 frames), ruling that theory out, so this is
-               back to the plain fixed delay. */
+            /* fixed frame delay */
             pThread->API->Sleep(LTTime_Milliseconds(40));
         }
         iShell->PutString(hShell, "animation complete\n");
@@ -858,9 +1318,9 @@ static int SelftestUnconfigured(LTShell hShell) {
     CHECK(s_pDsi->API->GetClockLaneState(s_pDsi) == kLTDeviceMipiDsi_LaneState_Off,    "clock lane is off");
     CHECK(s_pDsi->API->GetDataLaneState(s_pDsi, 0) == kLTDeviceMipiDsi_LaneState_Off,  "data lane 0 is off");
 
-    /* PowerOff and StopVideo return nothing; the test is that they are safe to
+    /* PowerOff returns nothing; the test is that it and StopVideo are safe to
        call against a device that was never brought up. */
-    s_pDsi->API->StopVideo(s_pDsi);
+    CHECK(s_pDsi->API->StopVideo(s_pDsi),                          "StopVideo on an idle device succeeds");
     s_pDsi->API->PowerOff(s_pDsi);
     CHECK(! s_pDsi->API->IsPoweredOn(s_pDsi),                      "PowerOff on an idle device is harmless");
 
@@ -1088,9 +1548,9 @@ static int SelftestVideo(LTShell hShell) {
          LaneStateName(s_pDsi->API->GetClockLaneState(s_pDsi)),
          LaneStateName(s_pDsi->API->GetDataLaneState(s_pDsi, 0)));
 
-    s_pDsi->API->StopVideo(s_pDsi);
+    CHECK(s_pDsi->API->StopVideo(s_pDsi), "StopVideo succeeded");
     CHECK(! s_pDsi->API->IsVideoActive(s_pDsi), "StopVideo ended the stream");
-    s_pDsi->API->StopVideo(s_pDsi);
+    CHECK(s_pDsi->API->StopVideo(s_pDsi), "StopVideo again succeeds");
     CHECK(! s_pDsi->API->IsVideoActive(s_pDsi), "StopVideo again is harmless");
     CHECK(s_pDsi->API->SetFrameBuffer(s_pDsi, s_pFrameBuffer, s_nFrameBufferBytes), "the framebuffer can be set again once stopped");
 
@@ -1235,12 +1695,17 @@ static void ShellHelpDsi(LTShell hShell, int argc, const char ** argv) { LT_UNUS
     iShell->PutString(hShell, "\n");
     iShell->PutString(hShell, "       dsi config                    - print the working config\n");
     iShell->PutString(hShell, "       dsi config reset              - back to the default panel\n");
+    iShell->PutString(hShell, "       dsi config preset hx8394      - the Waveshare ESP32-P4-WIFI6-Touch-LCD-5 panel\n");
+    iShell->PutString(hShell, "       dsi config preset co5300      - the Startek KD020HVOIN002-C002B AMOLED module\n");
+    iShell->PutString(hShell, "       dsi config preset co5300rgb888 - 24-bit pixels; EXPERIMENTAL, gives a broken picture\n");
     iShell->PutString(hShell, "       dsi config mode <syncpulse|syncevent|burst|command>\n");
     iShell->PutString(hShell, "       dsi config format <rgb565|rgb666p|rgb666l|rgb888|yuv422>\n");
     iShell->PutString(hShell, "       dsi config lanes <n>\n");
     iShell->PutString(hShell, "       dsi config vc <n>\n");
     iShell->PutString(hShell, "       dsi config rate <mbps>        - 0 to derive it from the timing\n");
     iShell->PutString(hShell, "       dsi config fps <hz>\n");
+    iShell->PutString(hShell, "       dsi config view <width> [<offset>|auto] - the logical framebuffer: stride is the h active,\n");
+    iShell->PutString(hShell, "                                     width the visible part of a line, offset (default stride-width) pixels in front\n");
     iShell->PutString(hShell, "       dsi config clock <continuous|gated>\n");
     iShell->PutString(hShell, "       dsi config eotp <on|off>\n");
     iShell->PutString(hShell, "       dsi config h <act> <sync> <bp> <fp>\n");
@@ -1259,6 +1724,8 @@ static void ShellHelpDsi(LTShell hShell, int argc, const char ** argv) { LT_UNUS
     iShell->PutString(hShell, "                                     - diagnostic: native write+swap loop at a chosen row band\n");
     iShell->PutString(hShell, "       dsi fb dumprow <x> <y> <cols> <rows>\n");
     iShell->PutString(hShell, "                                     - diagnostic: print rgb565 at a small region\n");
+    iShell->PutString(hShell, "       dsi fb stripes|hstripes <n>   - white/black stripes n pixels wide/tall\n");
+    iShell->PutString(hShell, "       dsi fb grid2                  - thick line grid for a low resolution camera\n");
     iShell->PutString(hShell, "       dsi fb bars                   - eight vertical colour bars\n");
     iShell->PutString(hShell, "       dsi fb grid                   - static 32-pixel mapping grid\n");
     iShell->PutString(hShell, "       dsi fb animate [frames]       - moving square over colour bars\n");
@@ -1269,6 +1736,9 @@ static void ShellHelpDsi(LTShell hShell, int argc, const char ** argv) { LT_UNUS
     iShell->PutString(hShell, "       dsi ulps <enter|exit>\n");
     iShell->PutString(hShell, "       dsi errors [clear]\n");
     iShell->PutString(hShell, "\n");
+    iShell->PutString(hShell, "       dsi panel hx8394              - that panel's init sequence (needs power on)\n");
+    iShell->PutString(hShell, "       dsi panel co5300 [888]        - that module's init sequence (needs power on); 888 = 24-bit pixels\n");
+    iShell->PutString(hShell, "       dsi te [ms]                   - panel TE pulses (GPIO 33) against the host frame position\n");
     iShell->PutString(hShell, "       dsi dcsw <cmd> [param ...]    - DCS write\n");
     iShell->PutString(hShell, "       dsi dcsr <cmd> [count]        - DCS read\n");
     iShell->PutString(hShell, "       dsi genw <byte> [byte ...]    - generic write\n");
@@ -1280,7 +1750,7 @@ static void ShellHelpDsi(LTShell hShell, int argc, const char ** argv) { LT_UNUS
 
 /*____________________
 _/ dsi command proc */
-static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
+static int ShellCommandDsiLocked(LTShell hShell, int argc, const char ** argv) {
     ILTShell * iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
     u32 nValue = 0;
 
@@ -1323,6 +1793,11 @@ static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
         return 0;
     }
 
+    /* "te" takes an optional argument, so it goes ahead of the guard below */
+    if (0 == lt_strcmp(argv[1], "te")) {
+        return DsiTe(hShell, argc, argv);
+    }
+
     /* everything below takes an argument */
     if (argc < 3) { ShellHelpDsi(hShell, argc, argv); return -1; }
 
@@ -1335,7 +1810,7 @@ static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
     }
 
     if (0 == lt_strcmp(argv[1], "video")) {
-        if (0 == lt_strcmp(argv[2], "stop")) { s_pDsi->API->StopVideo(s_pDsi); return 0; }
+        if (0 == lt_strcmp(argv[2], "stop")) { return s_pDsi->API->StopVideo(s_pDsi) ? 0 : -1; }
         if (0 != lt_strcmp(argv[2], "start")) { ShellHelpDsi(hShell, argc, argv); return -1; }
         if (! s_pDsi->API->StartVideo(s_pDsi)) { iShell->PutString(hShell, "StartVideo failed\n"); return -1; }
         iShell->PutString(hShell, "streaming\n");
@@ -1354,6 +1829,18 @@ static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
         bool bOK = bEnter ? s_pDsi->API->EnterUltraLowPowerState(s_pDsi)
                           : s_pDsi->API->ExitUltraLowPowerState(s_pDsi);
         if (! bOK) { iShell->Print(hShell, "the lanes would not %s ULPS\n", bEnter ? "enter" : "leave"); return -1; }
+        return 0;
+    }
+
+    if (0 == lt_strcmp(argv[1], "panel")) {
+        if (argc >= 3 && 0 == lt_strcmp(argv[2], "co5300")) {
+            if (! DsiPanelCo5300(hShell, argc >= 4 && 0 == lt_strcmp(argv[3], "888"))) return -1;
+            iShell->PutString(hShell, "CO5300 init sent\n");
+            return 0;
+        }
+        if (argc < 3 || 0 != lt_strcmp(argv[2], "hx8394")) { ShellHelpDsi(hShell, argc, argv); return -1; }
+        if (! DsiPanelHx8394(hShell)) return -1;
+        iShell->PutString(hShell, "HX8394 init sent\n");
         return 0;
     }
 
@@ -1400,6 +1887,21 @@ static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
     return -1;
 }
 
+/* Commands hold framebuffer pointers across sleeps, and the console and network shells run on
+   separate threads, so only one dsi command runs at a time. */
+static LTAtomic s_nCommandBusy;
+
+static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
+    if (! LTAtomic_CompareAndExchange(&s_nCommandBusy, 0, 1)) {
+        ILTShell * iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
+        iShell->PutString(hShell, "another dsi command is running\n");
+        return -1;
+    }
+    int nResult = ShellCommandDsiLocked(hShell, argc, argv);
+    LTAtomic_Store(&s_nCommandBusy, 0);
+    return nResult;
+}
+
 /*__________________________
 _/ library initialization */
 static bool LTShellDsiImpl_LibInit(void) {
@@ -1428,6 +1930,10 @@ static void LTShellDsiImpl_LibFini(void) {
         s_pDsi->API->NoErrorEvent(s_pDsi, &DsiErrorEventProc);
         lt_destroyobject(s_pDsi);
         s_pDsi = NULL;
+    }
+    if (s_pTeGpio) {
+        lt_destroyobject(s_pTeGpio);
+        s_pTeGpio = NULL;
     }
     FreeFrameBuffer();
 }

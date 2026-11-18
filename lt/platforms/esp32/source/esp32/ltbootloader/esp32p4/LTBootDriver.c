@@ -35,13 +35,22 @@
 #define PLID_GD  7
 #define PLID_GL  8
 
+/* A variant for later silicon raises this from its Makefile.config with
+ * -DLT_BOOT_MAX_CHIP_REVISION=<n>; the p4 variant does not set it and gets 1. */
+#ifndef LT_BOOT_MAX_CHIP_REVISION
+#define LT_BOOT_MAX_CHIP_REVISION 1
+#endif
+
 enum {
     /* Highest silicon revision this bootloader knows about.  Unlike the esp32c3,
      * whose bootloader hard codes revision 0, this part really does have more
      * than one - bootloader_esp32p4.c carries an ECO0 PLL erratum workaround
      * gated on the same value - so the check below accepts any major revision up
-     * to this one rather than demanding an exact match. */
-    kLTBootMaxChipRevision                = 1,                            /**< Chip major revision must not exceed this */
+     * to this one rather than demanding an exact match.  Raising it is a statement
+     * that the revision has been brought up: a part above it makes
+     * LTBootDriver_CheckChipSecurity() fail, and the bootloader then resets,
+     * forever, with the "Bad chip revision" message lost to the reset. */
+    kLTBootMaxChipRevision                = LT_BOOT_MAX_CHIP_REVISION,    /**< Chip major revision must not exceed this */
 
     /* Firmware magic number */
     kLTBootFirmwareMagic                  = ESP_APP_DESC_MAGIC_WORD,      /**< Firmware magic number */
@@ -455,7 +464,24 @@ bool LTBootDriverFlash_GetPartitionTableOffset(u32 * pByteOffsetToSet, bool bGet
     return true;
 }
 
+/* Defined in bootloader_flash.c */
+extern esp_err_t bootloader_flash_read_4byte_addr(uint32_t src_addr, void * dest, size_t size);
+
+/* The cache maps flash with a three byte address, so a part larger than 16MB wraps
+ * silently at this line.  Anything at or above it is read directly instead. */
+enum { kLT24BitAddressLimit = 0x1000000u };
+
 bool LTBootDriverFlash_ReadBytes(u32 nByteOffset, u32 nNumBytes, u8 * pBuff) {
+    /* a read that straddles the line goes in two halves, one each way */
+    if (nByteOffset < kLT24BitAddressLimit && nNumBytes > kLT24BitAddressLimit - nByteOffset) {
+        u32 nLow = kLT24BitAddressLimit - nByteOffset;
+        return LTBootDriverFlash_ReadBytes(nByteOffset, nLow, pBuff)
+            && LTBootDriverFlash_ReadBytes(kLT24BitAddressLimit, nNumBytes - nLow, pBuff + nLow);
+    }
+    if (nByteOffset >= kLT24BitAddressLimit) {
+        return bootloader_flash_read_4byte_addr(nByteOffset, pBuff, nNumBytes) == ESP_OK;
+    }
+
     u8 * pMap = (u8 *)bootloader_mmap(nByteOffset, nNumBytes);
     if (!pMap) return false;
     memcpy(pBuff, pMap, nNumBytes);

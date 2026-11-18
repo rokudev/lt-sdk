@@ -1,0 +1,26 @@
+# Colour bars on the Waveshare ESP32-P4-WIFI6-Touch-LCD-5 (HX8394, 720x1280)
+# Firmware: LT_PLATFORM=p4v3 LT_PRODUCT=shell-dsi.  Type these at the LT> prompt.
+# Run them in one session and do not reset the board afterwards: a reset clears
+# the panel setup and the display goes dark.
+
+ltopen LTShellGpio
+ltopen LTShellDsi
+gpio mode lcd_rst output
+gpio write lcd_rst 0
+gpio mode lcd_bl output
+gpio write lcd_bl 1
+dsi config preset hx8394
+dsi apply
+dsi power on
+gpio write lcd_rst 1
+gpio write lcd_rst 0
+dsi fb alloc
+dsi panel hx8394
+dsi fb bars
+dsi video start
+
+# Optional: check for DSI errors after the video has been running a while.
+sleep 2
+dsi errors clear
+sleep 5
+dsi errors

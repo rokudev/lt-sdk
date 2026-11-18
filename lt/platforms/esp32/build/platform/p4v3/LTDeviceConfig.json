@@ -1,0 +1,63 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+//
+// Minimal device set for the p4v3 variant: the p4 variant's, less its pin map.
+// The flash and watchdog drivers are the P4 specific ones; the other variants'
+// versions are pinned to their own register sets and cannot serve this chip.
+//
+// The "memory" section names the in-package PSRAM so that allocations can ask
+// for it by name.  Region 4 is where the BSP appends it, after the three SRAM
+// regions; if no PSRAM answers at boot the region simply does not exist, and
+// nothing else shifts.
+//
+// Esp32DriverGpio is not chip specific - it is the one GPIO driver for every
+// esp32 variant, and takes its pad count and IO_MUX details from
+// include/esp32p4/Esp32_GPIO.h.  It has a passthru api, so the driver object is
+// the device object and no LTDeviceGpio library is built.
+//
+// The p4 variant names the Waveshare ESP32-P4-Nano's two 2x13 headers, and lists
+// the pads that board commits to its codec, C6 companion, ethernet PHY and
+// microSD slot.  None of that is known to hold for the Waveshare
+// ESP32-P4-WIFI6 Touch LCD, whose pads go to a DSI panel, a touch controller and
+// its own peripherals, so none of it is carried over: naming a pad here invites
+// driving it, and driving the wrong one on this board is not harmless.  Only
+// the BOOT pin is named, and the two display pins.  GPIO35 is the P4's
+// download-mode strapping pin, and the USB-to-UART bridge's DTR line reaches it on
+// this board (that is how rit puts the part into download mode).  GPIO26 and GPIO27
+// are the LCD backlight and the LCD reset, taken from Waveshare's own board support
+// package for this board (esp32_p4_wifi6_touch_lcd_5: BSP_LCD_BACKLIGHT and
+// BSP_LCD_RST, github.com/waveshareteam/Waveshare-ESP32-components), which also
+// has the reset active high and drives the backlight with 5kHz PWM.  Add the others
+// from the board schematic as they are needed.  Every pad the chip has remains
+// reachable by index - the driver refuses none - but nothing here invites it.
+//
+{
+  "config":{
+    "device":[ { "lib": "LTDeviceFlash",    "driver": [ { "lib": "Esp32p4DriverFlash" } ] },
+               { "lib": "LTDeviceWatchdog", "driver": [ { "lib": "Esp32p4DriverWatchdog" } ] }
+             ]
+           },
+
+  "memory": { "regions":[ { "name": "psram", "region": 4 } ] },
+
+  "device": [ { "class": "LTDeviceGpio",
+                  "api": "passthru",
+                 "unit": [ {   "name": "GPIO0", "driver": "Esp32DriverGpio",
+                             "config": { "pins": [ { "name": "boot",     "pin": 35 },   /* BOOT button, active low   */
+                                                   { "name": "lcd_bl",   "pin": 26 },   /* LCD backlight, high = on  */
+                                                   { "name": "lcd_rst",  "pin": 27 }    /* LCD reset, active high    */
+                                                ]
+                                       }
+                           }
+                         ]
+              },
+              { "class" : "LTDeviceMipiDsi",
+                "unit": [ {   "name": "DSI0", "driver": "Esp32p4DriverMipiDsi" } ]
+              }
+            ]
+}

@@ -9,6 +9,7 @@
                         "build":{"libs":[
                                          "LTUtilityByteOps",
                                          "LTShellDsi",
+                                         "LTShellGpio",
                                          "LTSystemSettings"
                                         ]
                         }

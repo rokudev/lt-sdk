@@ -35,12 +35,17 @@
  *     register I2C bus, and the ROM exports no regi2c entry point either, so
  *     both the bus and the PLL bring-up are open-coded here.
  *
- * Scope: the module clock is 20MHz DDR, IDF's default for this part and the
- * only non-experimental choice it offers.  It is also the speed that needs no
- * timing tuning - MSPI_TIMING_PSRAM_NEEDS_TUNING is defined only at 200MHz and
- * above - so the reference-pattern search and its per-core-clock tables are not
- * vendored.  Raising the speed later means adding that tuning pass and changing
- * kPSRAM_ModuleClockMHz; nothing else here is speed dependent.
+ * Speed: LT_PSRAM_SPEED_MHZ, set from a variant's Makefile.config, picks 20, 200
+ * or 250MHz DDR; unset it is 20, which is what every build before the p4v3
+ * variant ran at.  20MHz needs no timing tuning.  200MHz and 250MHz do, and
+ * _Esp32_PSRAM_Tune() below is the pass IDF runs for them
+ * (components/esp_mspi/mspi_timing_tuning, DQS scheme): it writes a reference
+ * pattern at low speed, then finds the DQS sampling phase and the delay lines the
+ * part reads that pattern back cleanly with at full speed.  What changes with
+ * speed besides that - the MPLL frequency, the latency programmed into the die and
+ * the dummy cycles the controller waits - is the table of PSRAM_* macros just
+ * below the ROM declarations; the figures are IDF's own.  The 20MHz row is the
+ * one this file has always used.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
  * If a copy of the MPL was not distributed with this file, you can obtain one at
@@ -115,6 +120,43 @@ enum {
     kRomSpiFlashMode_OpiDtr             = 7,
 };
 
+/* The PSRAM speed and what depends on it, from IDF's esp_psram_impl_ap_hex.c.
+ * PSRAM_RD_CYCLES and PSRAM_WR_CYCLES are the read and write latencies the die is
+ * told to use, in clock cycles, and PSRAM_REGRD_CYCLES the wait for a mode register
+ * read; the controller's dummy fields are twice each, less one, because DDR counts
+ * both edges and the field is "cycles - 1". */
+#ifndef LT_PSRAM_SPEED_MHZ
+#define LT_PSRAM_SPEED_MHZ          20
+#endif
+
+#if   LT_PSRAM_SPEED_MHZ == 250
+#define PSRAM_MPLL_MHZ              500
+#define PSRAM_RD_LATENCY            6       /* MR0 read latency code: 6 * 2 + 6 = 18 cycles */
+#define PSRAM_WR_LATENCY            3
+#define PSRAM_RD_CYCLES             18
+#define PSRAM_WR_CYCLES             9
+#define PSRAM_REGRD_CYCLES          9
+#define PSRAM_NEEDS_TUNING          1
+#elif LT_PSRAM_SPEED_MHZ == 200
+#define PSRAM_MPLL_MHZ              400
+#define PSRAM_RD_LATENCY            4       /* 4 * 2 + 6 = 14 cycles */
+#define PSRAM_WR_LATENCY            1
+#define PSRAM_RD_CYCLES             14
+#define PSRAM_WR_CYCLES             7
+#define PSRAM_REGRD_CYCLES          7
+#define PSRAM_NEEDS_TUNING          1
+#elif LT_PSRAM_SPEED_MHZ == 20
+#define PSRAM_MPLL_MHZ              400
+#define PSRAM_RD_LATENCY            2       /* 2 * 2 + 6 = 10 cycles */
+#define PSRAM_WR_LATENCY            2
+#define PSRAM_RD_CYCLES             10
+#define PSRAM_WR_CYCLES             5
+#define PSRAM_REGRD_CYCLES          10      /* what this file has always used; IDF waits 5 */
+#define PSRAM_NEEDS_TUNING          0
+#else
+#error "LT_PSRAM_SPEED_MHZ must be 20, 200 or 250"
+#endif
+
 /* Hex PSRAM opcodes.  Each is duplicated into both bytes because the part
  * samples the command on both clock edges. */
 enum {
@@ -126,10 +168,11 @@ enum {
     kHexPSRAM_CmdBitLen                 = 16,
     kHexPSRAM_AddrBitLen                = 32,
 
-    /* Read latency 10 and write latency 5, doubled because DDR counts both
+    /* The latencies from the table above, doubled because DDR counts both
      * edges, less one because the hardware field is "cycles - 1". */
-    kHexPSRAM_RdDummyBitLen             = 2 * (10 - 1),
-    kHexPSRAM_WrDummyBitLen             = 2 * (5 - 1),
+    kHexPSRAM_RdDummyBitLen             = 2 * (PSRAM_RD_CYCLES - 1),
+    kHexPSRAM_WrDummyBitLen             = 2 * (PSRAM_WR_CYCLES - 1),
+    kHexPSRAM_RegRdDummyBitLen          = 2 * (PSRAM_REGRD_CYCLES - 1),
 };
 
 /* Mode register addresses, and the fields this driver reads or writes.  Each
@@ -181,14 +224,14 @@ enum {
     kHexPSRAM_Density_512Mbit           = 0x6,
 };
 
-/* The mode register values this driver programs.  Fixed latency at 2, which MR0
- * encodes as 2*2+6 = 10 read cycles, matching kHexPSRAM_RdDummyBitLen, and
- * maximum drive strength.  MR8 asks for the longest burst, linear order, row
+/* The mode register values this driver programs.  Fixed latency, the read and
+ * write latency codes of the speed table above (read code 2 is 2*2+6 = 10 cycles at
+ * 20MHz, matching kHexPSRAM_RdDummyBitLen), and maximum drive strength.  MR8 asks for the longest burst, linear order, row
  * boundary crossing and the full sixteen-bit bus. */
 enum {
     kHexPSRAM_Set_LatencyType_Fixed     = 1,
-    kHexPSRAM_Set_ReadLatency           = 2,
-    kHexPSRAM_Set_WriteLatency          = 2,
+    kHexPSRAM_Set_ReadLatency           = PSRAM_RD_LATENCY,
+    kHexPSRAM_Set_WriteLatency          = PSRAM_WR_LATENCY,
     kHexPSRAM_Set_DriveStrength         = 0,
     kHexPSRAM_Set_BurstLength           = 3,
     kHexPSRAM_Set_BurstType_Linear      = 0,
@@ -216,13 +259,16 @@ enum {
     kCsMask_PSRAM                       = 0x02,
 };
 
-/* Clocking.  The MPLL is the only source that can reach the PSRAM, and IDF
- * fixes it at 400MHz on this part; the module clock is that divided down. */
+/* Clocking.  The MPLL is the only source that can reach the PSRAM, and IDF runs it
+ * at 400MHz, or 500MHz for a 250MHz module clock; the module clock is that divided
+ * down.  Tuning writes its reference pattern at kPSRAM_TuneLowSpeedMHz. */
 enum {
-    kMPLL_FreqMHz                       = 400,
+    kMPLL_FreqMHz                       = PSRAM_MPLL_MHZ,
     kMPLL_XtalFreqMHz                   = 40,
-    kPSRAM_ModuleClockMHz               = 20,
+    kPSRAM_ModuleClockMHz               = LT_PSRAM_SPEED_MHZ,
     kPSRAM_ClockDivider                 = kMPLL_FreqMHz / kPSRAM_ModuleClockMHz,
+    kPSRAM_TuneLowSpeedMHz              = 20,
+    kPSRAM_TuneLowSpeedDivider          = kMPLL_FreqMHz / kPSRAM_TuneLowSpeedMHz,
 
     /* Drive strength for the twenty MSPI pads, matching IDF's
      * mspi_timing_ll_pin_drv_set(2). */
@@ -576,7 +622,7 @@ _Esp32_PSRAM_Transaction(u32 nCmd, u32 nAddr, u32 nDummyBits,
 
 static void ESP32_IRAM_FUNC
 _Esp32_PSRAM_ReadModeRegs(u32 nAddr, u8 * pOut, u32 nBitLen) {
-    _Esp32_PSRAM_Transaction(kHexPSRAM_Cmd_RegRead, nAddr, kHexPSRAM_RdDummyBitLen,
+    _Esp32_PSRAM_Transaction(kHexPSRAM_Cmd_RegRead, nAddr, kHexPSRAM_RegRdDummyBitLen,
                              NULL, 0, pOut, nBitLen);
 }
 
@@ -703,6 +749,188 @@ _Esp32_PSRAM_EnableVariableDummy(void) {
 }
 
 /******************************************************************************
+ * timing tuning
+ *
+ * At 200MHz and above the data comes back from the die at a time that depends on
+ * the board and the part, and the controller has to be told when to sample it.
+ * The knobs are the phase of the DQS strobe the DDR data is clocked against, and a
+ * delay line on every pad.  IDF finds them by experiment (esp_mspi
+ * mspi_timing_tuning, the DQS scheme this part uses) and so does this, the same
+ * way:
+ *
+ *   1. at 20MHz, where every setting works, write a reference pattern to the die;
+ *   2. at full speed, read it back once with each of four DQS phases, and take the
+ *      first phase of the longest run that read it back exactly;
+ *   3. with that phase, read it back a hundred times with each of 31 delay line
+ *      settings, and take the middle of the longest run that never got it wrong;
+ *   4. leave those settings in place.
+ *
+ * It uses the user mode controller and addresses 0x80 to 0xff of the die, which
+ * nothing has used yet.  No setting passing at all is not fatal - IDF carries on
+ * with the first one, and so does this, saying so - but it means the PSRAM will not
+ * be reliable.
+ *****************************************************************************/
+#if PSRAM_NEEDS_TUNING
+
+enum {
+    kTune_RefAddr                       = 0x80,
+    kTune_RefBytes                      = 128,
+    kTune_ChunkBytes                    = 64,       /* what one user mode transaction moves */
+
+    kTune_PhaseCount                    = 4,        /* 67.5, 78.75, 90 and 101.25 degrees */
+    kTune_DelayLineCount                = 31,
+    kTune_DelayLineReads                = 100,
+};
+
+/* IDF's own reference pattern, MSPI_TIMING_TEST_DATA_LEN bytes of it */
+static const u32 s_tuneRef[kTune_RefBytes / 4] LT_ALIGNED(4) = {
+    0x7f786655, 0xa5ff005a, 0x3f3c33aa, 0xa5ff5a00, 0x1f1e9955, 0xa5005aff, 0x0f0fccaa, 0xa55a00ff,
+    0x07876655, 0xffa55a00, 0x03c333aa, 0xff00a55a, 0x01e19955, 0xff005aa5, 0x00f0ccaa, 0xff5a00a5,
+    0x80786655, 0x00a5ff5a, 0xc03c33aa, 0x00a55aff, 0xe01e9355, 0x00ff5aa5, 0xf00fccaa, 0x005affa5,
+    0xf8876655, 0x5aa5ff00, 0xfcc333aa, 0x5affa500, 0xfee19955, 0x5a00a5ff, 0x11f0ccaa, 0x5a00ffa5,
+};
+static u32 s_tuneBuf[kTune_RefBytes / 4] LT_ALIGNED(4);
+
+static void ESP32_IRAM_FUNC
+_Esp32_PSRAM_SetCoreClock(void) {
+    /* The core clock the bus clock dividers divide: enabled, and divided by one */
+    ESP32_REG(HP_CLKRST_PERI_CLK_CTRL00) |= ESP32_REG_MASK(HP_CLKRST_PERI_CLK_CTRL00, PSRAM_CORE_CLK_EN);
+    PSRAM_SET_FIELD(ESP32_REG(HP_CLKRST_PERI_CLK_CTRL00), HP_CLKRST_PERI_CLK_CTRL00, PSRAM_CORE_CLK_DIV_NUM, 0);
+}
+
+static void ESP32_IRAM_FUNC
+_Esp32_PSRAM_SetDqsPhase(u32 nPhase) {
+    PSRAM_SET_FIELD(ESP32_MSPI_PAD_REG(kEsp32_RegisterMSPI_IOMUX_PAD_DQS0), MSPI_IOMUX_DQS, PHASE, nPhase);
+    PSRAM_SET_FIELD(ESP32_MSPI_PAD_REG(kEsp32_RegisterMSPI_IOMUX_PAD_DQS1), MSPI_IOMUX_DQS, PHASE, nPhase);
+}
+
+/* The data delay line goes on every pad but the strobes, clock and chip select
+   included; the strobes take the other one, on both their 90 and 270 degree taps. */
+static void ESP32_IRAM_FUNC
+_Esp32_PSRAM_SetDelayLines(u32 nDataLine, u32 nDqsLine) {
+    for (u32 nAddr = kEsp32_RegisterMSPI_IOMUX_PAD_FIRST;
+         nAddr <= kEsp32_RegisterMSPI_IOMUX_PAD_LAST;
+         nAddr += 4) {
+        if (nAddr == kEsp32_RegisterMSPI_IOMUX_PAD_DQS0 || nAddr == kEsp32_RegisterMSPI_IOMUX_PAD_DQS1) {
+            PSRAM_SET_FIELD(ESP32_MSPI_PAD_REG(nAddr), MSPI_IOMUX_DQS, DELAY90,  nDqsLine);
+            PSRAM_SET_FIELD(ESP32_MSPI_PAD_REG(nAddr), MSPI_IOMUX_DQS, DELAY270, nDqsLine);
+        } else {
+            PSRAM_SET_FIELD(ESP32_MSPI_PAD_REG(nAddr), MSPI_IOMUX_PAD, DLC, nDataLine);
+        }
+    }
+}
+
+/* IDF's table of delay line settings to try, as {data, dqs}: the strobe's line
+   backed off from 15 to 1 with the data's at 0, then both at 0, then the data's
+   line brought up from 1 to 15 with the strobe's at 0 */
+static void ESP32_IRAM_FUNC
+_Esp32_PSRAM_DelayLinePair(u32 nIndex, u32 * pData, u32 * pDqs) {
+    if (nIndex <= 15) { *pData = 0;           *pDqs = 15 - nIndex; }
+    else              { *pData = nIndex - 15; *pDqs = 0; }
+}
+
+static void ESP32_IRAM_FUNC
+_Esp32_PSRAM_TuneWriteReference(void) {
+    for (u32 nOff = 0; nOff < kTune_RefBytes; nOff += kTune_ChunkBytes) {
+        _Esp32_PSRAM_Transaction(kHexPSRAM_Cmd_SyncWrite, kTune_RefAddr + nOff, kHexPSRAM_WrDummyBitLen,
+                                 (u8 *)s_tuneRef + nOff, kTune_ChunkBytes * 8, NULL, 0);
+    }
+}
+
+static bool ESP32_IRAM_FUNC
+_Esp32_PSRAM_TuneReadMatches(void) {
+    for (u32 nIx = 0; nIx < kTune_RefBytes / 4; ++nIx) s_tuneBuf[nIx] = 0;
+    for (u32 nOff = 0; nOff < kTune_RefBytes; nOff += kTune_ChunkBytes) {
+        _Esp32_PSRAM_Transaction(kHexPSRAM_Cmd_SyncRead, kTune_RefAddr + nOff, kHexPSRAM_RdDummyBitLen,
+                                 NULL, 0, (u8 *)s_tuneBuf + nOff, kTune_ChunkBytes * 8);
+    }
+    for (u32 nIx = 0; nIx < kTune_RefBytes / 4; ++nIx) {
+        if (s_tuneBuf[nIx] != s_tuneRef[nIx]) return false;
+    }
+    return true;
+}
+
+/* The longest run of good settings, as its length and the index of its last member */
+static void ESP32_IRAM_FUNC
+_Esp32_PSRAM_LongestRun(const u8 * pGood, u32 nCount, u32 * pLength, u32 * pEnd) {
+    u32 nBest = 0, nBestEnd = 0, nRun = 0;
+    for (u32 nIx = 0; nIx < nCount; ++nIx) {
+        if (pGood[nIx]) {
+            if (++nRun > nBest) { nBest = nRun; nBestEnd = nIx; }
+        } else {
+            nRun = 0;
+        }
+    }
+    *pLength = nBest;
+    *pEnd    = nBestEnd;
+}
+
+static void ESP32_IRAM_FUNC
+_Esp32_PSRAM_Tune(void) {
+    u8  nGood[kTune_DelayLineCount];
+    u32 nLength, nEnd;
+
+    _Esp32_PSRAM_SetCoreClock();
+
+    /* Step 1.  Slow, and every setting back at zero, to leave the reference where
+       the die can be sure to have taken it. */
+    _Esp32_PSRAM_SetBusClock(kPSRAM_TuneLowSpeedDivider);
+    _Esp32_PSRAM_SetDqsPhase(0);
+    _Esp32_PSRAM_SetDelayLines(0, 0);
+    _Esp32_PSRAM_TuneWriteReference();
+
+    /* Back to full speed for the reads, with the variable dummy off so that every
+       read waits the whole latency, as IDF does while tuning. */
+    ESP32_REG(PSRAM_USER_DDR) &= ~(u32)ESP32_REG_MASK(PSRAM_USER_DDR, VAR_DUMMY);
+    _Esp32_PSRAM_SetBusClock(kPSRAM_ClockDivider);
+
+    /* Step 2.  The DQS phase: one read each, the first of the longest passing run. */
+    for (u32 nPhase = 0; nPhase < kTune_PhaseCount; ++nPhase) {
+        _Esp32_PSRAM_SetDqsPhase(nPhase);
+        nGood[nPhase] = _Esp32_PSRAM_TuneReadMatches() ? 1 : 0;
+    }
+    _Esp32_PSRAM_LongestRun(nGood, kTune_PhaseCount, &nLength, &nEnd);
+    u32 nBestPhase = 0;
+    if (nLength == 0) {
+        esp_rom_printf("psram: tuning found no DQS phase that reads back, using phase 0\n");
+    } else {
+        nBestPhase = nEnd - nLength + 1;
+    }
+    _Esp32_PSRAM_SetDqsPhase(nBestPhase);
+
+    /* Step 3.  The delay lines: a hundred reads each, all of which have to be right,
+       and the middle of the longest run of settings that managed it. */
+    for (u32 nIdx = 0; nIdx < kTune_DelayLineCount; ++nIdx) {
+        u32 nData, nDqs;
+        _Esp32_PSRAM_DelayLinePair(nIdx, &nData, &nDqs);
+        _Esp32_PSRAM_SetDelayLines(nData, nDqs);
+
+        u32 nPasses = 0;
+        for (u32 nRead = 0; nRead < kTune_DelayLineReads; ++nRead) {
+            if (_Esp32_PSRAM_TuneReadMatches()) ++nPasses;
+        }
+        nGood[nIdx] = (nPasses == kTune_DelayLineReads) ? 1 : 0;
+    }
+    _Esp32_PSRAM_LongestRun(nGood, kTune_DelayLineCount, &nLength, &nEnd);
+    u32 nBestLine = 0;
+    if (nLength == 0) {
+        esp_rom_printf("psram: tuning found no delay line setting that reads back reliably, using the first\n");
+    } else {
+        nBestLine = nEnd - nLength / 2;
+    }
+
+    /* Step 4 */
+    u32 nBestData, nBestDqs;
+    _Esp32_PSRAM_DelayLinePair(nBestLine, &nBestData, &nBestDqs);
+    _Esp32_PSRAM_SetDelayLines(nBestData, nBestDqs);
+
+    esp_rom_printf("psram: tuned DQS phase %u, delay lines data %u dqs %u (%u of %u settings good)\n",
+                   nBestPhase, nBestData, nBestDqs, nLength, (u32)kTune_DelayLineCount);
+}
+
+#endif /* PSRAM_NEEDS_TUNING */
+
+/******************************************************************************
  * diagnostics
  *
  * Printed with esp_rom_printf rather than the LT log, because this runs inside
@@ -752,9 +980,10 @@ Esp32_PSRAM_Initialize(Esp32_PSRAM_Info * pInfo) {
     _Esp32_PSRAM_InitPads();
     _Esp32_PSRAM_SetCsTiming();
 
-    /* 400MHz MPLL divided by 20 - the module clock this driver runs at, and the
-     * clock the die's mode registers are written at too.  IDF uses one speed
-     * for both, so there is no fast and slow phase to switch between. */
+    /* The MPLL divided down to the module clock this driver runs at, which is also
+     * the clock the die's mode registers are written at: IDF uses one speed for
+     * both.  Timing tuning, where there is any, steps down to 20MHz and back
+     * itself. */
     _Esp32_PSRAM_SetBusClock(kPSRAM_ClockDivider);
     _Esp32_PSRAM_EnableDLL();
 
@@ -777,6 +1006,9 @@ Esp32_PSRAM_Initialize(Esp32_PSRAM_Info * pInfo) {
     _Esp32_PSRAM_PrintInfo();
 
     _Esp32_PSRAM_ConfigCachePhases();
+#if PSRAM_NEEDS_TUNING
+    _Esp32_PSRAM_Tune();
+#endif
     _Esp32_PSRAM_EnableVariableDummy();
 
     /* The window is 64MB wide, so a larger part would be mapped from its start

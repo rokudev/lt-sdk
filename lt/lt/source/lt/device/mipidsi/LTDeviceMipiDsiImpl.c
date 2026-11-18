@@ -47,6 +47,7 @@ typedef_LTObjectImpl(LTDeviceMipiDsi, LTDeviceMipiDsiImpl) {
     LTDeviceMipiDsi_Config  config;
     LTAtomic                pendingErrors;    /* errors seen by the ISR, not yet dispatched */
     LTAtomic                accumulatedErrors;/* errors since the last GetErrors(bClear = true) */
+    LTAtomic                nQueuedNotifies;  /* notify procs queued from the ISR that have not finished running */
     bool                    bConfigured;
     bool                    bPoweredOn;
     bool                    bVideoActive;
@@ -66,6 +67,8 @@ static void LTDeviceMipiDsiImpl_StaticNotifyErrorProc(void *pClientData) LT_ISR_
     LTDeviceMipiDsiImpl *dsi = (LTDeviceMipiDsiImpl *)pClientData;
     u32 errors = LTAtomic_Exchange(&dsi->pendingErrors, 0);
     if (errors) dsi->iEvent->NotifyEvent(dsi->hEvent, errors);
+    /* Last access to the device: the destructor waits for this count, then frees it. */
+    LTAtomic_FetchSubtract(&dsi->nQueuedNotifies, 1);
 }
 
 static void LTDeviceMipiDsiImpl_StaticErrorProc(LTDeviceMipiDsi_Error errors, void *pClientData) LT_ISR_SAFE {
@@ -75,9 +78,11 @@ static void LTDeviceMipiDsiImpl_StaticErrorProc(LTDeviceMipiDsi_Error errors, vo
     LTAtomic_FetchOr(&dsi->accumulatedErrors, (u32)errors);
     /* only the transition from "nothing pending" to "something pending" needs a notification queued */
     if (0 == LTAtomic_FetchOr(&dsi->pendingErrors, (u32)errors)) {
+        LTAtomic_FetchAdd(&dsi->nQueuedNotifies, 1);
         if (!dsi->iEvent->NotifyEventFromISR(&LTDeviceMipiDsiImpl_StaticNotifyErrorProc, pClientData)) {
             // Queueing failed; clear pending so a later error can retry scheduling.
             LTAtomic_Store(&dsi->pendingErrors, 0);
+            LTAtomic_FetchSubtract(&dsi->nQueuedNotifies, 1);
         }
     }
 }
@@ -119,6 +124,17 @@ static void LTDeviceMipiDsiImpl_DestructObject(LTDeviceMipiDsiImpl *dsi) {
         dsi->driver->API->SetErrorProc(dsi->driver, NULL, NULL);
         if (dsi->bVideoActive) dsi->driver->API->StopVideo(dsi->driver);
         if (dsi->bPoweredOn)   dsi->driver->API->PowerOff(dsi->driver);
+    }
+    /* A notify proc queued from the ISR holds this device's address and runs later on another
+       thread, and there is no way to cancel it, so let every queued one finish before the
+       memory goes.  The driver can no longer raise errors: its error proc is cleared and the
+       interrupts are detached by PowerOff. */
+    ILTThread *iThread = lt_getlibraryinterface(ILTThread, LT_GetCore());
+    for (u32 i = 0; LTAtomic_Load(&dsi->nQueuedNotifies) && i < 200; i++) {
+        iThread->Sleep(LTTime_Milliseconds(1));
+    }
+    if (LTAtomic_Load(&dsi->nQueuedNotifies)) {
+        LTLOG_REDALERT("destruct.notify.pending", "queued error notifications did not finish");
     }
     lt_destroyobject(dsi->driver);
     lt_destroyobject(dsi->transferMutex);
@@ -200,6 +216,8 @@ static bool LTDeviceMipiDsiImpl_PowerOn(LTDeviceMipiDsiImpl *dsi) {
 static void LTDeviceMipiDsiImpl_PowerOff(LTDeviceMipiDsiImpl *dsi) {
     if (! dsi->bPoweredOn) return;
     if (dsi->bVideoActive) {
+        /* The supply and clocks go down regardless; the framebuffer is only released by the
+           caller, which sees the failure from StopVideo. */
         dsi->driver->API->StopVideo(dsi->driver);
         dsi->bVideoActive = false;
     }
@@ -243,10 +261,11 @@ static bool LTDeviceMipiDsiImpl_StartVideo(LTDeviceMipiDsiImpl *dsi) {
     return true;
 }
 
-static void LTDeviceMipiDsiImpl_StopVideo(LTDeviceMipiDsiImpl *dsi) {
-    if (! dsi->bVideoActive) return;
-    dsi->driver->API->StopVideo(dsi->driver);
+static bool LTDeviceMipiDsiImpl_StopVideo(LTDeviceMipiDsiImpl *dsi) {
+    if (! dsi->bVideoActive) return true;
+    if (! dsi->driver->API->StopVideo(dsi->driver)) return false;
     dsi->bVideoActive = false;
+    return true;
 }
 
 static bool LTDeviceMipiDsiImpl_IsVideoActive(LTDeviceMipiDsiImpl *dsi) { return dsi->bVideoActive; }

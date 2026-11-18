@@ -213,7 +213,11 @@ include $(LT_PROJECT_RULES_MAKEFILE)
 #
 ESP32_MASTERING_PATH     := $(LT_PROJECT_SOURCE_DIR_BASE)/esp32/mastering
 ESP32_LD_SCRIPT_PATH     := $(LT_PROJECT_SOURCE_DIR)/$(LT_PROJECT_PLATFORM_SUBDIR)/ld/$(SOC_PLATFORM_NAME)
-ESP32_LD_ROM_SCRIPT_PATH := $(ESP32_LD_SCRIPT_PATH)/rom
+# ?= so that a variant whose silicon carries a different ROM can supply that ROM's
+# symbol scripts from its own directory: the p4v3 variant does, because its ROM
+# keeps its code and data at different addresses from the one the shared scripts
+# describe.  Every other variant leaves it unset and gets the line below.
+ESP32_LD_ROM_SCRIPT_PATH ?= $(ESP32_LD_SCRIPT_PATH)/rom
 
 #####################################################################################################
 # esp32 image configuration:

@@ -30,12 +30,18 @@
  * opcode set the bootloader left the MSPI in.  There is therefore no chip
  * command table here; the esp32's FlashChipsCommands.c has no counterpart.
  *
- * The legacy API sends a three byte address and so cannot reach past 16MB.  The
- * esp32s3 driver works around that with hand built four byte address commands;
- * there is nothing of the sort here, because no esp32p4 part carries more than
- * 16MB of in-package flash and the ROM exports no general purpose MSPI
- * transaction driver to build such a command with - esp_rom_opiflash_exec_cmd()
- * is an esp32s3 ROM entry point only.
+ * The legacy API sends a three byte address and so cannot reach past 16MB: on a
+ * larger part it wraps silently, so a request for 0x1200000 lands at 0x200000
+ * and the ROM reports success.  Offsets of 16MB and up therefore go out as
+ * hand built four byte address commands instead (Esp32p4SPIFlash.c, the 4B
+ * helpers), the way the esp32s3 driver does.  The esp32s3 builds them with the
+ * ROM's esp_rom_opiflash_exec_cmd(); that is an esp32s3 ROM entry point only, so
+ * here the transaction is built in the SPI1 registers.
+ *
+ * What this does not do is reach past 16MB through the cache: the cache fetches
+ * with the three byte read command the bootloader configured.  So nothing that
+ * is executed in place, mapped or decrypted can live there; see the layout in
+ * the variant's LTFlashConfig.json.
  *****************************************************************************/
 
 /*****************************************************************************

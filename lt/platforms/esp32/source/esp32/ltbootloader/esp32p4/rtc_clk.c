@@ -41,6 +41,7 @@
 // That is also why raising the CPU clock here cannot disturb the console.
 //
 #include <stdint.h>
+#include "lt/LTTypes.h"
 
 #include "sdkconfig.h"
 #include "esp_attr.h"
@@ -81,10 +82,10 @@
  * approximated: the hardware silently corrects an illegal divider without
  * reflecting it in the register, so the real bus rates become unknowable. */
 typedef struct {
-    uint32_t nCpuMHz;
-    uint32_t nCpuDiv;
-    uint32_t nMemDiv;
-    uint32_t nApbDiv;
+    u32 nCpuMHz;
+    u32 nCpuDiv;
+    u32 nMemDiv;
+    u32 nApbDiv;
 } LTCpllOperatingPoint;
 
 static const LTCpllOperatingPoint s_cpllOperatingPoints[] = {

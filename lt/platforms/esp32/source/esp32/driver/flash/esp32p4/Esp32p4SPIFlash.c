@@ -46,6 +46,42 @@ enum {
     kReadChunkWords         = kReadChunkBytes / 4,
 };
 
+/*
+ * The ROM's legacy read, write and erase routines send a 24 bit address, so on
+ * a part larger than 16MB they silently wrap: a write meant for 0x1200000 lands
+ * at 0x200000 and the ROM reports success (measured on a 32MB part).  Anything
+ * reaching at or above this boundary therefore goes out with the four byte
+ * address command set instead - see the 4B helpers below.
+ */
+enum {
+    k24BitAddressLimit      = 0x1000000u,
+    kFlashPageSize          = 0x100u,
+};
+
+/*
+ * Four byte address opcodes.
+ *
+ * These are the 4B command variants rather than the EN4B mode switch on
+ * purpose.  EN4B puts the whole chip into four byte addressing, including the
+ * path the ROM boots from and the cache fetches instructions through, both of
+ * which are configured for three: a chip left in that mode across a reset would
+ * not boot.  The 4B opcodes carry the wide address in the transaction alone and
+ * leave every other path untouched.
+ */
+enum {
+    kFlashCmd_FastRead4B    = 0x0c,
+    kFlashCmd_PageProgram4B = 0x12,
+    kFlashCmd_EraseSector4B = 0x21,
+    kFlashCmd_EraseBlock4B  = 0xdc,
+};
+
+/* The MSPI data buffer a transaction reads from and writes back into is W0 to
+ * W15, so no single transaction can move more than 64 bytes */
+enum {
+    kMSPI_DataBufferBytes   = 64,
+    kMSPI_DataBufferWords   = kMSPI_DataBufferBytes / 4,
+};
+
 /*******************************************************************************
  * ROM
 *******************************************************************************/
@@ -185,6 +221,176 @@ static bool ESP32_IRAM_FUNC Esp32p4SPIFlash_EnableWrite(void) {
     /* IRAM section end - Code from here on can run from flash */
 
     return (nTimeout != 0);
+}
+
+/*******************************************************************************
+ * Send one single line transaction on SPI1 to the flash
+ *
+ * The esp32s3 driver does this with the ROM's esp_rom_opiflash_exec_cmd(); the
+ * esp32p4 ROM has no such entry point, so the transaction is built in the
+ * registers, the way the second stage bootloader's own
+ * bootloader_flash_execute_command_common() does, which is the one routine in
+ * this tree already known to work on this part.  Only the fields that matter are
+ * touched, because the rest of USER, USER1 and CTRL carry the controller's
+ * timing, and CTRL, USER and USER1 are put back afterwards for the ROM's own
+ * routines, which assume them.
+ *
+ * nMosiBytes and nMisoBytes are at most the 64 byte data buffer.
+ * @note the cache must be disabled before calling this function
+*******************************************************************************/
+static void ESP32_IRAM_FUNC Esp32p4SPIFlash_Cmd(u32 nCmd, u32 nAddr, int nAddrBits, int nDummyBits,
+                                                const u32 * pMosi, u32 nMosiBytes,
+                                                u32 * pMiso, u32 nMisoBytes) {
+    volatile u32 * pW = &ESP32_SPIMEM_REG(1, W0);
+
+    const u32 nOldCtrl   = ESP32_SPIMEM_REG(1, CTRL);
+    const u32 nOldUser   = ESP32_SPIMEM_REG(1, USER);
+    const u32 nOldUser1  = ESP32_SPIMEM_REG(1, USER1);
+    const u32 nOldFctrl  = ESP32_SPIMEM_REG(1, CACHE_FCTRL);
+
+    /* Keep WP high while idle, otherwise a flash in DIO mode leaves it */
+    ESP32_SPIMEM_REG(1, CTRL) = ESP32_REG_MASK(SPIMEM, CTRL_WP);
+
+    /* Without this bit the controller's user mode address is 24 bits wide: a 32 bit
+     * address phase goes out as the low three bytes of ADDR followed by a zero byte,
+     * so (A & 0xffffff) << 8 reaches the flash and the top byte never does.  A
+     * program at 0x1fd0000 landed at 0x1000000 (measured), and the chunks after it
+     * 0x2000 apart.  IDF sets the same bit for a 32 bit address in
+     * spimem_flash_ll_set_addr_bitlen(), and clears it for anything else. */
+    if (nAddrBits == 32) {
+        ESP32_SPIMEM_REG(1, CACHE_FCTRL) = nOldFctrl | ESP32_REG_MASK(SPIMEM, CACHE_FCTRL_USR_ADDR_4BYTE);
+    }
+
+    /* The data buffer keeps whatever the last transaction left in it, and a read
+     * only overwrites the words it fills, so a short read would otherwise pick
+     * up the tail of the one before */
+    if (nMisoBytes > 0) {
+        for (u32 i = 0; i < kMSPI_DataBufferWords; ++i) {
+            pW[i] = 0;
+        }
+    }
+    if (nMosiBytes > 0) {
+        for (u32 i = 0; i < (nMosiBytes + 3) / 4; ++i) {
+            pW[i] = pMosi[i];
+        }
+    }
+
+    /* command phase, eight bits */
+    ESP32_SPIMEM_REG(1, USER2) = (nCmd << ESP32_REG_SHIFT(SPIMEM, USER2_USR_COMMAND_VALUE))
+                               | (7u   << ESP32_REG_SHIFT(SPIMEM, USER2_USR_COMMAND_BITLEN));
+
+    /* address phase */
+    u32 nUser1 = nOldUser1 & ~(ESP32_REG_MASK(SPIMEM, USER1_USR_ADDR_BITLEN)
+                             | ESP32_REG_MASK(SPIMEM, USER1_USR_DUMMY_CYCLELEN));
+    if (nAddrBits > 0) {
+        nUser1 |= ((u32)(nAddrBits - 1) << ESP32_REG_SHIFT(SPIMEM, USER1_USR_ADDR_BITLEN));
+    }
+    ESP32_SPIMEM_REG(1, ADDR) = nAddr;
+
+    /* dummy phase, which only a read has.  The ROM keeps an extra cycle count
+     * per read mode to compensate for the timing it tuned; entry 1 is the one
+     * for a user transaction, and the bootloader adds it the same way */
+    u32 nUser = nOldUser & ~(ESP32_REG_MASK(SPIMEM, USER_USR_MOSI)
+                           | ESP32_REG_MASK(SPIMEM, USER_USR_MISO)
+                           | ESP32_REG_MASK(SPIMEM, USER_USR_DUMMY)
+                           | ESP32_REG_MASK(SPIMEM, USER_USR_ADDR)
+                           | ESP32_REG_MASK(SPIMEM, USER_USR_COMMAND));
+    nUser |= ESP32_REG_MASK(SPIMEM, USER_USR_COMMAND);
+    if (nAddrBits > 0) {
+        nUser |= ESP32_REG_MASK(SPIMEM, USER_USR_ADDR);
+    }
+    if (nMisoBytes > 0) {
+        u32 nTotalDummy = (u32)nDummyBits + rom_spiflash_legacy_data->dummyLenPlus[1];
+        if (nTotalDummy > 0) {
+            nUser  |= ESP32_REG_MASK(SPIMEM, USER_USR_DUMMY);
+            nUser1 |= ((nTotalDummy - 1) << ESP32_REG_SHIFT(SPIMEM, USER1_USR_DUMMY_CYCLELEN));
+        }
+        nUser |= ESP32_REG_MASK(SPIMEM, USER_USR_MISO);
+        ESP32_SPIMEM_REG(1, MISO_DLEN) = (nMisoBytes * 8 - 1) << ESP32_REG_SHIFT(SPIMEM, MISO_DLEN_USR_MISO_DBITLEN);
+    }
+    if (nMosiBytes > 0) {
+        nUser |= ESP32_REG_MASK(SPIMEM, USER_USR_MOSI);
+        ESP32_SPIMEM_REG(1, MOSI_DLEN) = (nMosiBytes * 8 - 1) << ESP32_REG_SHIFT(SPIMEM, MOSI_DLEN_USR_MOSI_DBITLEN);
+    }
+    ESP32_SPIMEM_REG(1, USER1) = nUser1;
+    ESP32_SPIMEM_REG(1, USER)  = nUser;
+
+    /* go, and wait for the bit to clear */
+    ESP32_SPIMEM_REG(1, CMD) = ESP32_REG_MASK(SPIMEM, CMD_USR);
+    while (ESP32_SPIMEM_REG(1, CMD) & ESP32_REG_MASK(SPIMEM, CMD_USR)) {
+    }
+
+    ESP32_SPIMEM_REG(1, CTRL)  = nOldCtrl;
+    ESP32_SPIMEM_REG(1, USER)  = nOldUser;
+    ESP32_SPIMEM_REG(1, USER1) = nOldUser1;
+    ESP32_SPIMEM_REG(1, CACHE_FCTRL) = nOldFctrl;
+
+    if (nMisoBytes > 0) {
+        for (u32 i = 0; i < (nMisoBytes + 3) / 4; ++i) {
+            pMiso[i] = pW[i];
+        }
+    }
+}
+
+/*******************************************************************************
+ * Read with a four byte address
+ * nSize must be no more than the 64 byte MSPI data buffer
+ * @note the cache must be disabled before calling this function
+*******************************************************************************/
+static bool ESP32_IRAM_FUNC Esp32p4SPIFlash_Read4B(u32 nAddr, u32 * pWords, u32 nSize) {
+    if (nSize == 0 || nSize > kMSPI_DataBufferBytes) {
+        return false;
+    }
+
+    /* 0x0c is fast read, which spends eight cycles turning the bus around
+     * before the first data byte */
+    Esp32p4SPIFlash_Cmd(kFlashCmd_FastRead4B, nAddr, 32, 8, NULL, 0, pWords, nSize);
+    return true;
+}
+
+/*******************************************************************************
+ * Program with a four byte address
+ * @note the cache must be disabled before calling this function
+*******************************************************************************/
+static bool ESP32_IRAM_FUNC Esp32p4SPIFlash_Program4B(u32 nAddr, const u32 * pWords, u32 nSize) {
+    const u8 * pBytes = (const u8 *)pWords;
+
+    while (nSize > 0) {
+        /* A page program that runs off the end of a 256 byte page wraps back to
+         * the start of the same page rather than carrying into the next one */
+        u32 nRoom  = kFlashPageSize - (nAddr & (kFlashPageSize - 1));
+        u32 nCount = LT_MIN(nSize, LT_MIN(nRoom, (u32)kMSPI_DataBufferBytes));
+
+        if (!Esp32p4SPIFlash_EnableWrite()) {
+            return false;
+        }
+
+        Esp32p4SPIFlash_Cmd(kFlashCmd_PageProgram4B, nAddr, 32, 0, (const u32 *)pBytes, nCount, NULL, 0);
+
+        if (esp_rom_spiflash_wait_idle(GetChip()) != kEsp32p4SPIFlash_RomResult_OK) {
+            return false;
+        }
+
+        pBytes += nCount;
+        nAddr  += nCount;
+        nSize  -= nCount;
+    }
+
+    return true;
+}
+
+/*******************************************************************************
+ * Erase with a four byte address
+ * @note the cache must be disabled before calling this function
+*******************************************************************************/
+static bool ESP32_IRAM_FUNC Esp32p4SPIFlash_Erase4B(u32 nCmd, u32 nAddr) {
+    if (!Esp32p4SPIFlash_EnableWrite()) {
+        return false;
+    }
+
+    Esp32p4SPIFlash_Cmd(nCmd, nAddr, 32, 0, NULL, 0, NULL, 0);
+
+    return (esp_rom_spiflash_wait_idle(GetChip()) == kEsp32p4SPIFlash_RomResult_OK);
 }
 
 /*******************************************************************************
@@ -335,7 +541,10 @@ bool ESP32_MEM_REGION(IRAM) Esp32p4SPIFlash_EraseBlock(u32 nBlockNumber) {
 
     u32 state = Esp32p4SPIFlashCache_DisableCache();
 
-    bool bSuccess = (esp_rom_spiflash_erase_block(nBlockNumber) == kEsp32p4SPIFlash_RomResult_OK);
+    u32 nAddr = nBlockNumber * GetChip()->blockSize;
+    bool bSuccess = (nAddr >= k24BitAddressLimit)
+                        ? Esp32p4SPIFlash_Erase4B(kFlashCmd_EraseBlock4B, nAddr)
+                        : (esp_rom_spiflash_erase_block(nBlockNumber) == kEsp32p4SPIFlash_RomResult_OK);
 
     Esp32p4SPIFlashCache_EnableCache(state);
 
@@ -364,7 +573,10 @@ bool ESP32_MEM_REGION(IRAM) Esp32p4SPIFlash_EraseSector(u32 nSectorNumber) {
 
     u32 state = Esp32p4SPIFlashCache_DisableCache();
 
-    bool bSuccess = (esp_rom_spiflash_erase_sector(nSectorNumber) == kEsp32p4SPIFlash_RomResult_OK);
+    u32 nAddr = nSectorNumber * GetChip()->sectorSize;
+    bool bSuccess = (nAddr >= k24BitAddressLimit)
+                        ? Esp32p4SPIFlash_Erase4B(kFlashCmd_EraseSector4B, nAddr)
+                        : (esp_rom_spiflash_erase_sector(nSectorNumber) == kEsp32p4SPIFlash_RomResult_OK);
 
     Esp32p4SPIFlashCache_EnableCache(state);
 
@@ -408,9 +620,20 @@ static bool ESP32_IRAM_FUNC Esp32p4SPIFlash_ReadDirect(u32 nAddr, u8 * pBuffer, 
         u32 nAligned = nAddr & ~0x3u;
         u32 nSkip    = nAddr - nAligned;
         u32 nWanted  = LT_MIN(nSize, (u32)kReadChunkBytes - nSkip);
+
+        /* Never let one transaction cross the 16MB line, so that each is wholly
+         * three byte addressed or wholly four */
+        if (nAligned < k24BitAddressLimit && (nAddr + nWanted) > k24BitAddressLimit) {
+            nWanted = k24BitAddressLimit - nAddr;
+        }
+
         u32 nReadLen = (nSkip + nWanted + 3) & ~0x3u;
 
-        bSuccess = (esp_rom_spiflash_read(nAligned, nChunk, (s32)nReadLen) == kEsp32p4SPIFlash_RomResult_OK);
+        if (nAligned >= k24BitAddressLimit) {
+            bSuccess = Esp32p4SPIFlash_Read4B(nAligned, nChunk, nReadLen);
+        } else {
+            bSuccess = (esp_rom_spiflash_read(nAligned, nChunk, (s32)nReadLen) == kEsp32p4SPIFlash_RomResult_OK);
+        }
         if (bSuccess) {
             /* open coded so the copy stays in IRAM - lt_memcpy() is in flash */
             const u8 * pSrc = (const u8 *)nChunk + nSkip;
@@ -493,6 +716,14 @@ bool Esp32p4SPIFlash_Read(u32 nSrcAddr, u8 * pBuffer, u32 nSize, bool bDecrypt) 
             // can't decrypt
             return false;
         }
+        /* The cache fetches with the read command the bootloader configured,
+         * which carries a three byte address, so the mapped path cannot reach
+         * the top of a part larger than 16MB.  Refuse rather than hand back the
+         * contents of the address it would wrap to */
+        if (nSrcAddr + nSize > k24BitAddressLimit) {
+            LTLOG_YELLOWALERT("dec.unreachable", "Cannot decrypt at 0x%lx - beyond the mapped 16MB", LT_Pu32(nSrcAddr));
+            return false;
+        }
         /* only the cached path decrypts */
         return Esp32p4SPIFlash_ReadMapped(nSrcAddr, pBuffer, nSize);
     }
@@ -517,6 +748,8 @@ static bool ESP32_IRAM_FUNC Esp32p4SPIFlash_WriteChunk(u32 nAddr, const u32 * pW
         esp_rom_spiflash_write_encrypted_enable();
         bSuccess = (esp_rom_spiflash_write_encrypted(nAddr, (u32 *)pWords, nSize) == kEsp32p4SPIFlash_RomResult_OK);
         esp_rom_spiflash_write_encrypted_disable();
+    } else if (nAddr >= k24BitAddressLimit) {
+        bSuccess = Esp32p4SPIFlash_Program4B(nAddr, pWords, nSize);
     } else {
         bSuccess = (esp_rom_spiflash_write(nAddr, pWords, (s32)nSize) == kEsp32p4SPIFlash_RomResult_OK);
     }
@@ -540,6 +773,12 @@ static bool Esp32p4SPIFlash_WriteAligned(u32 nAddr, const u8 * pBuffer, u32 nSiz
     while (nSize > 0 && bSuccess) {
         u32 nChunk[kWriteChunkWords];
         u32 nCount = LT_MIN(nSize, (u32)kWriteChunkBytes);
+
+        /* Never let one chunk cross the 16MB line, so that each is wholly three
+         * byte addressed or wholly four */
+        if (nAddr < k24BitAddressLimit && (nAddr + nCount) > k24BitAddressLimit) {
+            nCount = k24BitAddressLimit - nAddr;
+        }
 
         // the source may be in cached flash, so stage it while the cache is up
         lt_memcpy(nChunk, pBuffer, nCount);
@@ -577,6 +816,13 @@ bool Esp32p4SPIFlash_Write(u32 nAddr, const u8 * pBuffer, u32 nSize, bool bEncry
         }
         if ((nAddr & 0x1f) || (nSize & 0xf)) {
             LTLOG_YELLOWALERT("invalid.enc.align", "Encryption data size must be 16-byte aligned and address must be 32-byte aligned");
+            return false;
+        }
+        /* The ROM's encrypted write sends a three byte address and there is no
+         * four byte address form of it to fall back on, since the encryption
+         * happens inside the ROM routine */
+        if (nAddr + nSize > k24BitAddressLimit) {
+            LTLOG_YELLOWALERT("enc.unreachable", "Cannot encrypt at 0x%lx - beyond the addressable 16MB", LT_Pu32(nAddr));
             return false;
         }
         return Esp32p4SPIFlash_WriteAligned(nAddr, pBuffer, nSize, true);
@@ -630,4 +876,6 @@ bool Esp32p4SPIFlash_Write(u32 nAddr, const u8 * pBuffer, u32 nSize, bool bEncry
  *  LOG
  *******************************************************************************
  *  23-Sep-26   claudius    created, from the esp32c3 driver
+ *  03-Nov-26   claudius    four byte address commands for offsets of 16MB and up, from the
+ *                          esp32s3 driver, for parts with more than 16MB of flash
  */

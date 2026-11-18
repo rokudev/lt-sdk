@@ -1,0 +1,25 @@
+/******************************************************************************
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * https://mozilla.org/MPL/2.0/.
+ *
+ * Copyright 2026, Roku, Inc.  All rights reserved.
+ ******************************************************************************/
+// The shell plus the flash unit test, for exercising the flash driver on hardware:
+//
+//   ltrun UnitTestLTDeviceFlash partition=<name>
+//
+// The test erases, writes, reads back and restores every sector of the named
+// partition, and for sectors at or above 16MB also checks that the sector 16MB
+// below was not touched.  Pick a partition whose contents you can lose if a run
+// fails.
+{"config":{"product":{"genesis":{ "lib":  "LTSystemShell" },
+                        "build":{"libs":[
+                                         "LTUtilityByteOps",
+                                         "LTSystemSettings",
+                                         "Tilt",
+                                         "TiltEngine",
+                                         "UnitTestLTDeviceFlash"
+                                        ]
+                        }
+}         }          }
