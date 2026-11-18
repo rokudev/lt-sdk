@@ -371,21 +371,6 @@ static u64 Esp32p4DriverMipiDsi_FramePixels(const LTDeviceMipiDsi_Timing *pTimin
     return nHorizontalTotal * nVerticalTotal;
 }
 
-/*
- * The lane rate the link needs to carry a given frame geometry, in Mbps.
- *
- * The porches count: in the non-burst modes the link transmits blanking in real
- * time rather than compressing it away.
- */
-static u32 Esp32p4DriverMipiDsi_DeriveLaneRate(const LTDeviceMipiDsi_Config *pConfig) {
-    u32 nBitsPerPixel = Esp32p4DriverMipiDsi_BitsPerPixel(pConfig->pixelFormat);
-    if (! nBitsPerPixel || ! pConfig->nDataLanes || ! pConfig->timing.nFrameRateHz) return 0;
-
-    u64 nBitsPerSecond = Esp32p4DriverMipiDsi_FramePixels(&pConfig->timing)
-                       * nBitsPerPixel * pConfig->timing.nFrameRateHz;
-    return (u32)(nBitsPerSecond / pConfig->nDataLanes / 1000000u);
-}
-
 /* The pixel clock the DPI side has to run at to meet the configured frame rate. */
 static u32 Esp32p4DriverMipiDsi_DerivePixelClockMHz(const LTDeviceMipiDsi_Timing *pTiming) {
     u64 nPixelsPerSecond = Esp32p4DriverMipiDsi_FramePixels(pTiming) * pTiming->nFrameRateHz;
@@ -429,10 +414,9 @@ static u32 Esp32p4DriverMipiDsi_PhyReferenceClockMHz(void) {
  *
  * The PLL is M/N times the reference.  N is constrained by the PLL's input
  * range - the reference divided by N has to land between 5 and 40MHz - and M
- * has to be even.  Every N in range is tried and the pair whose rate comes
- * closest to the one asked for wins; taking the first even M instead would
- * settle for whatever the truncating divide left, which can be several percent
- * low.
+ * has to be even.  Every N in range is tried with the even M on each side of
+ * the exact quotient, and the pair whose rate lies closest to the one asked
+ * for wins.
  */
 static u32 Esp32p4DriverMipiDsi_ConfigurePll(u32 nLaneRateMbps) {
     u32 nSelector = 0;
@@ -452,15 +436,19 @@ static u32 Esp32p4DriverMipiDsi_ConfigurePll(u32 nLaneRateMbps) {
     u32 nMaxDivider   = nReferenceMHz / 5;
 
     u32 nInputDivider = 0, nLoopDivider = 0, nBestError = 0xffffffffu;
-    for (u32 n = nMinDivider; n <= nMaxDivider; n++) {
-        u32 m = nLaneRateMbps * n / nReferenceMHz;
-        if (! m || (m & 1)) continue;
-        u32 nError = nLaneRateMbps - nReferenceMHz * m / n;
-        if (nError < nBestError) {
-            nBestError    = nError;
-            nInputDivider = n;
-            nLoopDivider  = m;
-            if (! nError) break;
+    for (u32 n = nMinDivider; n <= nMaxDivider && nBestError; n++) {
+        /* M must be even, so the two even values around the exact quotient are the candidates;
+           either may be the nearer. */
+        u32 mBelow = (nLaneRateMbps * n / nReferenceMHz) & ~1u;
+        for (u32 m = mBelow; m <= mBelow + 2; m += 2) {
+            if (! m) continue;
+            u32 nRate  = nReferenceMHz * m / n;
+            u32 nError = (nRate > nLaneRateMbps) ? nRate - nLaneRateMbps : nLaneRateMbps - nRate;
+            if (nError < nBestError) {
+                nBestError    = nError;
+                nInputDivider = n;
+                nLoopDivider  = m;
+            }
         }
     }
     if (! nInputDivider) return 0;
@@ -473,6 +461,43 @@ static u32 Esp32p4DriverMipiDsi_ConfigurePll(u32 nLaneRateMbps) {
                                   (u8)(kPhyLoopDividerHighFlag | (((nLoopDivider - 1) >> 5) & 0x0f)));
 
     return nReferenceMHz * nLoopDivider / nInputDivider;
+}
+
+/* A horizontal duration in pixels, as lane byte clocks of the host, rounded to nearest. */
+static u32 Esp32p4DriverMipiDsi_PixelsToLaneBytes(u32 nPixels, u32 nLaneRateMbps, u32 nDpiClockDivider) {
+    return (u32)(((u64)nPixels * nLaneRateMbps * nDpiClockDivider + 4 * kDpiSourceClockMHz)
+                 / (8 * kDpiSourceClockMHz));
+}
+
+/*
+ * Whether a geometry can be programmed at a lane rate and DPI divider: every field has to fit
+ * its register, and a whole line of pixels (plus the packet header and checksum) has to fit in
+ * the line period the host will be given, spread across the lanes.
+ */
+static bool Esp32p4DriverMipiDsi_TimingFits(const LTDeviceMipiDsi_Config *pConfig,
+                                            u32 nLaneRateMbps, u32 nDpiClockDivider) {
+    const LTDeviceMipiDsi_Timing *t = &pConfig->timing;
+    enum { kBridgeFieldMax = 0xfff, kHostHorizontalMax = 0xfff, kHostLineMax = 0x7fff,
+           kHostVerticalMax = 0x3ff, kHostActiveLinesMax = 0x3fff, kPacketOverheadBytes = 6 };
+
+    u64 nHorizontalTotal = (u64)t->nHorizontalActive + t->nHorizontalSyncWidth
+                         + t->nHorizontalBackPorch + t->nHorizontalFrontPorch;
+    u64 nVerticalTotal   = (u64)t->nVerticalActive + t->nVerticalSyncWidth
+                         + t->nVerticalBackPorch + t->nVerticalFrontPorch;
+    if (nHorizontalTotal > kBridgeFieldMax || nVerticalTotal > kBridgeFieldMax) return false;
+    if (t->nHorizontalSyncWidth > kHostHorizontalMax || t->nHorizontalBackPorch > kHostHorizontalMax) return false;
+    if (t->nVerticalSyncWidth > kHostVerticalMax || t->nVerticalBackPorch > kHostVerticalMax
+     || t->nVerticalFrontPorch > kHostVerticalMax || t->nVerticalActive > kHostActiveLinesMax) return false;
+
+    u32 nLineLaneBytes = Esp32p4DriverMipiDsi_PixelsToLaneBytes((u32)nHorizontalTotal, nLaneRateMbps, nDpiClockDivider);
+    if (nLineLaneBytes > kHostLineMax) return false;
+    if (Esp32p4DriverMipiDsi_PixelsToLaneBytes(t->nHorizontalSyncWidth, nLaneRateMbps, nDpiClockDivider) > kHostHorizontalMax
+     || Esp32p4DriverMipiDsi_PixelsToLaneBytes(t->nHorizontalBackPorch, nLaneRateMbps, nDpiClockDivider) > kHostHorizontalMax) return false;
+
+    u32 nBitsPerPixel = Esp32p4DriverMipiDsi_BitsPerPixel(pConfig->pixelFormat);
+    u64 nPayloadBytes = ((u64)t->nHorizontalActive * nBitsPerPixel + 7) / 8 + kPacketOverheadBytes;
+    u64 nNeededLaneBytes = (nPayloadBytes + pConfig->nDataLanes - 1) / pConfig->nDataLanes;
+    return nLineLaneBytes >= nNeededLaneBytes;
 }
 
 /*
@@ -497,9 +522,7 @@ static void Esp32p4DriverMipiDsi_SetTiming(Esp32p4DriverMipiDsi *dsi) {
        so the host's line is never a fraction of a byte clock shorter than the
        bridge's. */
     #define SCALE_TO_LANE_BYTES(pixels) \
-        ((u32)(((u64)(pixels) * dsi->nLaneRateMbps * dsi->nDpiClockDivider \
-                + 4 * kDpiSourceClockMHz) \
-               / (8 * kDpiSourceClockMHz)))
+        Esp32p4DriverMipiDsi_PixelsToLaneBytes((pixels), dsi->nLaneRateMbps, dsi->nDpiClockDivider)
 
     ESP32_REG(DSI_HOST_VID_HSA_TIME)   = SCALE_TO_LANE_BYTES(pTiming->nHorizontalSyncWidth);
     ESP32_REG(DSI_HOST_VID_HBP_TIME)   = SCALE_TO_LANE_BYTES(pTiming->nHorizontalBackPorch);
@@ -772,7 +795,8 @@ static bool Esp32p4DriverMipiDsi_WriteHeader(Esp32_MipiDsiDataType dataType, u32
  * the host takes the byte count from the header, so a payload that is not a
  * multiple of four is written as a whole word with the unused bytes left zero.
  */
-static bool Esp32p4DriverMipiDsi_WritePayload(const u8 *pPayload, u32 nBytes) {
+static bool Esp32p4DriverMipiDsi_WritePayload(const u8 *pPayload, u32 nBytes, u32 *pnWritten) {
+    *pnWritten = 0;
     while (nBytes) {
         u32 nWord = 0;
         u32 nChunk = (nBytes < 4) ? nBytes : 4;
@@ -781,10 +805,23 @@ static bool Esp32p4DriverMipiDsi_WritePayload(const u8 *pPayload, u32 nBytes) {
         if (! Esp32p4DriverMipiDsi_WaitPayloadFifo()) return false;
         ESP32_REG(DSI_HOST_GEN_PLD_DATA) = nWord;
 
-        pPayload += nChunk;
-        nBytes   -= nChunk;
+        pPayload   += nChunk;
+        nBytes     -= nChunk;
+        *pnWritten += nChunk;
     }
     return true;
+}
+
+/* Wait for the payload FIFO to drain completely, so that nothing left by an earlier packet can
+   be taken as the start of this one. */
+static bool Esp32p4DriverMipiDsi_WaitPayloadFifoEmpty(void) {
+    for (u32 i = 0; i < kFifoSpinLimit; i++) {
+        if (ESP32_REG(DSI_HOST_CMD_PKT_STATUS) & ESP32_REG_MASK(DSI_HOST_CMD_PKT_STATUS, GEN_PLD_W_EMPTY)) {
+            return true;
+        }
+    }
+    LTLOG_YELLOWALERT("fifo.pld.notempty", NULL);
+    return false;
 }
 
 /* Choose between the low power and high speed command paths.  The host has one
@@ -959,18 +996,6 @@ static bool Esp32p4DriverMipiDsi_Configure(Esp32p4DriverMipiDsi *dsi,
         return false;
     }
 
-    u32 nLaneRateMbps = pConfig->nLaneRateMbps
-                      ? pConfig->nLaneRateMbps
-                      : Esp32p4DriverMipiDsi_DeriveLaneRate(pConfig);
-
-    if (nLaneRateMbps < kEsp32_MipiDsi_MinLaneRateMbps
-     || nLaneRateMbps > kEsp32_MipiDsi_MaxLaneRateMbps) {
-        LTLOG_YELLOWALERT("configure.lanerate", "%lu Mbps is outside %lu..%lu",
-                          LT_Pu32(nLaneRateMbps), LT_Pu32(kEsp32_MipiDsi_MinLaneRateMbps),
-                          LT_Pu32(kEsp32_MipiDsi_MaxLaneRateMbps));
-        return false;
-    }
-
     /*
      * The DPI clock comes from a whole divider off a fixed source, so the pixel
      * rate the panel asked for is rounded to what the divider can make, and the
@@ -985,6 +1010,28 @@ static bool Esp32p4DriverMipiDsi_Configure(Esp32p4DriverMipiDsi *dsi,
     if (nDivider < 2 || nDivider > kEsp32_MipiDsi_MaxDpiClockDivider) {
         LTLOG_YELLOWALERT("configure.dpiclock", "%lu MHz needs divider %lu",
                           LT_Pu32(nPixelClockMHz), LT_Pu32(nDivider));
+        return false;
+    }
+
+    /* An automatic lane rate has to carry the pixel clock the divider really produces, which
+       can be faster than the one requested, so it is derived from that and rounded up. */
+    u32 nLaneRateMbps = pConfig->nLaneRateMbps;
+    if (! nLaneRateMbps) {
+        u32 nBitsPerPixel = Esp32p4DriverMipiDsi_BitsPerPixel(pConfig->pixelFormat);
+        u64 nActivePixelClockHz = (u64)kDpiSourceClockMHz * 1000000u / nDivider;
+        u64 nBitsPerSecondPerLane = nActivePixelClockHz * nBitsPerPixel / pConfig->nDataLanes;
+        nLaneRateMbps = (u32)((nBitsPerSecondPerLane + 999999u) / 1000000u);
+    }
+    if (nLaneRateMbps < kEsp32_MipiDsi_MinLaneRateMbps
+     || nLaneRateMbps > kEsp32_MipiDsi_MaxLaneRateMbps) {
+        LTLOG_YELLOWALERT("configure.lanerate", "%lu Mbps is outside %lu..%lu",
+                          LT_Pu32(nLaneRateMbps), LT_Pu32(kEsp32_MipiDsi_MinLaneRateMbps),
+                          LT_Pu32(kEsp32_MipiDsi_MaxLaneRateMbps));
+        return false;
+    }
+    if (! Esp32p4DriverMipiDsi_TimingFits(pConfig, nLaneRateMbps, nDivider)) {
+        LTLOG_YELLOWALERT("configure.timing", "the geometry does not fit the registers or the link at %lu Mbps",
+                          LT_Pu32(nLaneRateMbps));
         return false;
     }
 
@@ -1158,6 +1205,13 @@ static bool Esp32p4DriverMipiDsi_PowerOn(Esp32p4DriverMipiDsi *dsi) {
     u32 nActualRateMbps = Esp32p4DriverMipiDsi_ConfigurePll(dsi->nLaneRateMbps);
     if (! nActualRateMbps) {
         LTLOG_REDALERT("poweron.pll", "no divider pair for %lu Mbps", LT_Pu32(dsi->nLaneRateMbps));
+        Esp32p4DriverMipiDsi_RollbackPowerOn();
+        return false;
+    }
+    if (! Esp32p4DriverMipiDsi_TimingFits(&dsi->config, nActualRateMbps, dsi->nDpiClockDivider)) {
+        /* The PLL can only make some rates, and the one it made cannot carry a whole line. */
+        LTLOG_REDALERT("poweron.timing", "the PLL's %lu Mbps cannot carry the configured lines",
+                       LT_Pu32(nActualRateMbps));
         Esp32p4DriverMipiDsi_RollbackPowerOn();
         return false;
     }
@@ -1578,13 +1632,30 @@ static bool Esp32p4DriverMipiDsi_SendPacket(Esp32p4DriverMipiDsi *dsi,
         case kLTDriverMipiDsi_PacketType_DcsLong:
         case kLTDriverMipiDsi_PacketType_GenericLong: {
             if (! nBytes || nBytes > kMaxLongPacketBytes) return false;
-            /* The payload goes in first: writing the header starts the
-               transmission, and the host sends whatever is in the FIFO. */
-            if (! Esp32p4DriverMipiDsi_WritePayload(pPayload, nBytes)) return false;
             Esp32_MipiDsiDataType longType =
                 (kLTDriverMipiDsi_PacketType_DcsLong == pPacket->packetType)
                     ? kEsp32_MipiDsiDataType_DcsLongWrite
                     : kEsp32_MipiDsiDataType_GenericLongWrite;
+
+            /* The payload goes in first: writing the header starts the
+               transmission, and the host sends whatever is in the FIFO.  So that the header
+               cannot then be refused for want of command FIFO space with the payload already
+               queued, space is secured before the payload goes in, and the payload FIFO must
+               start empty so no leftover is mistaken for this packet's start. */
+            if (! Esp32p4DriverMipiDsi_WaitPayloadFifoEmpty()) return false;
+            if (! Esp32p4DriverMipiDsi_WaitCommandFifo()) return false;
+
+            u32 nWritten = 0;
+            if (! Esp32p4DriverMipiDsi_WritePayload(pPayload, nBytes, &nWritten)) {
+                /* Part of the payload is queued.  A header is the only thing that drains it, so
+                   send what was queued as a short packet rather than leave it to prefix the next
+                   one; the caller is told this packet failed. */
+                if (nWritten) {
+                    Esp32p4DriverMipiDsi_WriteHeader(longType, pPacket->nVirtualChannel,
+                                                     (u8)(nWritten & 0xff), (u8)(nWritten >> 8));
+                }
+                return false;
+            }
             return Esp32p4DriverMipiDsi_WriteHeader(longType, pPacket->nVirtualChannel,
                                                     (u8)(nBytes & 0xff), (u8)(nBytes >> 8));
         }

@@ -38,6 +38,7 @@ DEFINE_LTLOG_SECTION("ltshell.dsi");
 /*_________________________
 _/ #forward declarations */
 static int  ShellCommandDsi(LTShell hShell, int argc, const char ** argv);
+static int  ShellCommandDsiLocked(LTShell hShell, int argc, const char ** argv);
 static void ShellHelpDsi(LTShell hShell, int argc, const char ** argv);
 
 /*____________________
@@ -493,11 +494,9 @@ fail:
     return false;
 }
 
-/* Replace the working config with the HX8394 panel's.  The Waveshare BSP asks for a
-   58MHz pixel clock, which over 800x1318 total pixels is 55Hz, but 55 reports a DSI
-   transmit FIFO overflow here while 40 is clean in every video mode, with the PSRAM
-   at 200MHz - so 40 it is.  The frame comes out of PSRAM, and with the PSRAM at its
-   old 20MHz not even 20 was clean. */
+/* Replace the working config with the HX8394 panel's.  The pixel clock is held to 40MHz
+   (about 30 fps over 800x1318 total pixels) because higher rates overflow the DSI transmit
+   FIFO while the frame is read from PSRAM. */
 static void SetHx8394Config(LTDeviceMipiDsi_Config * pConfig) {
     lt_memset(pConfig, 0, sizeof(*pConfig));
     pConfig->mode             = kLTDeviceMipiDsi_Mode_VideoBurst;
@@ -593,27 +592,17 @@ static void SetCo5300Config(LTDeviceMipiDsi_Config * pConfig) {
     pConfig->bEnableEotPacket = true;
 
     /* The panel takes two host pixels for each of its own, so its 410 columns are 820 host
-       pixels wide.  It shows an 820 pixel window onto each line, and (camera measured) the
-       window starts about 52 pixels BEFORE the first pixel of the line: the last 52 pixels
-       of the previous line show at the left edge and the line's own pixels 0..767 follow.
-       That offset does not depend on the line width (it stayed at 48..56 for strides from
-       864 to 932), so the line stride is chosen so that stride - width equals it: 872 - 820
-       = 52, and the framebuffer view (width 820, offset stride - width) then has its (0,0)
-       exactly at the left edge of the display.  Strides much above that only add pixels
-       the panel never shows; the preset used 932 before this was understood.
-       The porches are short on purpose: the driver rounds the pixel clock to
-       160MHz / whole number, and the frame must stay on the 26.67MHz step (divider 6,
-       between 24.6 and 29.1MHz); a long line pushes it onto the 32MHz step, which
-       overcommits a 490Mbps lane and is unstable.  At 520 lines and 50fps this line
-       (956 clocks) is 24.9MHz and rounds to the 26.67MHz step. */
+       pixels wide.  Its window starts about 52 pixels before the first pixel of a line, so the
+       stride is 820 + 52 = 872 and the framebuffer view (width 820, offset 52) puts (0,0) at
+       the left edge of the display.  The porches are short so the pixel clock stays on the
+       divider-6 step (26.67MHz): a longer line moves it to the 32MHz step, which a 490Mbps
+       lane cannot carry. */
     pConfig->timing.nHorizontalActive     = 872;
     pConfig->timing.nHorizontalSyncWidth  = 4;
     pConfig->timing.nHorizontalBackPorch  = 40;
     pConfig->timing.nHorizontalFrontPorch = 40;
-    /* The panel's video path shows 480 lines, not the 502 of the glass: with 502 active
-       lines the 22 lines it cannot take show as a cyan strip at the top and bottom (split
-       by the back porch), and the picture is rotated vertically.  With 480 active lines and
-       a back porch of 18 the picture fills the whole display.  Measured with a camera. */
+    /* The panel's video path shows 480 lines, not the 502 of the glass; a back porch of 18
+       centres them. */
     pConfig->timing.nVerticalActive       = 480;
     pConfig->timing.nVerticalSyncWidth    = 4;
     pConfig->timing.nVerticalBackPorch    = 18;
@@ -621,14 +610,10 @@ static void SetCo5300Config(LTDeviceMipiDsi_Config * pConfig) {
     pConfig->timing.nFrameRateHz          = 50;
 }
 
-/* The CO5300 datasheet (page 8) caps the bit rate by pixel format: 500Mbps with
-   24-bit pixels, 360 with 18-bit and only 320 with 16-bit.  The RGB565 preset above
-   runs the lane at 490Mbps, past that cap, which may be why its picture is unstable.
-   This variant sends 24-bit pixels (use "dsi panel co5300 888" to match), which allows
-   the full rate.  The 2:1 host-pixel factor of the RGB565 preset may not apply, so the
-   line is the panel's own 410 pixels.  TRIED, DOES NOT WORK: at 410 the left half is
-   black and the right half is one-pixel bars; at 820 and 30fps the left half is green
-   with black lines and the bars are wrong.  Kept only as a starting point. */
+/* The CO5300 datasheet (page 8) caps the bit rate by pixel format: 500Mbps with 24-bit
+   pixels, 360 with 18-bit and 320 with 16-bit.  This variant sends 24-bit pixels (use
+   "dsi panel co5300 888" to match) with a 410 pixel line.  It is a starting point and does
+   not display correctly yet. */
 static void SetCo5300Rgb888Config(LTDeviceMipiDsi_Config * pConfig) {
     SetCo5300Config(pConfig);
     pConfig->pixelFormat                   = kLTDeviceMipiDsi_PixelFormat_RGB888;
@@ -1765,7 +1750,7 @@ static void ShellHelpDsi(LTShell hShell, int argc, const char ** argv) { LT_UNUS
 
 /*____________________
 _/ dsi command proc */
-static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
+static int ShellCommandDsiLocked(LTShell hShell, int argc, const char ** argv) {
     ILTShell * iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
     u32 nValue = 0;
 
@@ -1900,6 +1885,21 @@ static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
 
     ShellHelpDsi(hShell, argc, argv);
     return -1;
+}
+
+/* Commands hold framebuffer pointers across sleeps, and the console and network shells run on
+   separate threads, so only one dsi command runs at a time. */
+static LTAtomic s_nCommandBusy;
+
+static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
+    if (! LTAtomic_CompareAndExchange(&s_nCommandBusy, 0, 1)) {
+        ILTShell * iShell = (ILTShell *)LT_GetCore()->GetHandleInterface(hShell);
+        iShell->PutString(hShell, "another dsi command is running\n");
+        return -1;
+    }
+    int nResult = ShellCommandDsiLocked(hShell, argc, argv);
+    LTAtomic_Store(&s_nCommandBusy, 0);
+    return nResult;
 }
 
 /*__________________________
