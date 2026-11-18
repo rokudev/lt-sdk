@@ -166,6 +166,7 @@ enum Esp32p4DriverMipiDsiConstants {
     /* How many 1ms waits SetFrameBuffer allows for the frame boundary that hands the DMA the
        replacement buffer, which comes within one frame period. */
     kSwapSettleAttempts             = 50,
+    kStopAbortTimeoutUs             = 10000,
 
     /*
      * The longest long-packet payload accepted.  The payload goes into the transmit FIFO
@@ -326,7 +327,7 @@ static u32 s_frameBufferSamplesAfter[3];
 
 /*________________________________________________
   Esp32p4DriverMipiDsi forward declarations     */
-static void Esp32p4DriverMipiDsi_StopVideo(Esp32p4DriverMipiDsi *dsi);
+static bool Esp32p4DriverMipiDsi_StopVideo(Esp32p4DriverMipiDsi *dsi);
 
 /*____________________________________________
   Esp32p4DriverMipiDsi private functions    */
@@ -639,9 +640,10 @@ static u32 LT_ISR_SAFE Esp32p4DriverMipiDsi_TranslateErrors(u32 nStatus0, u32 nS
  * descriptor: every field except the two marker bits survives consumption.
  */
 static void LT_ISR_SAFE Esp32p4DriverMipiDsi_RearmPixelDma(void) {
-    u32 nDescriptor = s_nQueuedPixelDescriptor;
+    /* Taking the queued descriptor is atomic so SetFrameBuffer's timeout can tell whether
+       this took it or the cancellation did. */
+    u32 nDescriptor = __atomic_exchange_n(&s_nQueuedPixelDescriptor, 0xffffffffu, __ATOMIC_SEQ_CST);
     if (nDescriptor > 1) nDescriptor = s_nActivePixelDescriptor;
-    s_nQueuedPixelDescriptor = 0xffffffffu;
     s_nActivePixelDescriptor = nDescriptor;
 
     Esp32_GdmaDescriptor *pDescriptor =
@@ -942,6 +944,15 @@ static bool Esp32p4DriverMipiDsi_Configure(Esp32p4DriverMipiDsi *dsi,
         return false;
     }
     if (kLTDeviceMipiDsi_Mode_Unset == pConfig->mode) return false;
+
+    /* This driver always derives D-PHY timing from the lane rate and has no conversion for
+       overrides, so a nonzero one is rejected rather than ignored. */
+    for (u32 i = 0; i < sizeof(pConfig->phyTiming) / sizeof(u32); i++) {
+        if (((const u32 *)&pConfig->phyTiming)[i]) {
+            LTLOG_YELLOWALERT("configure.phytiming", "D-PHY timing overrides are not supported");
+            return false;
+        }
+    }
 
     if (! pConfig->timing.nFrameRateHz
      || ! pConfig->timing.nHorizontalActive || ! pConfig->timing.nVerticalActive) {
@@ -1287,6 +1298,10 @@ static void Esp32p4DriverMipiDsi_PowerOff(Esp32p4DriverMipiDsi *dsi) {
     /* The bridge and the host gate together, so this takes both down. */
     Esp32_ClockDisablePeripheralClock(kEsp32_Clock_MIPI_DSI);
 
+    ESP32_REG(HP_CLKRST_SOC_CLK_CTRL0) &= ~(u32)ESP32_REG_MASK(HP_CLKRST_SOC_CLK_CTRL0, GDMA_CPU_CLK_EN);
+    Esp32_ClockDisablePeripheralClock(kEsp32_Clock_GDMA);
+    ESP32_REG(PMU_EXT_LDO_CHAN3) &= ~(u32)ESP32_REG_MASK(PMU_EXT_LDO_CHAN3, XPD);
+
     dsi->bPoweredOn = false;
 }
 
@@ -1338,10 +1353,13 @@ static bool Esp32p4DriverMipiDsi_SetFrameBuffer(Esp32p4DriverMipiDsi *dsi,
         for (u32 i = 0; i < kSwapSettleAttempts && s_nQueuedPixelDescriptor == nDescriptor; i++) {
             iThread->Sleep(LTTime_Milliseconds(1));
         }
-        if (s_nQueuedPixelDescriptor == nDescriptor) {
+        /* Cancel only if the ISR has not taken the descriptor; if it has, the new buffer is
+           already the one being read and the swap succeeded. */
+        u32 nExpected = nDescriptor;
+        if (__atomic_compare_exchange_n(&s_nQueuedPixelDescriptor, &nExpected, 0xffffffffu, false,
+                                        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
             /* No frame boundary arrived, so the old buffer is still the one on the wire. */
-            s_nQueuedPixelDescriptor = 0xffffffffu;
-            dsi->pFrameBuffer        = pPrevious;
+            dsi->pFrameBuffer = pPrevious;
             LTLOG_YELLOWALERT("setframebuffer.swap.timeout", NULL);
             return false;
         }
@@ -1469,8 +1487,9 @@ static bool Esp32p4DriverMipiDsi_StartVideo(Esp32p4DriverMipiDsi *dsi) {
     return true;
 }
 
-static void Esp32p4DriverMipiDsi_StopVideo(Esp32p4DriverMipiDsi *dsi) {
-    if (! dsi->bVideoActive) return;
+static bool Esp32p4DriverMipiDsi_StopVideo(Esp32p4DriverMipiDsi *dsi) {
+    if (! dsi->bVideoActive) return true;
+    /* The ISR ignores completions once this is false, so it cannot re-enable the channel. */
     dsi->bVideoActive = false;
     s_nQueuedPixelDescriptor = 0xffffffffu;
 
@@ -1488,10 +1507,26 @@ static void Esp32p4DriverMipiDsi_StopVideo(Esp32p4DriverMipiDsi *dsi) {
     ESP32_REG(GDMA_CHEN1) = ESP32_GDMA_CHEN_ABORT(kPixelDmaChannel);
     ESP32_REG(GDMA_CHEN0) = ESP32_GDMA_CHEN_DISABLE(kPixelDmaChannel);
 
+    /* The abort completes asynchronously and the caller may free the framebuffer as soon as
+       this returns, so wait until the channel reports itself disabled. */
+    u32 nWaitedUs = 0;
+    while ((ESP32_REG(GDMA_CHEN0) & (1u << kPixelDmaChannel)) && nWaitedUs < kStopAbortTimeoutUs) {
+        esp_rom_delay_us(10);
+        nWaitedUs += 10;
+    }
+    bool bStopped = 0 == (ESP32_REG(GDMA_CHEN0) & (1u << kPixelDmaChannel));
+    if (! bStopped) {
+        LTLOG_YELLOWALERT("stopvideo.abort.timeout", NULL);
+        /* The DMA may still be reading the framebuffer, so the stream stays marked active and a
+           retry repeats the abort. */
+        dsi->bVideoActive = true;
+    }
+
     /* Back to command mode so the panel can still be addressed with the stream
        stopped, which is what a shutdown sequence needs. */
     ESP32_REG(DSI_HOST_MODE_CFG) = ESP32_REG_MASK(DSI_HOST_MODE_CFG, CMD_VIDEO_MODE);
     Esp32p4DriverMipiDsi_SetClockLaneContinuous(false);
+    return bStopped;
 }
 
 /*

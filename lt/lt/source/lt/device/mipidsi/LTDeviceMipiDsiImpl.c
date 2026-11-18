@@ -216,6 +216,8 @@ static bool LTDeviceMipiDsiImpl_PowerOn(LTDeviceMipiDsiImpl *dsi) {
 static void LTDeviceMipiDsiImpl_PowerOff(LTDeviceMipiDsiImpl *dsi) {
     if (! dsi->bPoweredOn) return;
     if (dsi->bVideoActive) {
+        /* The supply and clocks go down regardless; the framebuffer is only released by the
+           caller, which sees the failure from StopVideo. */
         dsi->driver->API->StopVideo(dsi->driver);
         dsi->bVideoActive = false;
     }
@@ -259,10 +261,11 @@ static bool LTDeviceMipiDsiImpl_StartVideo(LTDeviceMipiDsiImpl *dsi) {
     return true;
 }
 
-static void LTDeviceMipiDsiImpl_StopVideo(LTDeviceMipiDsiImpl *dsi) {
-    if (! dsi->bVideoActive) return;
-    dsi->driver->API->StopVideo(dsi->driver);
+static bool LTDeviceMipiDsiImpl_StopVideo(LTDeviceMipiDsiImpl *dsi) {
+    if (! dsi->bVideoActive) return true;
+    if (! dsi->driver->API->StopVideo(dsi->driver)) return false;
     dsi->bVideoActive = false;
+    return true;
 }
 
 static bool LTDeviceMipiDsiImpl_IsVideoActive(LTDeviceMipiDsiImpl *dsi) { return dsi->bVideoActive; }

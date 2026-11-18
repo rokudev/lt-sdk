@@ -231,9 +231,11 @@ static void DsiErrorEventProc(LTDeviceMipiDsi_Error errors, void * pClientData) 
     s_nErrorEventMask |= (u32)errors;
 }
 
-static void FreeFrameBuffer(void) {
-    if (s_pFrameBuffer == NULL) return;
-    if (s_pDsi && s_pDsi->API->IsVideoActive(s_pDsi)) s_pDsi->API->StopVideo(s_pDsi);
+/* Returns false, and leaves the buffer allocated, if the stream could not be confirmed
+   stopped. */
+static bool FreeFrameBuffer(void) {
+    if (s_pFrameBuffer == NULL) return true;
+    if (s_pDsi && s_pDsi->API->IsVideoActive(s_pDsi) && ! s_pDsi->API->StopVideo(s_pDsi)) return false;
     if (s_pDsi) s_pDsi->API->SetFrameBuffer(s_pDsi, NULL, 0);
     lt_free(s_pAnimationAlloc);
     lt_free(s_pFrameBufferAlloc);
@@ -244,6 +246,7 @@ static void FreeFrameBuffer(void) {
     s_nFrameBufferBytes = 0;
     s_nMarginBytes      = 0;
     lt_memset(&s_geom, 0, sizeof s_geom);
+    return true;
 }
 
 /* The logical framebuffer: pixel (x, y) is at pDriver + ((y * stride + x) - offset) * bytes per
@@ -302,10 +305,12 @@ static u8 * AllocWithMargin(u32 nBytes, u32 nMarginBytes, u8 ** ppAlloc) {
 }
 
 static bool AllocFrameBuffer(u32 nBytes) {
-    FreeFrameBuffer();
+    if (! FreeFrameBuffer()) return false;
     if (nBytes == 0) return false;
     u32 nBytesPerPixel = BitsPerPixel(s_config.pixelFormat) / 8;
-    u32 nMargin = ViewOffset() * (nBytesPerPixel ? nBytesPerPixel : 2);
+    u64 nMarginWide = (u64)ViewOffset() * (nBytesPerPixel ? nBytesPerPixel : 2);
+    if (nMarginWide + nBytes > 0xffffffffu) return false;
+    u32 nMargin = (u32)nMarginWide;
     s_pFrameBuffer = AllocWithMargin(nBytes, nMargin, &s_pFrameBufferAlloc);
     if (s_pFrameBuffer == NULL) return false;
     s_nFrameBufferBytes = nBytes;
@@ -848,7 +853,10 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
     if (argc < 3) { ShellHelpDsi(hShell, argc, argv); return -1; }
 
     if (0 == lt_strcmp(argv[2], "free")) {
-        FreeFrameBuffer();
+        if (! FreeFrameBuffer()) {
+            iShell->PutString(hShell, "video did not stop; the framebuffer was kept\n");
+            return -1;
+        }
         return 0;
     }
 
@@ -902,14 +910,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
     }
 
     if (0 == lt_strcmp(argv[2], "fillchunked")) {
-        /* Diagnostic only: identical to 'fill', except the CPU write burst is
-           broken into chunks with a sleep between them.  'fill' alone (no
-           SetFrameBuffer call at all) was what isolated the CPU-write-vs-live-
-           GDMA-read PSRAM contention as the underrun's real cause; this lets
-           that same isolated repro be re-run with the write burst spread out,
-           to test whether shortening it gives GDMA's reads room to keep the
-           bridge fed, without touching the driver or the unchunked 'fill' and
-           'animate' paths other callers already rely on. */
+        /* Like 'fill', but the CPU write burst is split into chunks with a sleep between them, to limit contention with the GDMA reads. */
         u32 nColour = 0, nChunkPixels = 0, nSleepMs = 0;
         if (argc < 6
          || ! ParseU32(argv[3], &nColour)
@@ -936,15 +937,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
     }
 
     if (0 == lt_strcmp(argv[2], "touch")) {
-        /* Diagnostic only: repeatedly overwrite just the first <pixels>
-           pixels of the live, already-active buffer, back to back with no
-           sleep between repeats - no SetFrameBuffer, no address change, no
-           chunking.  Used to separate two theories for the underruns that
-           remain after shrinking 'animate' to a dirty-rectangle update: (a)
-           a near-fixed per-write stall regardless of size, vs (b) a real
-           size threshold below which a write is small enough not to matter.
-           Sweeping <pixels> down and watching where the underrun rate drops
-           answers that. */
+        /* Repeatedly overwrites the first <pixels> pixels of the live buffer with no sleep between repeats and no SetFrameBuffer call. */
         u32 nTouchPixels = 0, nRepeats = 0;
         if (argc < 5 || ! ParseU32(argv[3], &nTouchPixels) || ! nTouchPixels
          || ! ParseU32(argv[4], &nRepeats) || ! nRepeats
@@ -967,19 +960,7 @@ static int DsiFrameBuffer(LTShell hShell, int argc, const char ** argv) {
     }
 
     if (0 == lt_strcmp(argv[2], "swaploop2")) {
-        /* Diagnostic only: per iteration, write a <rows> x <cols> block
-           starting at row <row> into the current ping-pong buffer,
-           SetFrameBuffer it, sleep <delay ms>, repeat <repeats> times - the
-           same loop shape as 'animate', but with a trivial fixed write
-           instead of the moving square, and done as a single native
-           on-device loop (not round-tripped shell commands, which stayed
-           near zero underruns even for the same write sizes - the native
-           loop's tighter pacing is part of what reproduces 'animate's
-           ~1/frame rate).  Varying <row>/<rows>/<cols> is what showed the
-           underrun rate tracks per-row write *width*, not location or
-           scatter shape: ~20-25% at 32 cols, ~94% at 126 cols (matching the
-           dirty-rectangle union-bounding-box width that was in 'animate'
-           before it was narrowed to just the two edges). */
+        /* Per iteration, writes a <rows> x <cols> block at <row> into the current ping-pong buffer, calls SetFrameBuffer, then sleeps <delay ms>; runs natively on the device so the pacing matches 'animate'. */
         u32 nHeight = s_geom.nHeight;
         u32 nWidth  = s_geom.nStride;
         if (! s_pDsi->API->IsVideoActive(s_pDsi)) {
@@ -1352,9 +1333,9 @@ static int SelftestUnconfigured(LTShell hShell) {
     CHECK(s_pDsi->API->GetClockLaneState(s_pDsi) == kLTDeviceMipiDsi_LaneState_Off,    "clock lane is off");
     CHECK(s_pDsi->API->GetDataLaneState(s_pDsi, 0) == kLTDeviceMipiDsi_LaneState_Off,  "data lane 0 is off");
 
-    /* PowerOff and StopVideo return nothing; the test is that they are safe to
+    /* PowerOff returns nothing; the test is that it and StopVideo are safe to
        call against a device that was never brought up. */
-    s_pDsi->API->StopVideo(s_pDsi);
+    CHECK(s_pDsi->API->StopVideo(s_pDsi),                          "StopVideo on an idle device succeeds");
     s_pDsi->API->PowerOff(s_pDsi);
     CHECK(! s_pDsi->API->IsPoweredOn(s_pDsi),                      "PowerOff on an idle device is harmless");
 
@@ -1582,9 +1563,9 @@ static int SelftestVideo(LTShell hShell) {
          LaneStateName(s_pDsi->API->GetClockLaneState(s_pDsi)),
          LaneStateName(s_pDsi->API->GetDataLaneState(s_pDsi, 0)));
 
-    s_pDsi->API->StopVideo(s_pDsi);
+    CHECK(s_pDsi->API->StopVideo(s_pDsi), "StopVideo succeeded");
     CHECK(! s_pDsi->API->IsVideoActive(s_pDsi), "StopVideo ended the stream");
-    s_pDsi->API->StopVideo(s_pDsi);
+    CHECK(s_pDsi->API->StopVideo(s_pDsi), "StopVideo again succeeds");
     CHECK(! s_pDsi->API->IsVideoActive(s_pDsi), "StopVideo again is harmless");
     CHECK(s_pDsi->API->SetFrameBuffer(s_pDsi, s_pFrameBuffer, s_nFrameBufferBytes), "the framebuffer can be set again once stopped");
 
@@ -1844,7 +1825,7 @@ static int ShellCommandDsi(LTShell hShell, int argc, const char ** argv) {
     }
 
     if (0 == lt_strcmp(argv[1], "video")) {
-        if (0 == lt_strcmp(argv[2], "stop")) { s_pDsi->API->StopVideo(s_pDsi); return 0; }
+        if (0 == lt_strcmp(argv[2], "stop")) { return s_pDsi->API->StopVideo(s_pDsi) ? 0 : -1; }
         if (0 != lt_strcmp(argv[2], "start")) { ShellHelpDsi(hShell, argc, argv); return -1; }
         if (! s_pDsi->API->StartVideo(s_pDsi)) { iShell->PutString(hShell, "StartVideo failed\n"); return -1; }
         iShell->PutString(hShell, "streaming\n");

@@ -291,10 +291,13 @@ typedef_LTObject(LTDeviceMipiDsi, 1) {
          * @see StopVideo, WriteFrame
          */
 
-    void (* StopVideo)(LTDeviceMipiDsi *dsi);
+    bool (* StopVideo)(LTDeviceMipiDsi *dsi);
         /**< ends the high speed pixel stream and returns the lanes to the stop state
          *
          * @param[in] dsi the DSI device to stop
+         * @return true if the stream has stopped, or was not running; false if the driver could
+         *         not confirm the pixel DMA had stopped, in which case the framebuffer is still
+         *         owned by the device and must not be freed, and StopVideo may be retried
          *
          * @see StartVideo
          */

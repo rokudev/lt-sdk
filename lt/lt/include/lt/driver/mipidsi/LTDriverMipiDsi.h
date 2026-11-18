@@ -150,10 +150,13 @@ typedef_LTObject(LTDriverMipiDsi, 1) {
          * @note the Device level does not call this in command mode.
          */
 
-    void (* StopVideo)(LTDriverMipiDsi *dsiDriver);
+    bool (* StopVideo)(LTDriverMipiDsi *dsiDriver);
         /**< ends the pixel stream and returns the lanes to the stop state
          *
          * @param[in] dsiDriver the DSI driver to stop
+         * @return true if the stream has stopped and the framebuffer is no longer being read;
+         *         false if the pixel DMA did not confirm it had stopped, in which case the
+         *         framebuffer must not be freed and StopVideo may be called again
          */
 
     bool (* WriteFrame)(LTDriverMipiDsi *dsiDriver, const void *pPixels, u32 nBytes);
